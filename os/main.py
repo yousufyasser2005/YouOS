@@ -143,6 +143,7 @@ class DesktopApp:
         self.login_after_id = None
         self.login_clock_update_id = None
         self.last_click_time = 0
+        self.last_click_app = None
         self.click_delay = 300
         self.show_boot_screen()
         self.root.bind("<Escape>", lambda e: self.toggle_start_menu(close_only=True))
@@ -477,85 +478,50 @@ class DesktopApp:
             default_x = 20 + (col * 100)
             default_y = 20 + (row * 100)
             x, y = self.icon_positions.get(app_name, [default_x, default_y])
-            
-            # Create canvas-based icon for complete transparency
-            icon_id = self.canvas_bg.create_text(
-                x + 40, y + 30,
-                text=ICONS.get(app_name, "📦"),
-                font=("Segoe UI Emoji", 32),
-                fill=COLOR_TEXT_PRIMARY,
-                tags=f"icon_{app_name}"
-            )
-            
-            label_id = self.canvas_bg.create_text(
-                x + 40, y + 70,
-                text=app_name,
-                font=("Inter", 11),
-                fill=COLOR_TEXT_PRIMARY,
-                width=70,
-                tags=f"label_{app_name}"
-            )
-            
-            # Store positions for dragging
-            self.canvas_bg.tag_bind(f"icon_{app_name}", "<Button-1>", lambda e, n=app_name: self.on_icon_click(e, n))
-            self.canvas_bg.tag_bind(f"label_{app_name}", "<Button-1>", lambda e, n=app_name: self.on_icon_click(e, n))
-            self.canvas_bg.tag_bind(f"icon_{app_name}", "<Button-3>", lambda e, n=app_name: self.start_icon_drag(e, n))
-            self.canvas_bg.tag_bind(f"label_{app_name}", "<Button-3>", lambda e, n=app_name: self.start_icon_drag(e, n))
-            self.canvas_bg.tag_bind(f"icon_{app_name}", "<B3-Motion>", lambda e, n=app_name: self.drag_icon(e, n))
-            self.canvas_bg.tag_bind(f"label_{app_name}", "<B3-Motion>", lambda e, n=app_name: self.drag_icon(e, n))
-            self.canvas_bg.tag_bind(f"icon_{app_name}", "<ButtonRelease-3>", lambda e: self.end_icon_drag(e))
-            self.canvas_bg.tag_bind(f"label_{app_name}", "<ButtonRelease-3>", lambda e: self.end_icon_drag(e))
-            
+            icon_frame = ctk.CTkFrame(self.canvas_bg, fg_color="transparent", width=80, height=80, 
+                                     border_width=0)
+            icon_frame.place(x=x, y=y)
+            btn = ctk.CTkButton(icon_frame, text=ICONS.get(app_name, "📦"), font=("Segoe UI Emoji", 32), 
+                              width=60, height=60, fg_color="transparent", hover_color=COLOR_BG_TERTIARY, 
+                              corner_radius=12, border_width=0)
+            btn.pack()
+            label = ctk.CTkLabel(icon_frame, text=app_name, font=("Inter", 11), 
+                               text_color=COLOR_TEXT_PRIMARY, wraplength=70, fg_color="transparent")
+            label.pack()
+            def on_click(event, n=app_name):
+                current_time = time.time() * 1000
+                if current_time - self.last_click_time < self.click_delay:
+                    self.launch_program(n)
+                self.last_click_time = current_time
+            def start_drag(event, f=icon_frame, n=app_name):
+                f._drag_start_x = event.x
+                f._drag_start_y = event.y
+                x, y = f.winfo_x(), f.winfo_y()
+                width, height = f.winfo_width(), f.winfo_height()
+                self.canvas_bg.coords(self.drag_feedback, x, y, x + width, y + height)
+                self.canvas_bg.lift(self.drag_feedback)
+            def on_drag(event, f=icon_frame, n=app_name):
+                dx = event.x - f._drag_start_x
+                dy = event.y - f._drag_start_y
+                x = f.winfo_x() + dx
+                y = f.winfo_y() + dy
+                f.place(x=x, y=y)
+                width, height = f.winfo_width(), f.winfo_height()
+                self.canvas_bg.coords(self.drag_feedback, x, y, x + width, y + height)
+                self.icon_positions[n] = [x, y]
+                self.save_icon_positions()
+            def end_drag(event):
+                self.canvas_bg.coords(self.drag_feedback, 0, 0, 0, 0)
+            btn.bind("<Button-1>", on_click)
+            label.bind("<Button-1>", on_click)
+            btn.bind("<Button-3>", start_drag)
+            label.bind("<Button-3>", start_drag)
+            btn.bind("<B3-Motion>", on_drag)
+            label.bind("<B3-Motion>", on_drag)
+            btn.bind("<ButtonRelease-3>", end_drag)
+            label.bind("<ButtonRelease-3>", end_drag)
             row += 1
             if row > 6: row, col = 0, col + 1
-    
-    def on_icon_click(self, event, app_name):
-        current_time = time.time() * 1000
-        if current_time - self.last_click_time < self.click_delay:
-            self.launch_program(app_name)
-        self.last_click_time = current_time
-    
-    def start_icon_drag(self, event, app_name):
-        self.dragging_icon = app_name
-        self.drag_start_x = event.x
-        self.drag_start_y = event.y
-        
-        # Get current position
-        icon_coords = self.canvas_bg.coords(f"icon_{app_name}")
-        label_coords = self.canvas_bg.coords(f"label_{app_name}")
-        if icon_coords:
-            self.drag_icon_x = icon_coords[0]
-            self.drag_icon_y = icon_coords[1]
-            # Show drag feedback
-            x1, y1 = self.drag_icon_x - 40, self.drag_icon_y - 30
-            x2, y2 = x1 + 80, y1 + 80
-            self.canvas_bg.coords(self.drag_feedback, x1, y1, x2, y2)
-            self.canvas_bg.lift(self.drag_feedback)
-    
-    def drag_icon(self, event, app_name):
-        if hasattr(self, 'dragging_icon') and self.dragging_icon == app_name:
-            dx = event.x - self.drag_start_x
-            dy = event.y - self.drag_start_y
-            
-            new_x = self.drag_icon_x + dx
-            new_y = self.drag_icon_y + dy
-            
-            # Move icon and label
-            self.canvas_bg.coords(f"icon_{app_name}", new_x, new_y)
-            self.canvas_bg.coords(f"label_{app_name}", new_x, new_y + 40)
-            
-            # Update drag feedback
-            x1, y1 = new_x - 40, new_y - 30
-            x2, y2 = x1 + 80, y1 + 80
-            self.canvas_bg.coords(self.drag_feedback, x1, y1, x2, y2)
-            
-            # Save position
-            self.icon_positions[app_name] = [new_x - 40, new_y - 30]
-            self.save_icon_positions()
-    
-    def end_icon_drag(self, event):
-        self.dragging_icon = None
-        self.canvas_bg.coords(self.drag_feedback, 0, 0, 0, 0)
     def create_taskbar(self):
         # Taskbar Container (Dock Style)
         self.taskbar_frame = ctk.CTkFrame(self.desktop_frame, fg_color=COLOR_BG_SECONDARY, height=60, corner_radius=20, border_width=1, border_color=COLOR_BORDER)
