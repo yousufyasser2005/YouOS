@@ -1,33 +1,37 @@
-{
-    "version": "1.0.0",
-    "last_updated": "2026-01-06",
-    "programs": {
-        "browser.py": "1.0.0",
-        "file_manager.py": "1.0.0",
-        "media_viewer.py": "1.0.0",
-        "text_editor.py": "1.0.0",
-        "calculator.py": "1.0.0",
-        "settings.py": "1.0.0",
-        "terminal.py": "1.0.0",
-        "task_manager.py": "1.0.0",
-        "recycle_bin.py": "1.0.0",
-        "app_store.py": "1.0.0"
-    },
-    "system_modules": {
-        "main.py": "1.0.0",
-        "desktop.py": "1.0.0",
-        "start.py": "1.0.0",
-        "widgets.py": "1.0.0",
-        "utils.py": "1.0.0",
-        "auth.py": "1.0.0"
-    },
-    "changelog": {
-        "1.0.0": {
-            "date": "2026-01-06",
-            "changes": [
-                "Initial system version",
-                "All core modules at version 1.0.0"
-            ]
-        }
-    }
-}
+	
+version	"1.1.0"
+last_updated	"2026-01-06"
+programs	
+browser.py	"1.0.0"
+file_manager.py	"1.0.0"
+media_viewer.py	"1.0.0"
+text_editor.py	"1.0.0"
+calculator.py	"1.1.0"
+settings.py	"1.0.0"
+terminal.py	"1.0.0"
+task_manager.py	"1.0.0"
+recycle_bin.py	"1.0.0"
+app_store.py	"1.0.0"
+system_modules	
+main.py	"1.0.0"
+desktop.py	"1.0.0"
+start.py	"1.0.0"
+widgets.py	"1.0.0"
+utils.py	"1.0.0"
+auth.py	"1.0.0"
+changelog	
+1.1.0	
+date	"2026-01-06"
+changes	
+0	"Updated Calculator to v1.1.0"
+1	"Added gradient background design"
+2	"Added calculation history feature"
+3	"Added AC (All Clear) button"
+4	"Added ± (sign toggle) button"
+5	"Improved button styling with hover effects"
+6	"Enhanced error handling with specific messages"
+1.0.0	
+date	"2026-01-06"
+changes	
+0	"Initial system version"
+1	"All core modules at version 1.0.0"
