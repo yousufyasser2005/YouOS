@@ -1,5 +1,5 @@
 {
-    "version": "1.1.0",
+    "version": "1.2.0",
     "last_updated": "2026-01-06",
     "programs": {
         "browser.py": "1.0.0",
@@ -15,10 +15,43 @@
     },
     "system_modules": {
         "main.py": "1.0.0",
-        "desktop.py": "1.0.0",
+        "desktop.py": "1.1.0",
         "start.py": "1.0.0",
         "widgets.py": "1.0.0",
         "utils.py": "1.0.0",
         "auth.py": "1.0.0"
+    },
+    "changelog": {
+        "1.2.0": {
+            "date": "2026-01-06",
+            "changes": [
+                "Updated Desktop Manager to v1.1.0",
+                "Added battery monitoring system",
+                "Added low battery warning at 25%",
+                "Added critical battery warning at 15%",
+                "Added auto-shutdown at 10% battery",
+                "Added battery warning sounds",
+                "Improved system stability"
+            ]
+        },
+        "1.1.0": {
+            "date": "2026-01-06",
+            "changes": [
+                "Updated Calculator to v1.1.0",
+                "Added gradient background design",
+                "Added calculation history feature",
+                "Added AC (All Clear) button",
+                "Added ± (sign toggle) button",
+                "Improved button styling with hover effects",
+                "Enhanced error handling with specific messages"
+            ]
+        },
+        "1.0.0": {
+            "date": "2026-01-06",
+            "changes": [
+                "Initial system version",
+                "All core modules at version 1.0.0"
+            ]
+        }
     }
 }
