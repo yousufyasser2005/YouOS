@@ -1,0 +1,24 @@
+
+================================================================================
+[2025-12-23T22:02:12.331931] ERROR in toggle_widgets
+Error: 'width' and 'height' arguments must be passed to the constructor of the widget, not the place method
+
+================================================================================
+[2025-12-23T22:02:34.331679] ERROR in toggle_widgets
+Error: 'width' and 'height' arguments must be passed to the constructor of the widget, not the place method
+
+================================================================================
+[2025-12-23T22:02:41.837164] ERROR in toggle_widgets
+Error: 'width' and 'height' arguments must be passed to the constructor of the widget, not the place method
+
+================================================================================
+[2025-12-23T22:03:08.730121] ERROR in toggle_widgets
+Error: 'width' and 'height' arguments must be passed to the constructor of the widget, not the place method
+
+================================================================================
+[2025-12-25T13:57:37.899973] ERROR in Permanent WidgetPanel creation
+Error: unknown option "-corner_radius"
+
+================================================================================
+[2025-12-25T13:58:10.410883] ERROR in Permanent WidgetPanel creation
+Error: unknown option "-corner_radius"

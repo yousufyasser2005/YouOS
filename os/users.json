@@ -1,0 +1,91 @@
+{
+    "yousuf": {
+        "password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+        "icon_positions": {
+            "Matrix_calculator": [
+                3,
+                464
+            ],
+            "Yousuf Browser": [
+                88,
+                214
+            ],
+            "Text Editor": [
+                90,
+                449
+            ],
+            "My Computer": [
+                1,
+                3
+            ],
+            "File Manager": [
+                3,
+                104
+            ],
+            "Settings": [
+                6,
+                213
+            ],
+            "Media Viewer": [
+                5,
+                324
+            ],
+            "App Store": [
+                83,
+                7
+            ],
+            "Pong": [
+                3,
+                672
+            ],
+            "Calculator": [
+                92,
+                325
+            ],
+            "Task Manager": [
+                3,
+                447
+            ],
+            "Terminal": [
+                82,
+                108
+            ],
+            "X-O": [
+                2,
+                783
+            ],
+            "Chess": [
+                1,
+                561
+            ],
+            "Recycle Bin": [
+                83,
+                560
+            ]
+        },
+        "sessions": [
+            "yousuf_1755717067.2129893",
+            "yousuf_1758958031.4560776",
+            "yousuf_1759518721.0676303",
+            "yousuf_1761642975.9161742",
+            "yousuf_1764605759.3298798",
+            "yousuf_1765820406.4886296",
+            "yousuf_1765820463.6099799"
+        ],
+        "theme": "dark",
+        "wallpaper": "Untitled2.png",
+        "window_positions": {
+            "Calendar": {
+                "x": 50,
+                "y": 119,
+                "width": 800,
+                "height": 600
+            }
+        }
+    },
+    "yousuf1": {
+        "password": "$2b$12$xdVw0gmQ.5lsWbKJz0T5nuzMy2YDjjoQKszHPKyRbUQEOXW8HkOaq",
+        "icon_positions": {},
+        "sessions": []
+    }
+}

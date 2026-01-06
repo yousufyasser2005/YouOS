@@ -1,0 +1,23 @@
+{
+    "name": "Chess",
+    "version": "1.0.0",
+    "description": "Play chess against AI or a friend! Features three difficulty levels, move undo, and a beautiful interface. Challenge yourself with the minimax AI algorithm.",
+    "author": "YouOS Team",
+    "category": "Games",
+    "icon": "♟️",
+    "size": "~60KB",
+    "features": [
+        "Play against AI or another player",
+        "Three difficulty levels (Easy, Medium, Hard)",
+        "Minimax AI with alpha-beta pruning",
+        "Move undo feature",
+        "Check and checkmate detection",
+        "Pawn promotion with choice",
+        "Beautiful glassmorphic UI"
+    ],
+    "main_file": "main.py",
+    "requirements": [
+        "PyQt6",
+        "chess"
+    ]
+}

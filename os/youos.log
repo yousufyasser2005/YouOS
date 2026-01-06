@@ -1,0 +1,265 @@
+2025-09-28 02:09:44,357 - DEBUG - Checking program: App_store, file: /home/yousuf-yasser-elshaer/codes/os/programs/app_store/app_store.py
+2025-09-28 02:09:44,358 - DEBUG - Checking program: Matrix_calculator, file: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/matrix_calculator.py
+2025-09-28 02:09:44,358 - DEBUG - Imported module: Matrix_calculator
+2025-09-28 02:09:44,358 - DEBUG - Assigned icon: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png to Matrix_calculator
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: All Programs
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: About
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: Terminal
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: Documents
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: Pictures
+2025-09-28 02:10:32,128 - DEBUG - Created menu button: Music
+2025-09-28 02:10:32,129 - DEBUG - Created menu button: Videos
+2025-09-28 02:10:32,129 - DEBUG - Created menu button: Settings
+2025-09-28 02:10:32,129 - DEBUG - Created menu button: File Manager
+2025-09-28 02:10:32,129 - DEBUG - Created menu button: Task Manager
+2025-09-28 02:10:32,129 - DEBUG - Created power button: 🔓 Logout
+2025-09-28 02:10:32,129 - DEBUG - Created power button: 🔄 Restart
+2025-09-28 02:10:32,129 - DEBUG - Created power button: ⏻ Shutdown
+2025-09-28 02:10:32,130 - DEBUG - Created frequent program button: Text Editor
+2025-09-28 02:10:32,131 - DEBUG - Created frequent program button: Yousuf Browser
+2025-09-28 02:10:32,131 - DEBUG - Created frequent program button: Media Viewer
+2025-09-28 02:10:32,131 - DEBUG - Created frequent program button: Calculator
+2025-09-28 02:10:32,131 - DEBUG - Created frequent program button: Terminal
+2025-09-28 02:10:32,131 - DEBUG - Created frequent program button: App Store
+2025-09-28 02:10:32,132 - DEBUG - Start menu created with geometry 400x550
+2025-09-28 02:10:32,132 - DEBUG - StartMenu initialized
+2025-09-28 02:10:32,133 - DEBUG - Attempting to load icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:10:32,144 - DEBUG - Successfully loaded icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:10:32,144 - DEBUG - Attempting to load icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:10:32,144 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,144 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:10:32,144 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:10:32,144 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:10:32,144 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:10:32,145 - DEBUG - Successfully loaded icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:10:32,146 - DEBUG - Attempting to load icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:10:32,146 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,146 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:10:32,146 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:10:32,146 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:10:32,146 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:10:32,147 - DEBUG - Successfully loaded icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:10:32,147 - DEBUG - Attempting to load icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:10:32,147 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,147 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:10:32,147 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:10:32,147 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:10:32,147 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:10:32,149 - DEBUG - Successfully loaded icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:10:32,149 - DEBUG - Attempting to load icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:10:32,152 - DEBUG - Successfully loaded icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:10:32,152 - DEBUG - Attempting to load icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:10:32,153 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,153 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:10:32,153 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:10:32,153 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:10:32,153 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:10:32,155 - DEBUG - Successfully loaded icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:10:32,155 - DEBUG - Attempting to load icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:10:32,155 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,155 - DEBUG - STREAM b'sBIT' 41 3
+2025-09-28 02:10:32,155 - DEBUG - b'sBIT' 41 3 (unknown)
+2025-09-28 02:10:32,155 - DEBUG - STREAM b'zTXt' 56 5094
+2025-09-28 02:10:32,155 - DEBUG - STREAM b'iTXt' 5162 790
+2025-09-28 02:10:32,155 - DEBUG - STREAM b'IDAT' 5964 8192
+2025-09-28 02:10:32,226 - DEBUG - Successfully loaded icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:10:32,226 - DEBUG - Attempting to load icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:10:32,226 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:10:32,226 - DEBUG - STREAM b'pHYs' 41 9
+2025-09-28 02:10:32,226 - DEBUG - STREAM b'iTXt' 62 1452
+2025-09-28 02:10:32,226 - DEBUG - STREAM b'IDAT' 1526 295499
+2025-09-28 02:10:32,249 - DEBUG - Successfully loaded icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:10:32,250 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:33,250 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:34,251 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:35,251 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:36,252 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:37,252 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:37,319 - DEBUG - Start menu shown at position +10+483
+2025-09-28 02:10:38,253 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:39,254 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:40,254 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:41,255 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:42,255 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:43,256 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:44,257 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:45,257 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:46,258 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:47,260 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:48,260 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:49,261 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:50,262 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:51,262 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:52,263 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:53,264 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:54,264 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:55,265 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:56,265 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:57,266 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:58,266 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:10:59,267 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:00,268 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:01,268 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:02,269 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:03,269 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:04,270 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:04,487 - DEBUG - Start menu hidden
+2025-09-28 02:11:05,270 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:05,672 - DEBUG - Start menu shown at position +10+483
+2025-09-28 02:11:06,271 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:11:11,322 - ERROR - Error getting battery info: invalid command name ".!frame5.!frame3.!frame3.!frame.!canvas"
+2025-09-28 02:12:14,374 - DEBUG - Checking program: App_store, file: /home/yousuf-yasser-elshaer/codes/os/programs/app_store/app_store.py
+2025-09-28 02:12:14,374 - DEBUG - Checking program: Matrix_calculator, file: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/matrix_calculator.py
+2025-09-28 02:12:14,375 - DEBUG - Imported module: Matrix_calculator
+2025-09-28 02:12:14,375 - DEBUG - Assigned icon: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png to Matrix_calculator
+2025-09-28 02:12:27,212 - DEBUG - Created menu button: All Programs
+2025-09-28 02:12:27,213 - DEBUG - Created menu button: About
+2025-09-28 02:12:27,214 - DEBUG - Created menu button: Terminal
+2025-09-28 02:12:27,215 - DEBUG - Created menu button: Documents
+2025-09-28 02:12:27,216 - DEBUG - Created menu button: Pictures
+2025-09-28 02:12:27,217 - DEBUG - Created menu button: Music
+2025-09-28 02:12:27,218 - DEBUG - Created menu button: Videos
+2025-09-28 02:12:27,219 - DEBUG - Created menu button: Settings
+2025-09-28 02:12:27,220 - DEBUG - Created menu button: File Manager
+2025-09-28 02:12:27,221 - DEBUG - Created menu button: Task Manager
+2025-09-28 02:12:27,222 - DEBUG - Created power button: 🔓 Logout
+2025-09-28 02:12:27,223 - DEBUG - Created power button: 🔄 Restart
+2025-09-28 02:12:27,224 - DEBUG - Created power button: ⏻ Shutdown
+2025-09-28 02:12:27,227 - DEBUG - Created frequent program button: Text Editor
+2025-09-28 02:12:27,228 - DEBUG - Created frequent program button: Yousuf Browser
+2025-09-28 02:12:27,229 - DEBUG - Created frequent program button: Media Viewer
+2025-09-28 02:12:27,230 - DEBUG - Created frequent program button: Calculator
+2025-09-28 02:12:27,231 - DEBUG - Created frequent program button: Terminal
+2025-09-28 02:12:27,232 - DEBUG - Created frequent program button: App Store
+2025-09-28 02:12:27,233 - DEBUG - Start menu created with geometry 400x550
+2025-09-28 02:12:27,233 - DEBUG - StartMenu initialized
+2025-09-28 02:12:27,233 - DEBUG - Attempting to load icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:12:27,246 - DEBUG - Successfully loaded icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:12:27,246 - DEBUG - Attempting to load icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:12:27,246 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,246 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:12:27,246 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:12:27,246 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:12:27,246 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:12:27,248 - DEBUG - Successfully loaded icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:12:27,248 - DEBUG - Attempting to load icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:12:27,248 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,248 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:12:27,248 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:12:27,248 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:12:27,248 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:12:27,249 - DEBUG - Successfully loaded icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:12:27,250 - DEBUG - Attempting to load icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:12:27,250 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,250 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:12:27,250 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:12:27,250 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:12:27,250 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:12:27,251 - DEBUG - Successfully loaded icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:12:27,251 - DEBUG - Attempting to load icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:12:27,255 - DEBUG - Successfully loaded icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:12:27,255 - DEBUG - Attempting to load icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:12:27,255 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,255 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:12:27,255 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:12:27,255 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:12:27,255 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:12:27,257 - DEBUG - Successfully loaded icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:12:27,257 - DEBUG - Attempting to load icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:12:27,257 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,257 - DEBUG - STREAM b'sBIT' 41 3
+2025-09-28 02:12:27,257 - DEBUG - b'sBIT' 41 3 (unknown)
+2025-09-28 02:12:27,257 - DEBUG - STREAM b'zTXt' 56 5094
+2025-09-28 02:12:27,257 - DEBUG - STREAM b'iTXt' 5162 790
+2025-09-28 02:12:27,257 - DEBUG - STREAM b'IDAT' 5964 8192
+2025-09-28 02:12:27,324 - DEBUG - Successfully loaded icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:12:27,325 - DEBUG - Attempting to load icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:12:27,325 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:12:27,325 - DEBUG - STREAM b'pHYs' 41 9
+2025-09-28 02:12:27,325 - DEBUG - STREAM b'iTXt' 62 1452
+2025-09-28 02:12:27,325 - DEBUG - STREAM b'IDAT' 1526 295499
+2025-09-28 02:12:27,347 - DEBUG - Successfully loaded icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:12:27,347 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:12:28,348 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:12:29,348 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:12:29,525 - DEBUG - Start menu shown at position +10+483
+2025-09-28 02:12:30,349 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:12:34,715 - ERROR - Error getting battery info: invalid command name ".!frame3.!frame3.!frame3.!frame.!canvas"
+2025-09-28 02:19:51,217 - DEBUG - Checking program: App_store, file: /home/yousuf-yasser-elshaer/codes/os/programs/app_store/app_store.py
+2025-09-28 02:19:51,217 - DEBUG - Checking program: Matrix_calculator, file: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/matrix_calculator.py
+2025-09-28 02:19:51,217 - DEBUG - Imported module: Matrix_calculator
+2025-09-28 02:19:51,217 - DEBUG - Assigned icon: /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png to Matrix_calculator
+2025-09-28 02:20:06,154 - DEBUG - Created menu button: All Programs
+2025-09-28 02:20:06,155 - DEBUG - Created menu button: About
+2025-09-28 02:20:06,161 - DEBUG - Created menu button: Terminal
+2025-09-28 02:20:06,162 - DEBUG - Created menu button: Documents
+2025-09-28 02:20:06,163 - DEBUG - Created menu button: Pictures
+2025-09-28 02:20:06,164 - DEBUG - Created menu button: Music
+2025-09-28 02:20:06,165 - DEBUG - Created menu button: Videos
+2025-09-28 02:20:06,166 - DEBUG - Created menu button: Settings
+2025-09-28 02:20:06,167 - DEBUG - Created menu button: File Manager
+2025-09-28 02:20:06,168 - DEBUG - Created menu button: Task Manager
+2025-09-28 02:20:06,169 - DEBUG - Created power button: 🔓 Logout
+2025-09-28 02:20:06,170 - DEBUG - Created power button: 🔄 Restart
+2025-09-28 02:20:06,171 - DEBUG - Created power button: ⏻ Shutdown
+2025-09-28 02:20:06,174 - DEBUG - Created frequent program button: Text Editor
+2025-09-28 02:20:06,175 - DEBUG - Created frequent program button: Yousuf Browser
+2025-09-28 02:20:06,176 - DEBUG - Created frequent program button: Media Viewer
+2025-09-28 02:20:06,177 - DEBUG - Created frequent program button: Calculator
+2025-09-28 02:20:06,178 - DEBUG - Created frequent program button: Terminal
+2025-09-28 02:20:06,179 - DEBUG - Created frequent program button: App Store
+2025-09-28 02:20:06,180 - DEBUG - Start menu created with geometry 400x550
+2025-09-28 02:20:06,180 - DEBUG - StartMenu initialized
+2025-09-28 02:20:06,180 - DEBUG - Attempting to load icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:20:06,193 - DEBUG - Successfully loaded icon for Text Editor from /home/yousuf-yasser-elshaer/codes/os/icons/text.png
+2025-09-28 02:20:06,194 - DEBUG - Attempting to load icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:20:06,194 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,194 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:20:06,194 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:20:06,194 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:20:06,194 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:20:06,195 - DEBUG - Successfully loaded icon for Settings from /home/yousuf-yasser-elshaer/codes/os/icons/settings.png
+2025-09-28 02:20:06,196 - DEBUG - Attempting to load icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:20:06,196 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,196 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:20:06,196 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:20:06,196 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:20:06,196 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:20:06,197 - DEBUG - Successfully loaded icon for File Manager from /home/yousuf-yasser-elshaer/codes/os/icons/file.png
+2025-09-28 02:20:06,197 - DEBUG - Attempting to load icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:20:06,197 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,197 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:20:06,197 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:20:06,197 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:20:06,197 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:20:06,199 - DEBUG - Successfully loaded icon for Media Viewer from /home/yousuf-yasser-elshaer/codes/os/icons/media.png
+2025-09-28 02:20:06,199 - DEBUG - Attempting to load icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:20:06,202 - DEBUG - Successfully loaded icon for Yousuf Browser from /home/yousuf-yasser-elshaer/codes/os/icons/browser.png
+2025-09-28 02:20:06,202 - DEBUG - Attempting to load icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:20:06,202 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,202 - DEBUG - STREAM b'sRGB' 41 1
+2025-09-28 02:20:06,202 - DEBUG - STREAM b'sBIT' 54 4
+2025-09-28 02:20:06,202 - DEBUG - b'sBIT' 54 4 (unknown)
+2025-09-28 02:20:06,202 - DEBUG - STREAM b'IDAT' 70 8192
+2025-09-28 02:20:06,204 - DEBUG - Successfully loaded icon for My Computer from /home/yousuf-yasser-elshaer/codes/os/icons/computer.png
+2025-09-28 02:20:06,204 - DEBUG - Attempting to load icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:20:06,205 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,205 - DEBUG - STREAM b'sBIT' 41 3
+2025-09-28 02:20:06,205 - DEBUG - b'sBIT' 41 3 (unknown)
+2025-09-28 02:20:06,205 - DEBUG - STREAM b'zTXt' 56 5094
+2025-09-28 02:20:06,205 - DEBUG - STREAM b'iTXt' 5162 790
+2025-09-28 02:20:06,205 - DEBUG - STREAM b'IDAT' 5964 8192
+2025-09-28 02:20:06,272 - DEBUG - Successfully loaded icon for App Store from /home/yousuf-yasser-elshaer/codes/os/icons/store.png
+2025-09-28 02:20:06,272 - DEBUG - Attempting to load icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:20:06,273 - DEBUG - STREAM b'IHDR' 16 13
+2025-09-28 02:20:06,273 - DEBUG - STREAM b'pHYs' 41 9
+2025-09-28 02:20:06,273 - DEBUG - STREAM b'iTXt' 62 1452
+2025-09-28 02:20:06,273 - DEBUG - STREAM b'IDAT' 1526 295499
+2025-09-28 02:20:06,295 - DEBUG - Successfully loaded icon for Matrix_calculator from /home/yousuf-yasser-elshaer/codes/os/programs/matrix_calculator/icon.png
+2025-09-28 02:20:06,295 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:20:07,296 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:20:08,296 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:20:09,230 - DEBUG - Start menu shown at position +10+483
+2025-09-28 02:20:09,297 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:20:10,298 - DEBUG - Battery: 100%, Plugged: True, Warned_25: False, Warned_10: False
+2025-09-28 02:20:15,443 - ERROR - Error getting battery info: invalid command name ".!frame3.!frame3.!frame3.!frame.!canvas"

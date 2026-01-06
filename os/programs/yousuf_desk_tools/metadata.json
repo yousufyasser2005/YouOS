@@ -1,0 +1,33 @@
+{
+    "name": "Yousuf Desk Tools",
+    "version": "1.0.1",
+    "description": "Complete office productivity suite with Word Processor, Spreadsheet, and Presentation tools",
+    "author": "Yousuf Yasser Elshaer",
+    "category": "Productivity",
+    "size": "~250 KB",
+    "icon": "📊",
+    "entry_point": "main.py",
+    "dependencies": [
+        "PyQt6"
+    ],
+    "features": [
+        "Word Processor with rich text formatting",
+        "Spreadsheet with formula support (SUM, AVERAGE, COUNT)",
+        "Presentation creator with slideshow mode",
+        "Modern glassmorphic UI design",
+        "File import/export (HTML, JSON, CSV)",
+        "Print support for documents",
+        "Keyboard shortcuts",
+        "Auto-save functionality"
+    ],
+    "screenshots": [],
+    "changelog": {
+        "1.0.0": [
+            "Initial release",
+            "Word processor with formatting tools",
+            "Spreadsheet with formula engine",
+            "Presentation with fullscreen slideshow",
+            "Integrated launcher interface"
+        ]
+    }
+}

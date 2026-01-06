@@ -1,0 +1,30 @@
+{
+    "name": "WhatsApp",
+    "version": "1.0.0",
+    "description": "Full-featured WhatsApp Web client with persistent login. Send messages, make calls, share media, and stay connected with friends and family.",
+    "author": "YouOS Team",
+    "category": "Communication",
+    "icon": "💬",
+    "size": "~150 KB",
+    "features": [
+        "Full WhatsApp Web functionality",
+        "Persistent login sessions",
+        "Send and receive messages",
+        "Voice and video calls",
+        "Media sharing (photos, videos, documents)",
+        "Group chats",
+        "Status updates",
+        "Dark mode support",
+        "Notifications"
+    ],
+    "requirements": [
+        "PyQt6",
+        "PyQt6-WebEngine",
+        "Internet connection",
+        "WhatsApp account"
+    ],
+    "main_file": "main.py",
+    "screenshot": null,
+    "homepage": "https://web.whatsapp.com",
+    "license": "MIT"
+}
