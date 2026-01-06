@@ -515,6 +515,7 @@ class NotificationPopup(GlassFrame):
     """Individual notification popup"""
     
     closed = pyqtSignal()
+    clicked = pyqtSignal(str)  # Emits notification type when clicked
     
     def __init__(self, notification, parent=None):
         super().__init__(parent, opacity=0.25)
@@ -587,8 +588,11 @@ class NotificationPopup(GlassFrame):
         self.deleteLater()
     
     def mousePressEvent(self, event):
-        """Handle click to dismiss"""
+        """Handle click to dismiss or trigger action"""
         if event.button() == Qt.MouseButton.LeftButton:
+            # Check if this is an update notification
+            if self.notification.get('title') == 'System Updates Available':
+                self.clicked.emit('update')
             self.fade_out()
         super().mousePressEvent(event)
 
@@ -2107,8 +2111,11 @@ class DesktopManager(QWidget):
         # Start WhatsApp notification service if not running
         self.start_whatsapp_service()
         
-        # Initialize sports notification service - REMOVED
-        # self.init_sports_notifications()
+        # Initialize update manager
+        self.update_manager = None
+        QTimer.singleShot(5000, self.initialize_updates)  # Start after 5 seconds
+        
+        print(f"✅ Desktop initialized for user: {username}")
     
     def scan_installed_programs(self):
         self.installed_programs = []
@@ -2604,6 +2611,9 @@ class DesktopManager(QWidget):
     def show_notification_popup(self, notification):
         """Show a notification popup"""
         popup = NotificationPopup(notification, self)
+        
+        # Connect click handler for update notifications
+        popup.clicked.connect(self.handle_notification_click)
         
         # Position popup in top-right corner
         screen_geometry = self.screen().geometry()
@@ -3360,6 +3370,69 @@ class DesktopManager(QWidget):
     def pin_live_score(self, match_data):
         """Sports notifications removed"""
         pass
+    
+    def handle_notification_click(self, notification_type):
+        """Handle notification click events"""
+        if notification_type == 'update':
+            # Start update installation
+            if self.update_manager and self.update_manager.pending_updates:
+                self.update_manager.install_updates()
+            else:
+                self.add_notification(
+                    "No Updates",
+                    "No pending updates to install",
+                    "ℹ️",
+                    "Now"
+                )
+    
+    def initialize_updates(self):
+        """Initialize system update manager"""
+        try:
+            from sysupdate import UpdateManager
+            self.update_manager = UpdateManager(self)
+            print("✅ System update manager initialized")
+        except Exception as e:
+            print(f"❌ Failed to initialize update manager: {e}")
+    
+    def check_for_updates(self):
+        """Manually check for system updates"""
+        if self.update_manager:
+            # Trigger immediate check
+            updates = self.update_manager.update_checker.check_for_updates()
+            if updates:
+                self.update_manager.on_updates_available(updates)
+            else:
+                self.add_notification(
+                    "System Up to Date",
+                    "YouOS is running the latest version",
+                    "✅",
+                    "Now"
+                )
+        else:
+            self.add_notification(
+                "Update Service Unavailable",
+                "Update manager is not initialized",
+                "❌",
+                "Now"
+            )
+    
+    def install_system_updates(self):
+        """Install pending system updates"""
+        if self.update_manager and self.update_manager.pending_updates:
+            self.update_manager.install_updates()
+        else:
+            self.add_notification(
+                "No Updates Available",
+                "There are no pending updates to install",
+                "ℹ️",
+                "Now"
+            )
+    
+    def closeEvent(self, event):
+        """Clean up resources on close"""
+        if self.update_manager:
+            self.update_manager.stop()
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
