@@ -116,14 +116,14 @@ class BatteryWarningDialog(GlassFrame):
 
 
 class ProgramWindow(GlassFrame):
-    """Window container for running programs"""
+    """Window container for running programs with Windows 7 Aero glass effect"""
     
     closed = pyqtSignal(str)  # Emits window ID
     minimized = pyqtSignal(str)
     focused = pyqtSignal(str)
     
     def __init__(self, window_id, title, icon, content_widget, parent=None):
-        super().__init__(parent, opacity=0.20)
+        super().__init__(parent, opacity=0.05)  # More transparent for glass effect
         self.window_id = window_id
         self.title = title
         self.icon = icon
@@ -141,22 +141,81 @@ class ProgramWindow(GlassFrame):
         else:
             self.resize(900, 650)
         
+        self.setup_aero_glass()
         self.setup_ui()
         self.setup_dragging()
+    
+    def setup_aero_glass(self):
+        """Setup Windows 7 Aero glass effect"""
+        # Enhanced shadow for depth
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(40)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setOffset(0, 8)
+        self.setGraphicsEffect(shadow)
+        
+        # Enable translucent background
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    
+    def paintEvent(self, event):
+        """Custom paint for Windows 7 Aero glass effect"""
+        from PyQt6.QtCore import QRectF
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Create main rectangle with proper bounds
+        rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 12, 12)
+        
+        # Windows 7 Aero glass gradient
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0, QColor(240, 248, 255, 80))
+        gradient.setColorAt(0.3, QColor(220, 235, 250, 70))
+        gradient.setColorAt(0.7, QColor(200, 220, 240, 60))
+        gradient.setColorAt(1, QColor(180, 200, 230, 50))
+        
+        painter.fillPath(path, gradient)
+        
+        # Glass highlight on top edge
+        highlight_gradient = QLinearGradient(0, 0, 0, 60)
+        highlight_gradient.setColorAt(0, QColor(255, 255, 255, 25))
+        highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+        
+        highlight_rect = QRectF(4, 4, self.width() - 8, 50)
+        highlight_path = QPainterPath()
+        highlight_path.addRoundedRect(highlight_rect, 10, 10)
+        painter.fillPath(highlight_path, highlight_gradient)
+        
+        # Very transparent glass borders
+        painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
+        painter.drawPath(path)
+        
+        # Inner glass border for subtle depth
+        inner_rect = QRectF(3, 3, self.width() - 6, self.height() - 6)
+        inner_path = QPainterPath()
+        inner_path.addRoundedRect(inner_rect, 11, 11)
+        painter.setPen(QPen(QColor(200, 220, 240, 10), 1))
+        painter.drawPath(inner_path)
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(5, 5, 5, 5)  # Add margins for borders
         layout.setSpacing(0)
         
-        # Title bar
+        # Title bar with Windows 7 Aero glass
         self.title_bar = QWidget()
         self.title_bar.setFixedHeight(40)
         self.title_bar.setStyleSheet(f"""
             QWidget {{
-                background: rgba(26, 26, 46, 0.95);
-                border-top-left-radius: 16px;
-                border-top-right-radius: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(240, 248, 255, 200),
+                    stop:0.5 rgba(220, 235, 250, 180),
+                    stop:1 rgba(200, 220, 240, 160));
+                border-top-left-radius: 12px;
+                border-top-right-radius: 12px;
+                border-bottom: 1px solid rgba(180, 200, 230, 100);
             }}
         """)
         
@@ -175,32 +234,71 @@ class ProgramWindow(GlassFrame):
         
         title_layout.addStretch()
         
-        # Window controls
+        # Window controls with glass effect
         btn_style = """
             QPushButton {{
-                background: rgba(255, 255, 255, 0.1);
-                border: none;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 255, 255, 0.3),
+                    stop:1 rgba(200, 220, 240, 0.2));
+                border: 1px solid rgba(255, 255, 255, 0.4);
                 border-radius: 6px;
-                color: white;
+                color: rgba(60, 80, 120, 200);
                 font-size: 14px;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.2);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 255, 255, 0.5),
+                    stop:1 rgba(220, 235, 250, 0.4));
+                border: 1px solid rgba(255, 255, 255, 0.6);
             }}
         """
         
         minimize_btn = QPushButton("−")
         minimize_btn.setFixedSize(30, 30)
         minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        minimize_btn.setStyleSheet(btn_style)
+        minimize_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 255, 255, 0.3),
+                    stop:1 rgba(200, 220, 240, 0.2));
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 6px;
+                color: rgba(60, 80, 120, 200);
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(128, 128, 128, 0.6),
+                    stop:1 rgba(100, 100, 100, 0.4));
+                border: 1px solid rgba(128, 128, 128, 0.8);
+            }
+        """)
         minimize_btn.clicked.connect(self.minimize)
         title_layout.addWidget(minimize_btn)
         
         self.maximize_btn = QPushButton("□")
         self.maximize_btn.setFixedSize(30, 30)
         self.maximize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.maximize_btn.setStyleSheet(btn_style)
+        self.maximize_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 255, 255, 0.3),
+                    stop:1 rgba(200, 220, 240, 0.2));
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 6px;
+                color: rgba(60, 80, 120, 200);
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(135, 206, 250, 0.6),
+                    stop:1 rgba(100, 149, 237, 0.4));
+                border: 1px solid rgba(135, 206, 250, 0.8);
+            }
+        """)
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         title_layout.addWidget(self.maximize_btn)
         
@@ -208,39 +306,153 @@ class ProgramWindow(GlassFrame):
         close_btn.setFixedSize(30, 30)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
-            QPushButton {{
-                background: rgba(239, 68, 68, 0.3);
-                border: none;
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 200, 200, 0.4),
+                    stop:1 rgba(239, 68, 68, 0.3));
+                border: 1px solid rgba(255, 255, 255, 0.4);
                 border-radius: 6px;
-                color: white;
+                color: rgba(150, 50, 50, 200);
                 font-size: 18px;
                 font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background: rgba(239, 68, 68, 0.8);
-            }}
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(255, 100, 100, 0.8),
+                    stop:1 rgba(220, 38, 38, 0.6));
+                border: 1px solid rgba(255, 0, 0, 0.8);
+                color: white;
+            }
         """)
         close_btn.clicked.connect(self.close_window)
         title_layout.addWidget(close_btn)
         
         layout.addWidget(self.title_bar)
         
-        # Content area
+        # Content area with solid black background
         content_container = QWidget()
-        content_container.setStyleSheet("background: transparent;")
+        content_container.setStyleSheet("""
+            QWidget {
+                background: #000000;
+                border-bottom-left-radius: 12px;
+                border-bottom-right-radius: 12px;
+            }
+        """)
         content_layout = QVBoxLayout(content_container)
-        content_layout.setContentsMargins(5, 5, 5, 5)
+        content_layout.setContentsMargins(8, 5, 8, 8)
         content_layout.addWidget(self.content_widget)
         
         layout.addWidget(content_container)
     
     def setup_dragging(self):
         self.dragging = False
+        self.resizing = False
+        self.resize_edge = None
         self.drag_position = QPoint()
+        self.resize_start_pos = QPoint()
+        self.resize_start_geometry = QRect()
+        
         self.title_bar.mousePressEvent = self.start_drag
         self.title_bar.mouseMoveEvent = self.do_drag
         self.title_bar.mouseReleaseEvent = self.end_drag
         self.title_bar.mouseDoubleClickEvent = lambda e: self.toggle_maximize()
+    
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            edge = self.get_resize_edge(event.position().toPoint())
+            if edge:
+                self.resizing = True
+                self.resize_edge = edge
+                self.resize_start_pos = event.globalPosition().toPoint()
+                self.resize_start_geometry = self.geometry()
+            self.focused.emit(self.window_id)
+        super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        if self.resizing and self.resize_edge:
+            self.do_resize(event.globalPosition().toPoint())
+        else:
+            edge = self.get_resize_edge(event.position().toPoint())
+            if edge:
+                self.set_resize_cursor(edge)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        self.resizing = False
+        self.resize_edge = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseReleaseEvent(event)
+    
+    def get_resize_edge(self, pos):
+        """Determine which edge is being hovered for resizing"""
+        margin = 8
+        w, h = self.width(), self.height()
+        
+        if pos.x() <= margin and pos.y() <= margin:
+            return 'top-left'
+        elif pos.x() >= w - margin and pos.y() <= margin:
+            return 'top-right'
+        elif pos.x() <= margin and pos.y() >= h - margin:
+            return 'bottom-left'
+        elif pos.x() >= w - margin and pos.y() >= h - margin:
+            return 'bottom-right'
+        elif pos.x() <= margin:
+            return 'left'
+        elif pos.x() >= w - margin:
+            return 'right'
+        elif pos.y() <= margin:
+            return 'top'
+        elif pos.y() >= h - margin:
+            return 'bottom'
+        return None
+    
+    def set_resize_cursor(self, edge):
+        """Set appropriate cursor for resize edge"""
+        cursors = {
+            'top': Qt.CursorShape.SizeVerCursor,
+            'bottom': Qt.CursorShape.SizeVerCursor,
+            'left': Qt.CursorShape.SizeHorCursor,
+            'right': Qt.CursorShape.SizeHorCursor,
+            'top-left': Qt.CursorShape.SizeFDiagCursor,
+            'bottom-right': Qt.CursorShape.SizeFDiagCursor,
+            'top-right': Qt.CursorShape.SizeBDiagCursor,
+            'bottom-left': Qt.CursorShape.SizeBDiagCursor,
+        }
+        self.setCursor(cursors.get(edge, Qt.CursorShape.ArrowCursor))
+    
+    def do_resize(self, global_pos):
+        """Perform window resizing"""
+        if not self.resize_edge or self.is_maximized:
+            return
+        
+        delta = global_pos - self.resize_start_pos
+        rect = QRect(self.resize_start_geometry)
+        
+        if 'left' in self.resize_edge:
+            rect.setLeft(rect.left() + delta.x())
+        if 'right' in self.resize_edge:
+            rect.setRight(rect.right() + delta.x())
+        if 'top' in self.resize_edge:
+            rect.setTop(rect.top() + delta.y())
+        if 'bottom' in self.resize_edge:
+            rect.setBottom(rect.bottom() + delta.y())
+        
+        # Enforce minimum size
+        if rect.width() < self.minimumWidth():
+            if 'left' in self.resize_edge:
+                rect.setLeft(rect.right() - self.minimumWidth())
+            else:
+                rect.setRight(rect.left() + self.minimumWidth())
+        
+        if rect.height() < self.minimumHeight():
+            if 'top' in self.resize_edge:
+                rect.setTop(rect.bottom() - self.minimumHeight())
+            else:
+                rect.setBottom(rect.top() + self.minimumHeight())
+        
+        self.setGeometry(rect)
     
     def start_drag(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
