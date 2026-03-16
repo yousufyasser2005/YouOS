@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""
+YouOS System Status - Display system information
+"""
+
+import sys
+import time
+from pathlib import Path
+
+# Add the OS directory to Python path
+os_dir = Path(__file__).parent
+sys.path.insert(0, str(os_dir))
+
+def format_uptime(seconds):
+    """Format uptime in human readable format"""
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    minutes = int((seconds % 3600) // 60)
+    
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m"
+    elif hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
+
+def format_bytes(bytes_val):
+    """Format bytes in human readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes_val < 1024.0:
+            return f"{bytes_val:.1f} {unit}"
+        bytes_val /= 1024.0
+    return f"{bytes_val:.1f} PB"
+
+def main():
+    """Display system status"""
+    print("=" * 60)
+    print("🖥️  YouOS System Status")
+    print("=" * 60)
+    
+    try:
+        from youos_kernel import get_kernel
+        kernel = get_kernel()
+        
+        # Get system info
+        info = kernel.get_system_info()
+        
+        print(f"📋 Version: {info['version']}")
+        print(f"⏰ Uptime: {format_uptime(info['uptime'])}")
+        print(f"🔧 Processes: {info['processes']}")
+        
+        # Hardware info
+        hw = info['hardware']
+        cpu = hw['cpu']
+        memory = hw['memory']
+        
+        print(f"\n💻 Hardware:")
+        print(f"   CPU: {cpu['model']} ({cpu['cores']} cores)")
+        print(f"   Architecture: {cpu['architecture']}")
+        print(f"   Memory: {format_bytes(memory['total_kb'] * 1024)} total")
+        print(f"           {format_bytes(memory['available_kb'] * 1024)} available")
+        
+        # GPU info
+        gpu_list = hw['gpu']
+        if gpu_list:
+            print(f"   GPU: {gpu_list[0]['description']}")
+        
+        # Services
+        services = info['services']
+        running_services = [name for name, status in services.items() if status == 'running']
+        
+        print(f"\n🔧 Services:")
+        print(f"   Total: {len(services)}")
+        print(f"   Running: {len(running_services)}")
+        
+        if running_services:
+            print(f"   Active: {', '.join(running_services)}")
+        
+        # System config
+        config = info['config']
+        print(f"\n⚙️  Configuration:")
+        print(f"   Hostname: {config.get('hostname', 'unknown')}")
+        print(f"   Timezone: {config.get('timezone', 'unknown')}")
+        print(f"   Locale: {config.get('locale', 'unknown')}")
+        
+    except ImportError:
+        print("❌ YouOS Kernel not available")
+        print("Running in compatibility mode")
+        
+        # Fallback system info
+        import platform
+        print(f"📋 System: {platform.system()} {platform.release()}")
+        print(f"💻 Machine: {platform.machine()}")
+        print(f"🐍 Python: {platform.python_version()}")
+        
+    except Exception as e:
+        print(f"❌ Error getting system info: {e}")
+    
+    print("=" * 60)
+
+if __name__ == '__main__':
+    main()

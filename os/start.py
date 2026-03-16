@@ -109,9 +109,11 @@ class StartMenu(GlassFrame):
     
     def __init__(self, installed_programs, desktop_manager, parent=None):
         super().__init__(parent, opacity=0.20)
-        self.setFixedSize(600, 700)
+        self.setFixedSize(900, 700)  # Made wider to fit more programs
         self.installed_programs = installed_programs
         self.desktop_manager = desktop_manager
+        self.username = desktop_manager.username
+        self.auth = desktop_manager.auth
         self.setup_ui()
     
     def setup_ui(self):
@@ -125,9 +127,39 @@ class StartMenu(GlassFrame):
         logo.setStyleSheet("color: #3b82f6; font-size: 24px; font-weight: bold;")
         header.addWidget(logo)
         header.addStretch()
-        user_label = QLabel("Welcome, User!")
-        user_label.setStyleSheet("color: #9ca3af; font-size: 12px;")
-        header.addWidget(user_label)
+        
+        # User profile section
+        user_section = QVBoxLayout()
+        user_section.setSpacing(5)
+        user_section.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Profile picture
+        try:
+            from profile_widget import ProfilePictureWidget
+            user_data = self.auth.get_user_data(self.username)
+            profile_pic = ProfilePictureWidget(
+                username=self.username,
+                profile_picture_path=user_data.get('profile_picture', ''),
+                size=50
+            )
+            user_section.addWidget(profile_pic, alignment=Qt.AlignmentFlag.AlignCenter)
+        except ImportError:
+            # Fallback if ProfilePictureWidget not available
+            profile_icon = QLabel("👤")
+            profile_icon.setStyleSheet("font-size: 32px;")
+            profile_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            user_section.addWidget(profile_icon)
+        
+        # Username
+        user_label = QLabel(self.username)
+        user_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
+        user_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        user_section.addWidget(user_label)
+        
+        user_widget = QWidget()
+        user_widget.setLayout(user_section)
+        header.addWidget(user_widget)
+        
         layout.addLayout(header)
         
         # Search bar
@@ -247,7 +279,7 @@ class StartMenu(GlassFrame):
             btn.clicked.connect(lambda checked, n=name: self.on_program_click(n))
             btn.pin_toggled.connect(self.pin_toggled.emit)
             btn.add_to_desktop.connect(self.add_to_desktop.emit)
-            self.programs_layout.addWidget(btn, i // 4, i % 4)
+            self.programs_layout.addWidget(btn, i // 6, i % 6)  # Changed to 6 columns instead of 4
     
     def filter_programs(self, text):
         """Filter programs based on search text"""

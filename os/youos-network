@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""
+YouOS Network Configuration Utility
+Command-line tool for managing network connections
+"""
+
+import sys
+import argparse
+from pathlib import Path
+
+# Add OS directory to path
+os_dir = Path(__file__).parent
+sys.path.insert(0, str(os_dir))
+
+from network_manager import NetworkManager
+
+def list_interfaces(nm):
+    """List all network interfaces"""
+    print("Network Interfaces:")
+    print("=" * 60)
+    
+    interfaces = nm.get_interfaces()
+    if not interfaces:
+        print("No network interfaces found")
+        return
+    
+    for iface in interfaces:
+        print(f"{iface.name} ({iface.type})")
+        print(f"  Status: {iface.status}")
+        print(f"  MAC: {iface.mac_address or 'N/A'}")
+        print(f"  IP: {iface.ip_address or 'Not assigned'}")
+        print(f"  Netmask: {iface.netmask or 'N/A'}")
+        print()
+
+def scan_wifi(nm):
+    """Scan for WiFi networks"""
+    print("Scanning for WiFi networks...")
+    networks = nm.scan_wifi()
+    
+    if not networks:
+        print("No WiFi networks found or no WiFi adapter available")
+        return
+    
+    print("\nAvailable WiFi Networks:")
+    print("=" * 60)
+    
+    for network in sorted(networks, key=lambda x: x.signal_strength, reverse=True):
+        security_icon = "🔒" if network.encrypted else "🔓"
+        signal_bars = "█" * (network.signal_strength // 20)
+        
+        print(f"{security_icon} {network.ssid}")
+        print(f"  Signal: {signal_bars} {network.signal_strength}%")
+        print(f"  Security: {network.security}")
+        print(f"  Frequency: {network.frequency}")
+        print()
+
+def connect_wifi(nm, ssid, password=None):
+    """Connect to WiFi network"""
+    print(f"Connecting to {ssid}...")
+    
+    if nm.connect_wifi(ssid, password):
+        print(f"✓ Successfully connected to {ssid}")
+    else:
+        print(f"✗ Failed to connect to {ssid}")
+
+def disconnect_wifi(nm):
+    """Disconnect from WiFi"""
+    print("Disconnecting from WiFi...")
+    
+    if nm.disconnect_wifi():
+        print("✓ WiFi disconnected")
+    else:
+        print("✗ Failed to disconnect WiFi")
+
+def configure_ethernet(nm, interface, mode, ip=None, netmask=None, gateway=None):
+    """Configure ethernet interface"""
+    print(f"Configuring {interface} in {mode} mode...")
+    
+    if nm.configure_ethernet(interface, mode, ip, netmask, gateway):
+        print(f"✓ {interface} configured successfully")
+    else:
+        print(f"✗ Failed to configure {interface}")
+
+def show_stats(nm):
+    """Show network statistics"""
+    print("Network Statistics:")
+    print("=" * 60)
+    
+    stats = nm.get_network_stats()
+    if not stats:
+        print("No network statistics available")
+        return
+    
+    for interface, data in stats.items():
+        print(f"{interface}:")
+        print(f"  RX: {data['rx_bytes']:,} bytes ({data['rx_packets']:,} packets)")
+        print(f"  TX: {data['tx_bytes']:,} bytes ({data['tx_packets']:,} packets)")
+        print()
+
+def ping_host(nm, host, count):
+    """Ping a host"""
+    print(f"Pinging {host} ({count} packets)...")
+    
+    success, stats = nm.ping(host, count)
+    
+    if success:
+        print(f"✓ Ping successful")
+        print(f"  Packet loss: {stats['packet_loss']}%")
+        if 'avg_ms' in stats:
+            print(f"  Average time: {stats['avg_ms']:.1f}ms")
+    else:
+        print(f"✗ Ping failed")
+        if 'error' in stats:
+            print(f"  Error: {stats['error']}")
+
+def enable_firewall(nm, rules_file=None):
+    """Enable firewall"""
+    rules = []
+    
+    if rules_file and Path(rules_file).exists():
+        import json
+        with open(rules_file) as f:
+            rules = json.load(f)
+    
+    if nm.enable_firewall(rules):
+        print("✓ Firewall enabled")
+        if rules:
+            print(f"  Applied {len(rules)} rules")
+    else:
+        print("✗ Failed to enable firewall")
+
+def disable_firewall(nm):
+    """Disable firewall"""
+    if nm.disable_firewall():
+        print("✓ Firewall disabled")
+    else:
+        print("✗ Failed to disable firewall")
+
+def main():
+    parser = argparse.ArgumentParser(description="YouOS Network Configuration")
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # List interfaces
+    subparsers.add_parser('list', help='List network interfaces')
+    
+    # WiFi commands
+    wifi_parser = subparsers.add_parser('wifi', help='WiFi management')
+    wifi_subparsers = wifi_parser.add_subparsers(dest='wifi_action')
+    
+    wifi_subparsers.add_parser('scan', help='Scan for WiFi networks')
+    
+    connect_parser = wifi_subparsers.add_parser('connect', help='Connect to WiFi')
+    connect_parser.add_argument('ssid', help='WiFi network name')
+    connect_parser.add_argument('--password', help='WiFi password')
+    
+    wifi_subparsers.add_parser('disconnect', help='Disconnect from WiFi')
+    
+    # Ethernet commands
+    eth_parser = subparsers.add_parser('ethernet', help='Ethernet configuration')
+    eth_parser.add_argument('interface', help='Interface name')
+    eth_parser.add_argument('--mode', choices=['dhcp', 'static'], default='dhcp')
+    eth_parser.add_argument('--ip', help='Static IP address')
+    eth_parser.add_argument('--netmask', help='Netmask')
+    eth_parser.add_argument('--gateway', help='Gateway')
+    
+    # Statistics
+    subparsers.add_parser('stats', help='Show network statistics')
+    
+    # Ping
+    ping_parser = subparsers.add_parser('ping', help='Ping a host')
+    ping_parser.add_argument('host', help='Host to ping')
+    ping_parser.add_argument('--count', type=int, default=4, help='Number of packets')
+    
+    # Firewall
+    fw_parser = subparsers.add_parser('firewall', help='Firewall management')
+    fw_subparsers = fw_parser.add_subparsers(dest='fw_action')
+    
+    enable_fw_parser = fw_subparsers.add_parser('enable', help='Enable firewall')
+    enable_fw_parser.add_argument('--rules', help='Rules file (JSON)')
+    
+    fw_subparsers.add_parser('disable', help='Disable firewall')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return
+    
+    # Initialize network manager
+    nm = NetworkManager()
+    
+    try:
+        if args.command == 'list':
+            list_interfaces(nm)
+        
+        elif args.command == 'wifi':
+            if args.wifi_action == 'scan':
+                scan_wifi(nm)
+            elif args.wifi_action == 'connect':
+                connect_wifi(nm, args.ssid, args.password)
+            elif args.wifi_action == 'disconnect':
+                disconnect_wifi(nm)
+            else:
+                wifi_parser.print_help()
+        
+        elif args.command == 'ethernet':
+            configure_ethernet(nm, args.interface, args.mode, args.ip, args.netmask, args.gateway)
+        
+        elif args.command == 'stats':
+            show_stats(nm)
+        
+        elif args.command == 'ping':
+            ping_host(nm, args.host, args.count)
+        
+        elif args.command == 'firewall':
+            if args.fw_action == 'enable':
+                enable_firewall(nm, args.rules)
+            elif args.fw_action == 'disable':
+                disable_firewall(nm)
+            else:
+                fw_parser.print_help()
+        
+        else:
+            parser.print_help()
+    
+    except KeyboardInterrupt:
+        print("\nOperation cancelled")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == '__main__':
+    main()

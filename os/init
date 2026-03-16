@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""
+YouOS Init - System initialization script
+This would typically be called by the bootloader as PID 1
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# Add the OS directory to Python path
+os_dir = Path(__file__).parent
+sys.path.insert(0, str(os_dir))
+
+def main():
+    """Main init process"""
+    print("=" * 50)
+    print("🚀 YouOS 10 Build 26m1.7.3 Starting...")
+    print("=" * 50)
+    
+    try:
+        # Import and boot the kernel
+        from youos_kernel import boot_youos
+        
+        if boot_youos():
+            print("\n✅ YouOS kernel loaded successfully")
+            print("🖥️  Starting desktop environment...")
+            
+            # Start the desktop environment
+            from main import main as start_desktop
+            start_desktop()
+        else:
+            print("\n❌ YouOS kernel failed to load")
+            print("🔧 Entering recovery mode...")
+            
+            # Simple recovery shell
+            import subprocess
+            subprocess.run(['/bin/bash'])
+            
+    except Exception as e:
+        print(f"\n💥 Critical error during boot: {e}")
+        print("🔧 Entering emergency mode...")
+        
+        # Emergency shell
+        import subprocess
+        subprocess.run(['/bin/bash'])
+
+if __name__ == '__main__':
+    main()

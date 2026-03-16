@@ -504,17 +504,22 @@ class CalendarWidget(GlassFrame):
 
 
 class WeatherWidget(GlassFrame):
-    """Weather widget with real data"""
+    """Weather widget with real data and lazy loading"""
     
     def __init__(self, parent=None):
         super().__init__(parent, opacity=0.15)
+        self.loaded = False
         self.setup_ui()
-        
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_weather)
-        self.timer.start(1800000)
-        
-        self.update_weather()
+    
+    def showEvent(self, event):
+        """Only update when widget becomes visible"""
+        super().showEvent(event)
+        if not self.loaded:
+            self.update_weather()
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.update_weather)
+            self.timer.start(1800000)  # 30 minutes
+            self.loaded = True
     
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -530,6 +535,11 @@ class WeatherWidget(GlassFrame):
         self.temp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.temp_label.setStyleSheet("color: white; font-size: 20px; font-weight: bold;")
         layout.addWidget(self.temp_label)
+        
+        self.location_label = QLabel("")
+        self.location_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.location_label.setStyleSheet("color: #9ca3af; font-size: 11px; font-weight: bold;")
+        layout.addWidget(self.location_label)
         
         self.desc_label = QLabel("")
         self.desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -548,6 +558,13 @@ class WeatherWidget(GlassFrame):
             
             self.weather_icon.setText(weather['icon'])
             self.temp_label.setText(f"{weather['temp_c']}°C / {weather['temp_f']}°F")
+            
+            # Show location in city/district format
+            if 'location' in weather:
+                self.location_label.setText(weather['location'])
+            else:
+                self.location_label.setText("Cairo, Egypt")
+            
             self.desc_label.setText(weather['description'])
             
             info_parts = []
@@ -562,6 +579,7 @@ class WeatherWidget(GlassFrame):
             print(f"⚠️  Weather update failed: {e}")
             self.weather_icon.setText("❌")
             self.temp_label.setText("Connection Error")
+            self.location_label.setText("")
             self.desc_label.setText("Can't load weather data")
 
 

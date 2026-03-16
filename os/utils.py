@@ -1,6 +1,6 @@
 """
 YouOS 10 PyQt6 - Utilities
-utils.py - Sound manager, path handling, system utilities with system monitoring
+utils.py - Sound manager, path handling, system utilities with kernel integration
 """
 
 import os
@@ -30,6 +30,14 @@ ICONS_DIR.mkdir(exist_ok=True)
 # User data directory
 USER_DATA_DIR = Path.home() / '.youos'
 USER_DATA_DIR.mkdir(exist_ok=True)
+
+# Kernel integration
+try:
+    from youos_kernel import get_kernel
+    KERNEL_AVAILABLE = True
+except ImportError:
+    KERNEL_AVAILABLE = False
+    print("⚠️  YouOS Kernel not available, running in compatibility mode")
 
 
 class SoundManager:
@@ -204,15 +212,34 @@ def get_system_stats():
 
 def get_system_info():
     """Get system information"""
-    import platform
+    if KERNEL_AVAILABLE:
+        try:
+            kernel = get_kernel()
+            return kernel.get_system_info()
+        except:
+            pass
     
+    # Fallback to basic system info
+    import platform
     return {
+        'version': 'YouOS 10 Build 26m1.7.3',
         'system': platform.system(),
         'release': platform.release(),
-        'version': platform.version(),
+        'version_info': platform.version(),
         'machine': platform.machine(),
         'processor': platform.processor(),
     }
+
+
+def get_youos_version():
+    """Get YouOS version string"""
+    if KERNEL_AVAILABLE:
+        try:
+            kernel = get_kernel()
+            return kernel.version
+        except:
+            pass
+    return "YouOS 10 Build 26m1.7.3"
 
 
 def get_screen_brightness():

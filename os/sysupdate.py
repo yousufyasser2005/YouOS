@@ -19,7 +19,7 @@ GITHUB_REPO = "https://raw.githubusercontent.com/yousufyasser2005/YouOS/main/os"
 BASE_DIR = Path("/home/yousuf-yasser-elshaer/codes/os")
 SYSTEM_DATA_URL = f"{GITHUB_REPO}/systemdata.json"
 LOCAL_SYSTEM_DATA = BASE_DIR / "systemdata.json"
-CHECK_INTERVAL = 3600000  # 1 hour in milliseconds
+CHECK_INTERVAL = 15000  # 15 seconds in milliseconds
 
 # System modules that require full restart
 SYSTEM_MODULES = [
@@ -81,19 +81,33 @@ class UpdateChecker(QThread):
     def check_for_updates(self):
         """Check for available updates"""
         try:
+            print(f"🔍 Checking for updates from: {SYSTEM_DATA_URL}")
+            
             # Fetch remote system data
             response = requests.get(SYSTEM_DATA_URL, timeout=10)
             response.raise_for_status()
-            remote_data = response.json()
+            
+            # Debug: Print raw response
+            print(f"📥 Raw response (first 200 chars): {response.text[:200]}")
+            
+            try:
+                remote_data = response.json()
+            except json.JSONDecodeError as e:
+                print(f"❌ JSON decode error: {e}")
+                print(f"📄 Full response text: {response.text}")
+                return {}
+            print(f"📥 Remote data fetched: {remote_data.get('version', 'unknown')}")
             
             # Load local system data
             if LOCAL_SYSTEM_DATA.exists():
                 with open(LOCAL_SYSTEM_DATA, 'r') as f:
                     local_data = json.load(f)
+                print(f"📂 Local data loaded: {local_data.get('version', 'unknown')}")
             else:
                 # Create initial system data file
                 local_data = {"version": "1.0.0", "programs": {}, "system_modules": {}}
                 self.save_local_data(local_data)
+                print("📝 Created initial local data")
             
             # Compare versions
             updates = {}
@@ -104,8 +118,10 @@ class UpdateChecker(QThread):
             
             for program, remote_version in remote_programs.items():
                 local_version = local_programs.get(program, "0.0.0")
+                print(f"🔍 {program}: local={local_version}, remote={remote_version}")
                 if self.compare_versions(remote_version, local_version) > 0:
                     updates[program] = remote_version
+                    print(f"✅ Update found for {program}: {local_version} → {remote_version}")
             
             # Check system modules
             remote_modules = remote_data.get("system_modules", {})
@@ -113,9 +129,12 @@ class UpdateChecker(QThread):
             
             for module, remote_version in remote_modules.items():
                 local_version = local_modules.get(module, "0.0.0")
+                print(f"🔍 {module}: local={local_version}, remote={remote_version}")
                 if self.compare_versions(remote_version, local_version) > 0:
                     updates[module] = remote_version
+                    print(f"✅ Update found for {module}: {local_version} → {remote_version}")
             
+            print(f"📊 Total updates found: {len(updates)}")
             return updates
             
         except Exception as e:
@@ -417,6 +436,7 @@ class UpdateManager:
         self.update_downloader = None
         self.update_screen = None
         self.pending_updates = {}
+        self.notified_updates = set()  # Track which updates we've already notified about
         
         # Start update checker
         self.start_update_checker()
@@ -434,11 +454,22 @@ class UpdateManager:
         if not updates:
             return
         
-        self.pending_updates = updates
+        # Filter out updates we've already notified about
+        new_updates = {}
+        for name, version in updates.items():
+            update_key = f"{name}:{version}"
+            if update_key not in self.notified_updates:
+                new_updates[name] = version
+                self.notified_updates.add(update_key)
         
-        # Send notification
+        if not new_updates:
+            return  # No new updates to notify about
+        
+        self.pending_updates.update(new_updates)
+        
+        # Send notification only for new updates
         update_list = "\n".join([f"• {name} → v{version}" 
-                                for name, version in updates.items()])
+                                for name, version in new_updates.items()])
         message = f"Updates available:\n{update_list}"
         
         self.desktop_manager.add_notification(
@@ -448,7 +479,7 @@ class UpdateManager:
             "Now"
         )
         
-        print(f"✅ Found {len(updates)} updates")
+        print(f"✅ Found {len(new_updates)} new updates")
     
     def on_check_complete(self, success):
         """Handle check completion"""
@@ -519,8 +550,16 @@ class UpdateManager:
                 "Now"
             )
         
-        # Clear pending updates
+        # Clear pending updates and reset notifications for completed updates
+        completed_updates = list(self.pending_updates.keys())
         self.pending_updates = {}
+        
+        # Remove completed updates from notified set so they can be notified again if they appear later
+        if success:
+            for update_name in completed_updates:
+                # Remove all versions of this update from notified set
+                self.notified_updates = {key for key in self.notified_updates 
+                                       if not key.startswith(f"{update_name}:")}
     
     def restart_system(self):
         """Restart YouOS after system update"""
