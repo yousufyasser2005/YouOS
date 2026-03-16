@@ -22,6 +22,8 @@ from PyQt6.QtGui import (QColor, QPainter, QPainterPath, QPen, QLinearGradient,
 from widgets import (GlassFrame, AnalogClock, SystemMonitorWidget,
                     CalendarWidget, WeatherWidget)
 from start import StartMenu
+from ai_assistant import AIAssistantWindow
+from football_scores import create_live_score_overlay
 
 try:
     from utils import play_sound, get_volume, set_volume, get_battery_info, BASE_DIR, set_brightness, get_brightness
@@ -55,75 +57,19 @@ COLORS = {
 }
 
 WALLPAPERS_DIR = BASE_DIR / 'assets' / 'wallpapers'
-PROGRAMS_DIR = Path("/home/yousuf-yasser-elshaer/codes/os/programs")
-START_ICON_PATH = Path("/home/yousuf-yasser-elshaer/codes/os/assets/start.png")
-
-
-class BatteryWarningDialog(GlassFrame):
-    """Battery warning dialog"""
-    
-    def __init__(self, title, message, icon, color, parent=None):
-        super().__init__(parent, opacity=0.25)
-        self.setFixedSize(400, 200)
-        self.setup_ui(title, message, icon, color)
-        
-        # Auto-hide after 10 seconds
-        QTimer.singleShot(10000, self.close)
-    
-    def setup_ui(self, title, message, icon, color):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
-        
-        # Icon
-        icon_label = QLabel(icon)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet("font-size: 48px;")
-        layout.addWidget(icon_label)
-        
-        # Title
-        title_label = QLabel(title)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet(f"color: {color}; font-size: 18px; font-weight: bold;")
-        layout.addWidget(title_label)
-        
-        # Message
-        message_label = QLabel(message)
-        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        message_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
-        message_label.setWordWrap(True)
-        layout.addWidget(message_label)
-        
-        # OK button
-        ok_btn = QPushButton("OK")
-        ok_btn.setFixedHeight(35)
-        ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ok_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {color};
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 12px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                opacity: 0.8;
-            }}
-        """)
-        ok_btn.clicked.connect(self.close)
-        layout.addWidget(ok_btn)
+PROGRAMS_DIR = BASE_DIR / 'programs'
+START_ICON_PATH = BASE_DIR / 'assets' / 'start.png'
 
 
 class ProgramWindow(GlassFrame):
-    """Window container for running programs with Windows 7 Aero glass effect"""
+    """Window container for running programs"""
     
     closed = pyqtSignal(str)  # Emits window ID
     minimized = pyqtSignal(str)
     focused = pyqtSignal(str)
     
     def __init__(self, window_id, title, icon, content_widget, parent=None):
-        super().__init__(parent, opacity=0.05)  # More transparent for glass effect
+        super().__init__(parent, opacity=0.20)
         self.window_id = window_id
         self.title = title
         self.icon = icon
@@ -141,81 +87,22 @@ class ProgramWindow(GlassFrame):
         else:
             self.resize(900, 650)
         
-        self.setup_aero_glass()
         self.setup_ui()
         self.setup_dragging()
-    
-    def setup_aero_glass(self):
-        """Setup Windows 7 Aero glass effect"""
-        # Enhanced shadow for depth
-        shadow = QGraphicsDropShadowEffect()
-        shadow.setBlurRadius(40)
-        shadow.setColor(QColor(0, 0, 0, 150))
-        shadow.setOffset(0, 8)
-        self.setGraphicsEffect(shadow)
-        
-        # Enable translucent background
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    
-    def paintEvent(self, event):
-        """Custom paint for Windows 7 Aero glass effect"""
-        from PyQt6.QtCore import QRectF
-        
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Create main rectangle with proper bounds
-        rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
-        path = QPainterPath()
-        path.addRoundedRect(rect, 12, 12)
-        
-        # Windows 7 Aero glass gradient
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0, QColor(240, 248, 255, 80))
-        gradient.setColorAt(0.3, QColor(220, 235, 250, 70))
-        gradient.setColorAt(0.7, QColor(200, 220, 240, 60))
-        gradient.setColorAt(1, QColor(180, 200, 230, 50))
-        
-        painter.fillPath(path, gradient)
-        
-        # Glass highlight on top edge
-        highlight_gradient = QLinearGradient(0, 0, 0, 60)
-        highlight_gradient.setColorAt(0, QColor(255, 255, 255, 25))
-        highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
-        
-        highlight_rect = QRectF(4, 4, self.width() - 8, 50)
-        highlight_path = QPainterPath()
-        highlight_path.addRoundedRect(highlight_rect, 10, 10)
-        painter.fillPath(highlight_path, highlight_gradient)
-        
-        # Very transparent glass borders
-        painter.setPen(QPen(QColor(255, 255, 255, 15), 1))
-        painter.drawPath(path)
-        
-        # Inner glass border for subtle depth
-        inner_rect = QRectF(3, 3, self.width() - 6, self.height() - 6)
-        inner_path = QPainterPath()
-        inner_path.addRoundedRect(inner_rect, 11, 11)
-        painter.setPen(QPen(QColor(200, 220, 240, 10), 1))
-        painter.drawPath(inner_path)
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)  # Add margins for borders
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Title bar with Windows 7 Aero glass
+        # Title bar
         self.title_bar = QWidget()
         self.title_bar.setFixedHeight(40)
         self.title_bar.setStyleSheet(f"""
             QWidget {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(240, 248, 255, 200),
-                    stop:0.5 rgba(220, 235, 250, 180),
-                    stop:1 rgba(200, 220, 240, 160));
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
-                border-bottom: 1px solid rgba(180, 200, 230, 100);
+                background: rgba(26, 26, 46, 0.95);
+                border-top-left-radius: 16px;
+                border-top-right-radius: 16px;
             }}
         """)
         
@@ -234,71 +121,32 @@ class ProgramWindow(GlassFrame):
         
         title_layout.addStretch()
         
-        # Window controls with glass effect
+        # Window controls
         btn_style = """
             QPushButton {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 255, 255, 0.3),
-                    stop:1 rgba(200, 220, 240, 0.2));
-                border: 1px solid rgba(255, 255, 255, 0.4);
+                background: rgba(255, 255, 255, 0.1);
+                border: none;
                 border-radius: 6px;
-                color: rgba(60, 80, 120, 200);
+                color: white;
                 font-size: 14px;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 255, 255, 0.5),
-                    stop:1 rgba(220, 235, 250, 0.4));
-                border: 1px solid rgba(255, 255, 255, 0.6);
+                background: rgba(255, 255, 255, 0.2);
             }}
         """
         
         minimize_btn = QPushButton("−")
         minimize_btn.setFixedSize(30, 30)
         minimize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        minimize_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 255, 255, 0.3),
-                    stop:1 rgba(200, 220, 240, 0.2));
-                border: 1px solid rgba(255, 255, 255, 0.4);
-                border-radius: 6px;
-                color: rgba(60, 80, 120, 200);
-                font-size: 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(128, 128, 128, 0.6),
-                    stop:1 rgba(100, 100, 100, 0.4));
-                border: 1px solid rgba(128, 128, 128, 0.8);
-            }
-        """)
+        minimize_btn.setStyleSheet(btn_style)
         minimize_btn.clicked.connect(self.minimize)
         title_layout.addWidget(minimize_btn)
         
         self.maximize_btn = QPushButton("□")
         self.maximize_btn.setFixedSize(30, 30)
         self.maximize_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.maximize_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 255, 255, 0.3),
-                    stop:1 rgba(200, 220, 240, 0.2));
-                border: 1px solid rgba(255, 255, 255, 0.4);
-                border-radius: 6px;
-                color: rgba(60, 80, 120, 200);
-                font-size: 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(135, 206, 250, 0.6),
-                    stop:1 rgba(100, 149, 237, 0.4));
-                border: 1px solid rgba(135, 206, 250, 0.8);
-            }
-        """)
+        self.maximize_btn.setStyleSheet(btn_style)
         self.maximize_btn.clicked.connect(self.toggle_maximize)
         title_layout.addWidget(self.maximize_btn)
         
@@ -306,153 +154,39 @@ class ProgramWindow(GlassFrame):
         close_btn.setFixedSize(30, 30)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 200, 200, 0.4),
-                    stop:1 rgba(239, 68, 68, 0.3));
-                border: 1px solid rgba(255, 255, 255, 0.4);
+            QPushButton {{
+                background: rgba(239, 68, 68, 0.3);
+                border: none;
                 border-radius: 6px;
-                color: rgba(150, 50, 50, 200);
+                color: white;
                 font-size: 18px;
                 font-weight: bold;
-            }
-            QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                    stop:0 rgba(255, 100, 100, 0.8),
-                    stop:1 rgba(220, 38, 38, 0.6));
-                border: 1px solid rgba(255, 0, 0, 0.8);
-                color: white;
-            }
+            }}
+            QPushButton:hover {{
+                background: rgba(239, 68, 68, 0.8);
+            }}
         """)
         close_btn.clicked.connect(self.close_window)
         title_layout.addWidget(close_btn)
         
         layout.addWidget(self.title_bar)
         
-        # Content area with solid black background
+        # Content area
         content_container = QWidget()
-        content_container.setStyleSheet("""
-            QWidget {
-                background: #000000;
-                border-bottom-left-radius: 12px;
-                border-bottom-right-radius: 12px;
-            }
-        """)
+        content_container.setStyleSheet("background: transparent;")
         content_layout = QVBoxLayout(content_container)
-        content_layout.setContentsMargins(8, 5, 8, 8)
+        content_layout.setContentsMargins(5, 5, 5, 5)
         content_layout.addWidget(self.content_widget)
         
         layout.addWidget(content_container)
     
     def setup_dragging(self):
         self.dragging = False
-        self.resizing = False
-        self.resize_edge = None
         self.drag_position = QPoint()
-        self.resize_start_pos = QPoint()
-        self.resize_start_geometry = QRect()
-        
         self.title_bar.mousePressEvent = self.start_drag
         self.title_bar.mouseMoveEvent = self.do_drag
         self.title_bar.mouseReleaseEvent = self.end_drag
         self.title_bar.mouseDoubleClickEvent = lambda e: self.toggle_maximize()
-    
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            edge = self.get_resize_edge(event.position().toPoint())
-            if edge:
-                self.resizing = True
-                self.resize_edge = edge
-                self.resize_start_pos = event.globalPosition().toPoint()
-                self.resize_start_geometry = self.geometry()
-            self.focused.emit(self.window_id)
-        super().mousePressEvent(event)
-    
-    def mouseMoveEvent(self, event):
-        if self.resizing and self.resize_edge:
-            self.do_resize(event.globalPosition().toPoint())
-        else:
-            edge = self.get_resize_edge(event.position().toPoint())
-            if edge:
-                self.set_resize_cursor(edge)
-            else:
-                self.setCursor(Qt.CursorShape.ArrowCursor)
-        super().mouseMoveEvent(event)
-    
-    def mouseReleaseEvent(self, event):
-        self.resizing = False
-        self.resize_edge = None
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        super().mouseReleaseEvent(event)
-    
-    def get_resize_edge(self, pos):
-        """Determine which edge is being hovered for resizing"""
-        margin = 8
-        w, h = self.width(), self.height()
-        
-        if pos.x() <= margin and pos.y() <= margin:
-            return 'top-left'
-        elif pos.x() >= w - margin and pos.y() <= margin:
-            return 'top-right'
-        elif pos.x() <= margin and pos.y() >= h - margin:
-            return 'bottom-left'
-        elif pos.x() >= w - margin and pos.y() >= h - margin:
-            return 'bottom-right'
-        elif pos.x() <= margin:
-            return 'left'
-        elif pos.x() >= w - margin:
-            return 'right'
-        elif pos.y() <= margin:
-            return 'top'
-        elif pos.y() >= h - margin:
-            return 'bottom'
-        return None
-    
-    def set_resize_cursor(self, edge):
-        """Set appropriate cursor for resize edge"""
-        cursors = {
-            'top': Qt.CursorShape.SizeVerCursor,
-            'bottom': Qt.CursorShape.SizeVerCursor,
-            'left': Qt.CursorShape.SizeHorCursor,
-            'right': Qt.CursorShape.SizeHorCursor,
-            'top-left': Qt.CursorShape.SizeFDiagCursor,
-            'bottom-right': Qt.CursorShape.SizeFDiagCursor,
-            'top-right': Qt.CursorShape.SizeBDiagCursor,
-            'bottom-left': Qt.CursorShape.SizeBDiagCursor,
-        }
-        self.setCursor(cursors.get(edge, Qt.CursorShape.ArrowCursor))
-    
-    def do_resize(self, global_pos):
-        """Perform window resizing"""
-        if not self.resize_edge or self.is_maximized:
-            return
-        
-        delta = global_pos - self.resize_start_pos
-        rect = QRect(self.resize_start_geometry)
-        
-        if 'left' in self.resize_edge:
-            rect.setLeft(rect.left() + delta.x())
-        if 'right' in self.resize_edge:
-            rect.setRight(rect.right() + delta.x())
-        if 'top' in self.resize_edge:
-            rect.setTop(rect.top() + delta.y())
-        if 'bottom' in self.resize_edge:
-            rect.setBottom(rect.bottom() + delta.y())
-        
-        # Enforce minimum size
-        if rect.width() < self.minimumWidth():
-            if 'left' in self.resize_edge:
-                rect.setLeft(rect.right() - self.minimumWidth())
-            else:
-                rect.setRight(rect.left() + self.minimumWidth())
-        
-        if rect.height() < self.minimumHeight():
-            if 'top' in self.resize_edge:
-                rect.setTop(rect.bottom() - self.minimumHeight())
-            else:
-                rect.setBottom(rect.top() + self.minimumHeight())
-        
-        self.setGeometry(rect)
     
     def start_drag(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -524,6 +258,42 @@ class ProgramThread(QThread):
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
+
+
+class GlobalExceptionHandler:
+    """Global exception handler for the desktop"""
+    
+    def __init__(self, desktop_manager):
+        self.desktop_manager = desktop_manager
+        self.original_excepthook = sys.excepthook
+        sys.excepthook = self.handle_exception
+    
+    def handle_exception(self, exc_type, exc_value, exc_traceback):
+        """Handle uncaught exceptions"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        error_msg = f"{exc_type.__name__}: {str(exc_value)}"
+        print(f"Uncaught exception: {error_msg}")
+        
+        if self.desktop_manager:
+            try:
+                self.desktop_manager.add_notification(
+                    "System Error",
+                    f"An error occurred: {error_msg}",
+                    "❌",
+                    "Now"
+                )
+            except:
+                pass
+        
+        # Call original handler for logging
+        self.original_excepthook(exc_type, exc_value, exc_traceback)
+    
+    def restore(self):
+        """Restore original exception handler"""
+        sys.excepthook = self.original_excepthook
 
 
 class WindowManager:
@@ -1667,7 +1437,22 @@ class WidgetPanel(GlassFrame):
         self.setup_ui()
     
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical { background: rgba(255,255,255,0.1); width: 4px; border-radius: 2px; }
+            QScrollBar::handle:vertical { background: rgba(255,255,255,0.3); border-radius: 2px; }
+        """)
+        
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
         
@@ -1688,6 +1473,9 @@ class WidgetPanel(GlassFrame):
         layout.addWidget(WeatherWidget())
         layout.addWidget(CalendarWidget())
         layout.addStretch()
+        
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
         
         self.update_time()
         timer = QTimer(self)
@@ -1817,6 +1605,207 @@ class DesktopIcon(QWidget):
         if current - self.last_click < 500:
             self.clicked.emit(self.name)
         self.last_click = current
+
+
+class WindowSwitcher(GlassFrame):
+    """Alt+Tab window switcher"""
+    
+    window_selected = pyqtSignal(str)
+    
+    def __init__(self, window_manager, parent=None):
+        super().__init__(parent, opacity=0.25)
+        self.window_manager = window_manager
+        self.current_index = 0
+        self.window_ids = list(self.window_manager.z_order)
+        
+        if not self.window_ids:
+            return
+        
+        self.setFixedSize(min(len(self.window_ids) * 120 + 40, 800), 140)
+        self.setup_ui()
+        
+        # Position in center of screen
+        parent_rect = parent.rect()
+        self.move((parent_rect.width() - self.width()) // 2, 
+                 (parent_rect.height() - self.height()) // 2)
+        
+        # Auto-hide timer
+        self.hide_timer = QTimer()
+        self.hide_timer.setSingleShot(True)
+        self.hide_timer.timeout.connect(self.select_current)
+        self.hide_timer.start(2000)
+        
+        # Set focus to capture key events
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()
+    
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+        
+        self.window_widgets = []
+        
+        for i, window_id in enumerate(self.window_ids):
+            if window_id not in self.window_manager.windows:
+                continue
+                
+            window_data = self.window_manager.windows[window_id]
+            window = window_data['window']
+            
+            widget = QWidget()
+            widget.setFixedSize(100, 100)
+            
+            widget_layout = QVBoxLayout(widget)
+            widget_layout.setContentsMargins(5, 5, 5, 5)
+            widget_layout.setSpacing(5)
+            
+            # Window icon
+            icon_label = QLabel(window_data['icon'])
+            icon_label.setStyleSheet("font-size: 32px;")
+            icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            widget_layout.addWidget(icon_label)
+            
+            # Window title
+            title_label = QLabel(window.title)
+            title_label.setStyleSheet("color: white; font-size: 10px;")
+            title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            title_label.setWordWrap(True)
+            widget_layout.addWidget(title_label)
+            
+            self.window_widgets.append(widget)
+            layout.addWidget(widget)
+        
+        self.update_selection()
+    
+    def update_selection(self):
+        """Update visual selection"""
+        for i, widget in enumerate(self.window_widgets):
+            if i == self.current_index:
+                widget.setStyleSheet("""
+                    QWidget {
+                        background: rgba(59, 130, 246, 0.5);
+                        border: 2px solid rgba(59, 130, 246, 0.8);
+                        border-radius: 8px;
+                    }
+                """)
+            else:
+                widget.setStyleSheet("""
+                    QWidget {
+                        background: rgba(255, 255, 255, 0.1);
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                        border-radius: 8px;
+                    }
+                """)
+    
+    def keyPressEvent(self, event):
+        """Handle key events"""
+        if event.key() == Qt.Key.Key_Tab:
+            # Move to next window
+            self.current_index = (self.current_index + 1) % len(self.window_widgets)
+            self.update_selection()
+            self.hide_timer.start(2000)  # Reset timer
+        elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
+            self.select_current()
+        elif event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+    
+    def select_current(self):
+        """Select current window and close switcher"""
+        if self.current_index < len(self.window_ids):
+            window_id = self.window_ids[self.current_index]
+            self.window_selected.emit(window_id)
+        self.close()
+    
+    def mousePressEvent(self, event):
+        """Handle mouse clicks on windows"""
+        for i, widget in enumerate(self.window_widgets):
+            if widget.geometry().contains(event.position().toPoint()):
+                self.current_index = i
+                self.select_current()
+                return
+        super().mousePressEvent(event)
+
+
+class WindowPreview(GlassFrame):
+    """Enhanced window preview with thumbnail"""
+    
+    def __init__(self, title, icon_text, parent=None, window_manager=None):
+        super().__init__(parent, opacity=0.4)
+        self.setFixedSize(200, 150)
+        self.window_manager = window_manager
+        self.title = title
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color: white; font-size: 11px; font-weight: bold;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Try to get window thumbnail
+        thumbnail_widget = self.create_thumbnail()
+        if thumbnail_widget:
+            layout.addWidget(thumbnail_widget)
+        else:
+            # Fallback to icon
+            content = QFrame()
+            content.setStyleSheet("background: rgba(255, 255, 255, 0.05); border-radius: 4px;")
+            content_layout = QVBoxLayout(content)
+            icon_label = QLabel(icon_text)
+            icon_label.setStyleSheet("font-size: 32px;")
+            icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            content_layout.addWidget(icon_label)
+            layout.addWidget(content)
+    
+    def create_thumbnail(self):
+        """Create window thumbnail if possible"""
+        if not self.window_manager:
+            return None
+        
+        try:
+            # Find windows for this program
+            windows = [wid for wid, data in self.window_manager.windows.items() 
+                      if data['program_name'] == self.title]
+            
+            if not windows:
+                return None
+            
+            # Get the first window
+            window_id = windows[0]
+            window = self.window_manager.windows[window_id]['window']
+            
+            # Create a mini representation
+            thumbnail = QFrame()
+            thumbnail.setStyleSheet("""
+                QFrame {
+                    background: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    border-radius: 4px;
+                }
+            """)
+            
+            thumb_layout = QVBoxLayout(thumbnail)
+            thumb_layout.setContentsMargins(5, 5, 5, 5)
+            
+            # Mini title bar
+            mini_title = QLabel(window.title[:20] + ("..." if len(window.title) > 20 else ""))
+            mini_title.setStyleSheet("color: white; font-size: 8px; background: rgba(26, 26, 46, 0.8); padding: 2px; border-radius: 2px;")
+            thumb_layout.addWidget(mini_title)
+            
+            # Content area representation
+            content_area = QLabel("Window Content")
+            content_area.setStyleSheet("color: #9ca3af; font-size: 8px;")
+            content_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb_layout.addWidget(content_area)
+            
+            return thumbnail
+            
+        except Exception as e:
+            print(f"Failed to create thumbnail: {e}")
+            return None
 
 
 class AppPreview(GlassFrame):
@@ -2096,10 +2085,12 @@ class TaskbarIcon(QWidget):
         if self.is_running:
             if self.preview:
                 self.preview.deleteLater()
-            self.preview = AppPreview(self.name, self.icon_text, self.window())
+            
+            # Create preview with window thumbnail
+            self.preview = WindowPreview(self.name, self.icon_text, self.window(), self.parent().window_manager if hasattr(self.parent(), 'window_manager') else None)
             global_pos = self.mapToGlobal(QPoint(0, 0))
             local_pos = self.window().mapFromGlobal(global_pos)
-            self.preview.move(local_pos.x() - (180-60)//2, local_pos.y() - 130)
+            self.preview.move(local_pos.x() - (200-60)//2, local_pos.y() - 150)
             self.preview.show()
     
     def leaveEvent(self, event):
@@ -2194,6 +2185,9 @@ class Taskbar(GlassFrame):
         self.wifi_icon.setStyleSheet("color: white; font-size: 16px;")
         self.update_wifi_status()
         wifi_layout.addWidget(self.wifi_icon)
+        
+        # Enable network by updating configuration
+        QTimer.singleShot(1000, self.enable_network_config)
         
         self.main_layout.addWidget(self.wifi_widget)
         
@@ -2313,6 +2307,76 @@ class Taskbar(GlassFrame):
         except Exception as e:
             print(f"Error showing system properties: {e}")
     
+    def enable_network_config(self):
+        """Enable network configuration"""
+        try:
+            # Check if NetworkManager is available
+            import subprocess
+            result = subprocess.run(['which', 'nmcli'], capture_output=True, timeout=2)
+            if result.returncode == 0:
+                # NetworkManager is available
+                self.wifi_widget.mousePressEvent = lambda e: self.show_network_menu()
+                print("✅ Network configuration enabled")
+            else:
+                print("⚠️ NetworkManager not available")
+        except Exception as e:
+            print(f"Failed to enable network config: {e}")
+    
+    def show_network_menu(self):
+        """Show network configuration menu"""
+        try:
+            menu = QMenu(self)
+            menu.setStyleSheet(f"""
+                QMenu {{ 
+                    background: {COLORS['bg_secondary']}; 
+                    border: 1px solid {COLORS['border']}; 
+                    border-radius: 8px; 
+                    padding: 5px; 
+                }}
+                QMenu::item {{ 
+                    color: {COLORS['text_primary']}; 
+                    padding: 8px 20px; 
+                    border-radius: 4px; 
+                }}
+                QMenu::item:selected {{ 
+                    background: {COLORS['accent_primary']}; 
+                }}
+            """)
+            
+            wifi_action = QAction("📶 WiFi Settings", self)
+            wifi_action.triggered.connect(self.open_wifi_settings)
+            menu.addAction(wifi_action)
+            
+            menu.addSeparator()
+            
+            refresh_action = QAction("🔄 Refresh Connection", self)
+            refresh_action.triggered.connect(self.refresh_network)
+            menu.addAction(refresh_action)
+            
+            global_pos = self.wifi_widget.mapToGlobal(QPoint(0, 0))
+            menu.exec(global_pos)
+            
+        except Exception as e:
+            print(f"Error showing network menu: {e}")
+    
+    def open_wifi_settings(self):
+        """Open WiFi settings"""
+        try:
+            import subprocess
+            subprocess.Popen(['nm-connection-editor'])
+        except Exception as e:
+            print(f"Failed to open WiFi settings: {e}")
+    
+    def refresh_network(self):
+        """Refresh network connection"""
+        try:
+            import subprocess
+            subprocess.run(['nmcli', 'networking', 'off'], timeout=5)
+            subprocess.run(['nmcli', 'networking', 'on'], timeout=5)
+            QTimer.singleShot(2000, self.update_wifi_status)
+        except Exception as e:
+            print(f"Failed to refresh network: {e}")
+    
     def update_taskbar(self, running_apps, pinned_apps, app_metadata):
         all_apps = running_apps.union(pinned_apps)
         
@@ -2340,7 +2404,7 @@ class Taskbar(GlassFrame):
 
 
 class DesktopManager(QWidget):
-    """Desktop manager - main desktop functionality with window management and battery monitoring v1.1.0"""
+    """Desktop manager - main desktop functionality with window management"""
     
     logout_requested = pyqtSignal()
     restart_requested = pyqtSignal()
@@ -2364,18 +2428,25 @@ class DesktopManager(QWidget):
         self.error_dialog = None
         self.wallpaper_dialog = None
         self.app_store_window = None
+        self.ai_assistant_window = None
+        self.live_scores_overlay = None
         self.current_wallpaper = None
         self.notifications = []
         self.live_score_widgets = []  # Track live score widgets
         self.sports_notification_service = None
-        
-        # Battery monitoring v1.1.0
         self.battery_dialog = None
         self.battery_warned_25 = False
         self.battery_warned_15 = False
         self.battery_timer = QTimer()
         self.battery_timer.timeout.connect(self.check_battery_status)
         self.battery_timer.start(10000)  # Check every 10 seconds
+        
+        # Global exception handler
+        self.exception_handler = GlobalExceptionHandler(self)
+        
+        # Window switcher and snapping
+        self.window_switcher = None
+        self.setup_global_shortcuts()
         
         self.scan_installed_programs()
         self.load_user_state()  # Load user state FIRST (includes file shortcuts)
@@ -2391,7 +2462,105 @@ class DesktopManager(QWidget):
         self.update_manager = None
         QTimer.singleShot(5000, self.initialize_updates)  # Start after 5 seconds
         
-        print(f"✅ Desktop v1.1.0 initialized for user: {username} with battery monitoring")
+        print(f"✅ Desktop initialized for user: {username}")
+    
+    def setup_global_shortcuts(self):
+        """Setup global keyboard shortcuts"""
+        try:
+            from PyQt6.QtGui import QShortcut, QKeySequence
+            
+            # Alt+Tab window switcher
+            self.alt_tab_shortcut = QShortcut(QKeySequence("Alt+Tab"), self)
+            self.alt_tab_shortcut.activated.connect(self.show_window_switcher)
+            
+            # Win+Left arrow - snap left
+            self.win_left_shortcut = QShortcut(QKeySequence("Meta+Left"), self)
+            self.win_left_shortcut.activated.connect(lambda: self.snap_active_window('left'))
+            
+            # Win+Right arrow - snap right
+            self.win_right_shortcut = QShortcut(QKeySequence("Meta+Right"), self)
+            self.win_right_shortcut.activated.connect(lambda: self.snap_active_window('right'))
+            
+            # Win+Up arrow - maximize
+            self.win_up_shortcut = QShortcut(QKeySequence("Meta+Up"), self)
+            self.win_up_shortcut.activated.connect(lambda: self.snap_active_window('maximize'))
+            
+            # Win+Down arrow - minimize/restore
+            self.win_down_shortcut = QShortcut(QKeySequence("Meta+Down"), self)
+            self.win_down_shortcut.activated.connect(lambda: self.snap_active_window('minimize'))
+            
+        except Exception as e:
+            print(f"Failed to setup global shortcuts: {e}")
+    
+    def show_window_switcher(self):
+        """Show Alt+Tab window switcher"""
+        if not self.window_manager.windows:
+            return
+        
+        if self.window_switcher:
+            self.window_switcher.deleteLater()
+        
+        self.window_switcher = WindowSwitcher(self.window_manager, self)
+        self.window_switcher.window_selected.connect(self.switch_to_window)
+        self.window_switcher.show()
+    
+    def switch_to_window(self, window_id):
+        """Switch to selected window"""
+        if window_id in self.window_manager.windows:
+            window = self.window_manager.windows[window_id]['window']
+            if window.is_minimized:
+                window.restore()
+            else:
+                window.raise_()
+                window.activateWindow()
+            self.window_manager.bring_to_front(window_id)
+    
+    def snap_active_window(self, direction):
+        """Snap active window to screen edge"""
+        if not self.window_manager.z_order:
+            return
+        
+        # Get the topmost window
+        active_window_id = self.window_manager.z_order[-1]
+        if active_window_id not in self.window_manager.windows:
+            return
+        
+        window = self.window_manager.windows[active_window_id]['window']
+        desktop_rect = self.rect()
+        
+        # Leave space for taskbar
+        available_rect = QRect(10, 10, desktop_rect.width() - 20, desktop_rect.height() - 90)
+        
+        if direction == 'left':
+            # Snap to left half
+            new_rect = QRect(available_rect.x(), available_rect.y(), 
+                           available_rect.width() // 2, available_rect.height())
+            window.setGeometry(new_rect)
+            window.is_maximized = False
+            window.maximize_btn.setText("□")
+        elif direction == 'right':
+            # Snap to right half
+            new_rect = QRect(available_rect.x() + available_rect.width() // 2, available_rect.y(),
+                           available_rect.width() // 2, available_rect.height())
+            window.setGeometry(new_rect)
+            window.is_maximized = False
+            window.maximize_btn.setText("□")
+        elif direction == 'maximize':
+            # Maximize window
+            if not window.is_maximized:
+                window.normal_geometry = window.geometry()
+                window.setGeometry(available_rect)
+                window.is_maximized = True
+                window.maximize_btn.setText("❐")
+        elif direction == 'minimize':
+            # Minimize or restore
+            if window.is_maximized:
+                if window.normal_geometry:
+                    window.setGeometry(window.normal_geometry)
+                window.is_maximized = False
+                window.maximize_btn.setText("□")
+            else:
+                window.minimize()
     
     def scan_installed_programs(self):
         self.installed_programs = []
@@ -2437,14 +2606,19 @@ class DesktopManager(QWidget):
                         self.app_metadata[name] = '📦'
     
     def load_desktop_icons(self):
-        """Load desktop icons from saved positions or create default layout"""
+        """Load desktop icons with lazy loading"""
         print(f"Loading desktop icons. Saved positions: {self.desktop_icon_positions}")
         
+        # Use QTimer for lazy loading to improve startup performance
+        QTimer.singleShot(100, self._load_desktop_icons_delayed)
+    
+    def _load_desktop_icons_delayed(self):
+        """Delayed loading of desktop icons"""
         if self.desktop_icon_positions:
             # Load from saved positions
             for name, pos_data in self.desktop_icon_positions.items():
                 # Check if this is a file shortcut
-                if name in self.file_shortcuts:
+                if hasattr(self, 'file_shortcuts') and name in self.file_shortcuts:
                     # Get icon from file shortcuts
                     file_path = self.file_shortcuts[name]
                     if os.path.isdir(file_path):
@@ -2570,7 +2744,7 @@ class DesktopManager(QWidget):
                 self.auth.save_users()
             except:
                 pass
-            play_sound("success.wav")
+            play_sound('logon.wav')
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2746,7 +2920,7 @@ class DesktopManager(QWidget):
         layout.setSpacing(0)
         
         content_layout = QHBoxLayout()
-        content_layout.setContentsMargins(10, 10, 10, 0)
+        content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(10)
         
         desktop = QWidget()
@@ -2794,6 +2968,52 @@ class DesktopManager(QWidget):
         notif_btn.clicked.connect(self.toggle_notification_center)
         notif_layout.addWidget(notif_btn)
         
+        # AI Assistant button
+        self.ai_button = GlassFrame(self, opacity=0.20)
+        self.ai_button.setFixedSize(60, 60)
+        ai_layout = QVBoxLayout(self.ai_button)
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_btn = QPushButton("🤖")
+        ai_btn.setFixedSize(60, 60)
+        ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ai_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: white;
+                font-size: 28px;
+            }
+            QPushButton:hover {
+                background: rgba(147, 51, 234, 0.2);
+                border-radius: 12px;
+            }
+        """)
+        ai_btn.clicked.connect(self.toggle_ai_assistant)
+        ai_layout.addWidget(ai_btn)
+        
+        # Live Football Scores button
+        self.scores_button = GlassFrame(self, opacity=0.20)
+        self.scores_button.setFixedSize(60, 60)
+        scores_layout = QVBoxLayout(self.scores_button)
+        scores_layout.setContentsMargins(0, 0, 0, 0)
+        scores_btn = QPushButton("⚽")
+        scores_btn.setFixedSize(60, 60)
+        scores_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        scores_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                border: none;
+                color: white;
+                font-size: 28px;
+            }
+            QPushButton:hover {
+                background: rgba(16, 185, 129, 0.2);
+                border-radius: 12px;
+            }
+        """)
+        scores_btn.clicked.connect(self.toggle_live_scores)
+        scores_layout.addWidget(scores_btn)
+        
         # System Add-ons button (separate from taskbar) - REMOVED
         # self.addons_button = GlassFrame(self, opacity=0.20)
         # self.addons_button.setFixedSize(60, 60)
@@ -2818,9 +3038,13 @@ class DesktopManager(QWidget):
         # addons_layout.addWidget(addons_btn)
         
         taskbar_layout = QHBoxLayout()
-        taskbar_layout.setContentsMargins(0, 0, 0, 10)
+        taskbar_layout.setContentsMargins(0, 0, 0, 0)
         taskbar_layout.addStretch()
         taskbar_layout.addWidget(self.notif_button)
+        taskbar_layout.addSpacing(10)
+        taskbar_layout.addWidget(self.ai_button)
+        taskbar_layout.addSpacing(10)
+        taskbar_layout.addWidget(self.scores_button)
         taskbar_layout.addSpacing(10)
         taskbar_layout.addWidget(self.taskbar)
         taskbar_layout.addStretch()
@@ -2850,6 +3074,105 @@ class DesktopManager(QWidget):
             self.notification_center.move(x, y)
             self.notification_center.show()
             play_sound("click.wav")
+    
+    def toggle_ai_assistant(self):
+        """Toggle AI assistant window"""
+        if self.ai_assistant_window and self.ai_assistant_window.isVisible():
+            self.ai_assistant_window.close_assistant()
+            return
+        
+        # Close other panels
+        self.close_start_menu()
+        if self.quick_settings:
+            self.quick_settings.hide()
+            self.quick_settings.deleteLater()
+            self.quick_settings = None
+        if self.notification_center:
+            self.notification_center.hide()
+            self.notification_center.deleteLater()
+            self.notification_center = None
+        
+        # Create AI assistant window
+        self.ai_assistant_window = AIAssistantWindow(self, self)
+        self.ai_assistant_window.closed.connect(self.cleanup_ai_assistant)
+        self.ai_assistant_window.show()
+        play_sound("click.wav")
+    
+    def cleanup_ai_assistant(self):
+        """Clean up AI assistant window"""
+        if self.ai_assistant_window:
+            self.ai_assistant_window.deleteLater()
+            self.ai_assistant_window = None
+    
+    def toggle_live_scores(self):
+        """Toggle live football scores overlay"""
+        if self.live_scores_overlay and self.live_scores_overlay.isVisible():
+            self.live_scores_overlay.close_overlay()
+            return
+        
+        # Close other panels
+        self.close_start_menu()
+        if self.quick_settings:
+            self.quick_settings.hide()
+            self.quick_settings.deleteLater()
+            self.quick_settings = None
+        if self.notification_center:
+            self.notification_center.hide()
+            self.notification_center.deleteLater()
+            self.notification_center = None
+        if self.system_addons:
+            self.system_addons.hide()
+            self.system_addons.deleteLater()
+            self.system_addons = None
+        
+        # Create live scores overlay
+        try:
+            self.live_scores_overlay = create_live_score_overlay(self)
+            self.live_scores_overlay.closed.connect(self.cleanup_live_scores)
+            self.live_scores_overlay.resized.connect(self._reposition_live_scores)
+            
+            # Don't show yet — wait for first resized signal so size is correct
+            self.live_scores_overlay.show()
+            self.live_scores_overlay.hide()
+            
+            play_sound("click.wav")
+                
+        except Exception as e:
+            print(f"Error opening live scores: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Show error notification
+            self.add_notification(
+                "Live Scores Error",
+                f"Failed to open live scores: {str(e)}",
+                "⚽",
+                "Now"
+            )
+    
+    def _reposition_live_scores(self):
+        """Anchor overlay bottom just above taskbar, grow upward"""
+        if not self.live_scores_overlay:
+            return
+        overlay = self.live_scores_overlay
+        scores_btn_pos = self.scores_button.mapTo(self, QPoint(0, 0))
+        taskbar_top = self.height() - 70
+        x = scores_btn_pos.x() - overlay.width() - 10
+        x = max(10, x)
+        y = taskbar_top - overlay.height() - 10
+        y = max(10, y)
+        overlay.move(x, y)
+        if not overlay.isVisible():
+            overlay.show()
+    
+    def cleanup_live_scores(self):
+        """Clean up live scores overlay"""
+        if self.live_scores_overlay:
+            try:
+                self.live_scores_overlay.deleteLater()
+            except RuntimeError:
+                pass
+            self.live_scores_overlay = None
     
     def add_notification(self, title, message, icon="📢", time="Now"):
         """Add a notification to the list and show popup"""
@@ -2967,7 +3290,7 @@ class DesktopManager(QWidget):
             self.start_menu.shutdown_clicked.connect(self.request_shutdown)
             self.start_menu.pin_toggled.connect(self.on_pin_toggled)
             self.start_menu.add_to_desktop.connect(self.add_icon_to_desktop)
-            self.start_menu.move((self.width() - 600) // 2, self.height() - 70 - 700 - 20)
+            self.start_menu.move((self.width() - 900) // 2, (self.height() - 700) // 2)
             self.start_menu.show()
             play_sound("click.wav")
     
@@ -2979,54 +3302,122 @@ class DesktopManager(QWidget):
     
     def request_logout(self):
         self.close_start_menu()
-        self.show_confirm_dialog("Logout", "Logout?", "🔓", self.logout_requested.emit)
+        self.show_confirm_dialog("Logout", "Are you sure you want to logout?", "🔓", self.logout_requested.emit)
     
     def request_restart(self):
         self.close_start_menu()
-        self.show_confirm_dialog("Restart", "Restart?", "🔄", self.restart_requested.emit)
+        self.show_confirm_dialog("Restart", "Are you sure you want to restart?", "🔄", self.restart_requested.emit)
     
     def request_shutdown(self):
         self.close_start_menu()
-        self.show_confirm_dialog("Shutdown", "Shutdown?", "⏻", self.shutdown_requested.emit)
+        self.show_confirm_dialog("Shutdown", "Are you sure you want to shutdown?", "⏻", self.shutdown_requested.emit)
     
     def show_confirm_dialog(self, title, message, icon, callback):
-        # Import from the correct main.py in os directory
-        try:
-            import importlib.util
-            import sys
-            main_path = BASE_DIR / 'main.py'
-            spec = importlib.util.spec_from_file_location("youos_main", main_path)
-            main_module = importlib.util.module_from_spec(spec)
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PyQt6.QtCore import pyqtSignal
+        
+        class SimpleConfirmDialog(QDialog):
+            confirmed = pyqtSignal()
+            cancelled = pyqtSignal()
             
-            original_path = sys.path.copy()
-            try:
-                spec.loader.exec_module(main_module)
-            finally:
-                sys.path = original_path
+            def __init__(self, title, message, icon, parent=None):
+                super().__init__(parent)
+                self.setWindowTitle(title)
+                self.setFixedSize(400, 200)
+                self.setModal(True)
+                
+                layout = QVBoxLayout(self)
+                layout.setContentsMargins(30, 30, 30, 30)
+                layout.setSpacing(20)
+                
+                # Icon and message
+                content_layout = QHBoxLayout()
+                
+                icon_label = QLabel(icon)
+                icon_label.setStyleSheet("font-size: 48px;")
+                content_layout.addWidget(icon_label)
+                
+                msg_label = QLabel(message)
+                msg_label.setStyleSheet("color: white; font-size: 16px;")
+                msg_label.setWordWrap(True)
+                content_layout.addWidget(msg_label)
+                
+                layout.addLayout(content_layout)
+                
+                # Buttons
+                button_layout = QHBoxLayout()
+                button_layout.addStretch()
+                
+                cancel_btn = QPushButton("Cancel")
+                cancel_btn.setFixedSize(80, 35)
+                cancel_btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255, 255, 255, 0.1);
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                        border-radius: 6px;
+                        color: white;
+                        font-size: 12px;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255, 255, 255, 0.2);
+                    }
+                """)
+                cancel_btn.clicked.connect(self.reject)
+                button_layout.addWidget(cancel_btn)
+                
+                confirm_btn = QPushButton("OK")
+                confirm_btn.setFixedSize(80, 35)
+                confirm_btn.setStyleSheet("""
+                    QPushButton {
+                        background: #ef4444;
+                        border: none;
+                        border-radius: 6px;
+                        color: white;
+                        font-size: 12px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background: #dc2626;
+                    }
+                """)
+                confirm_btn.clicked.connect(self.accept)
+                button_layout.addWidget(confirm_btn)
+                
+                layout.addLayout(button_layout)
+                
+                # Style the dialog
+                self.setStyleSheet(f"""
+                    QDialog {{
+                        background: {COLORS['bg_secondary']};
+                        border: 1px solid {COLORS['border']};
+                        border-radius: 12px;
+                    }}
+                """)
             
-            ConfirmDialog = main_module.ConfirmDialog
+            def accept(self):
+                self.confirmed.emit()
+                super().accept()
             
-            # Clean up existing dialog safely
-            if self.confirm_dialog:
-                try:
-                    if not self.confirm_dialog.isHidden():
-                        self.confirm_dialog.hide()
-                    self.confirm_dialog.deleteLater()
-                except RuntimeError:
-                    pass
-                self.confirm_dialog = None
-            
-            self.confirm_dialog = ConfirmDialog(title, message, icon, self)
-            self.confirm_dialog.confirmed.connect(callback)
-            self.confirm_dialog.confirmed.connect(self.on_confirm_dialog_closed)
-            self.confirm_dialog.cancelled.connect(self.on_confirm_dialog_closed)
-            self.confirm_dialog.move((self.width() - 400) // 2, (self.height() - 250) // 2)
-            self.confirm_dialog.show()
-            
-        except Exception as e:
-            print(f"✗ Error showing confirm dialog: {e}")
-            import traceback
-            traceback.print_exc()
+            def reject(self):
+                self.cancelled.emit()
+                super().reject()
+        
+        # Clean up existing dialog
+        if hasattr(self, 'confirm_dialog') and self.confirm_dialog:
+            self.confirm_dialog.deleteLater()
+        
+        self.confirm_dialog = SimpleConfirmDialog(title, message, icon, self)
+        self.confirm_dialog.confirmed.connect(callback)
+        self.confirm_dialog.confirmed.connect(lambda: self.confirm_dialog.deleteLater())
+        self.confirm_dialog.cancelled.connect(lambda: self.confirm_dialog.deleteLater())
+        
+        # Center the dialog
+        self.confirm_dialog.move(
+            (self.width() - 400) // 2,
+            (self.height() - 200) // 2
+        )
+        
+        self.confirm_dialog.show()
     
     def on_confirm_dialog_closed(self):
         """Safely clean up confirm dialog"""
@@ -3524,6 +3915,8 @@ class DesktopManager(QWidget):
         except Exception as e:
             print(f"✗ Failed to launch Text Editor: {e}")
             self.show_placeholder_window("Text Editor")
+    
+    def launch_task_manager(self):
         """Launch Task Manager"""
         try:
             # Import task manager from correct path
@@ -3710,6 +4103,13 @@ class DesktopManager(QWidget):
             self.update_manager.stop()
         if hasattr(self, 'battery_timer'):
             self.battery_timer.stop()
+        if self.live_scores_overlay:
+            try:
+                self.live_scores_overlay.close_overlay()
+            except:
+                pass
+        if hasattr(self, 'exception_handler'):
+            self.exception_handler.restore()
         super().closeEvent(event)
     
     def check_battery_status(self):
@@ -3762,18 +4162,37 @@ class DesktopManager(QWidget):
         if hasattr(self, 'battery_dialog') and self.battery_dialog:
             self.battery_dialog.deleteLater()
         
-        self.battery_dialog = BatteryWarningDialog(
-            "Low Battery",
-            f"Battery is low ({percent}%). Please connect charger.",
-            "🪫",
-            COLORS['warning'],
-            self
-        )
-        self.battery_dialog.move(
-            (self.width() - 400) // 2,
-            (self.height() - 200) // 2
-        )
-        self.battery_dialog.show()
+        dialog = GlassFrame(self, opacity=0.25)
+        dialog.setFixedSize(400, 200)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        icon_label = QLabel("🪫")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet("font-size: 48px;")
+        layout.addWidget(icon_label)
+        
+        title_label = QLabel("Low Battery")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet(f"color: {COLORS['warning']}; font-size: 18px; font-weight: bold;")
+        layout.addWidget(title_label)
+        
+        message_label = QLabel(f"Battery is low ({percent}%). Please connect charger.")
+        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        message_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        
+        ok_btn = QPushButton("OK")
+        ok_btn.setFixedHeight(35)
+        ok_btn.setStyleSheet(f"background: {COLORS['warning']}; color: white; border: none; border-radius: 6px; font-size: 12px; font-weight: bold;")
+        ok_btn.clicked.connect(dialog.close)
+        layout.addWidget(ok_btn)
+        
+        dialog.move((self.width() - 400) // 2, (self.height() - 200) // 2)
+        dialog.show()
+        QTimer.singleShot(10000, dialog.close)
     
     def show_battery_critical_dialog(self, percent):
         """Show critical battery dialog at 15%"""
@@ -3786,18 +4205,37 @@ class DesktopManager(QWidget):
         if hasattr(self, 'battery_dialog') and self.battery_dialog:
             self.battery_dialog.deleteLater()
         
-        self.battery_dialog = BatteryWarningDialog(
-            "Critical Battery",
-            f"Battery critically low ({percent}%)! System will shutdown at 10%.",
-            "🔋",
-            COLORS['error'],
-            self
-        )
-        self.battery_dialog.move(
-            (self.width() - 400) // 2,
-            (self.height() - 200) // 2
-        )
-        self.battery_dialog.show()
+        dialog = GlassFrame(self, opacity=0.25)
+        dialog.setFixedSize(400, 200)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        icon_label = QLabel("🔋")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet("font-size: 48px;")
+        layout.addWidget(icon_label)
+        
+        title_label = QLabel("Critical Battery")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet(f"color: {COLORS['error']}; font-size: 18px; font-weight: bold;")
+        layout.addWidget(title_label)
+        
+        message_label = QLabel(f"Battery critically low ({percent}%)! System will shutdown at 10%.")
+        message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        message_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        
+        ok_btn = QPushButton("OK")
+        ok_btn.setFixedHeight(35)
+        ok_btn.setStyleSheet(f"background: {COLORS['error']}; color: white; border: none; border-radius: 6px; font-size: 12px; font-weight: bold;")
+        ok_btn.clicked.connect(dialog.close)
+        layout.addWidget(ok_btn)
+        
+        dialog.move((self.width() - 400) // 2, (self.height() - 200) // 2)
+        dialog.show()
+        QTimer.singleShot(10000, dialog.close)
     
     def show_battery_critical_shutdown(self):
         """Auto shutdown at 10% battery"""
