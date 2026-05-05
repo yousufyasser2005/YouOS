@@ -23,11 +23,15 @@ kernel_asm_gen = generator(nasm,
 kernel_asm_objects = kernel_asm_gen.process(
   'arch/x86_64/boot.asm',
   'arch/x86_64/gdt_flush.asm',
+  'arch/x86_64/idt_stubs.asm',
+  'arch/x86_64/idt_load.asm',
 )
 
 executable('youos.elf',
   'arch/x86_64/kernel_main.c',
   'arch/x86_64/gdt.c',
+  'arch/x86_64/idt.c',
+  'drivers/vga.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,
   link_args : [
