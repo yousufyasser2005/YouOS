@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure (first time only)",
+      "type": "shell",
+      "command": "meson setup build --cross-file cross_x86_64.ini --wipe",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Build YouOS",
+      "type": "shell",
+      "command": "cd build && ninja",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Build ISO",
+      "type": "shell",
+      "command": "./tools/scripts/build.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "Build YouOS",
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Run in QEMU",
+      "type": "shell",
+      "command": "./tools/scripts/run.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Debug in QEMU",
+      "type": "shell",
+      "command": "./tools/scripts/debug.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}
