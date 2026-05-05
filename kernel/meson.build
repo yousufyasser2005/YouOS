@@ -32,6 +32,7 @@ executable('youos.elf',
   'arch/x86_64/gdt.c',
   'arch/x86_64/idt.c',
   'drivers/vga.c',
+  'mm/pmm.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,
   link_args : [
