@@ -25,12 +25,15 @@ kernel_asm_objects = kernel_asm_gen.process(
   'arch/x86_64/gdt_flush.asm',
   'arch/x86_64/idt_stubs.asm',
   'arch/x86_64/idt_load.asm',
+  'arch/x86_64/irq_stubs.asm',
 )
 
 executable('youos.elf',
   'arch/x86_64/kernel_main.c',
   'arch/x86_64/gdt.c',
   'arch/x86_64/idt.c',
+  'arch/x86_64/irq.c',
+  'arch/x86_64/pic.c',
   'drivers/vga.c',
   'mm/pmm.c',
   objects   : kernel_asm_objects,

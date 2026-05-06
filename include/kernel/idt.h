@@ -72,3 +72,6 @@ void idt_init(void);
 void idt_set_handler(uint8_t vector, void (*handler)(registers_t*));
 
 #endif /* KERNEL_IDT_H */
+
+/* The IDT table itself — accessible to irq.c */
+extern idt_entry_t idt[256];

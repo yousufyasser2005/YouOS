@@ -7,7 +7,7 @@
 #include <kernel/vga.h>
 
 /* IDT with 256 entries (32 exceptions + 224 IRQ/syscall slots) */
-static idt_entry_t idt[256];
+idt_entry_t idt[256];
 static idt_ptr_t   idt_ptr;
 
 /* Custom handler table — one per vector */
