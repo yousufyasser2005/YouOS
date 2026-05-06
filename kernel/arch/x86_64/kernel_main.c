@@ -122,11 +122,15 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
         } else if (kstrcmp(line, "reboot") == 0) {
             vga_puts_color("  Rebooting...\n", VGA_YELLOW, VGA_BLACK);
-            /* Triple fault reboot */
+            /* Reboot via keyboard controller reset line */
             __asm__ volatile (
-                "lidt [0]\n"
-                "int $0\n"
+                "cli\n"
+                "outb %%al, $0x64\n"
+                : : "a"((uint8_t)0xFE)
             );
+            /* If that fails, try triple fault */
+            __asm__ volatile ("lidt 0(%%rax)\n int $0\n" : : "a"(0));
+            while(1) __asm__ volatile ("hlt");
 
         } else if (line[0] != '\0') {
             vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);
