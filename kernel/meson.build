@@ -37,6 +37,7 @@ executable('youos.elf',
   'drivers/vga.c',
   'mm/pmm.c',
   'mm/vmm.c',
+  'mm/heap.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,
   link_args : [
