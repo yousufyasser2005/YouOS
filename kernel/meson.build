@@ -26,6 +26,7 @@ kernel_asm_objects = kernel_asm_gen.process(
   'arch/x86_64/idt_stubs.asm',
   'arch/x86_64/idt_load.asm',
   'arch/x86_64/irq_stubs.asm',
+  'arch/x86_64/switch.asm',
 )
 
 executable('youos.elf',
@@ -40,6 +41,7 @@ executable('youos.elf',
   'mm/pmm.c',
   'mm/vmm.c',
   'mm/heap.c',
+  'proc/scheduler.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,
   link_args : [

@@ -8,18 +8,31 @@
 #include <kernel/vmm.h>
 #include <kernel/heap.h>
 #include <kernel/terminal.h>
+#include <kernel/process.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
-/* Simple strcmp */
+/* Simple string compare */
 static int kstrcmp(const char* a, const char* b) {
     while (*a && *a == *b) { a++; b++; }
     return *a - *b;
 }
 
+static void print_uint64(uint64_t val) {
+    char buf[21]; int i = 20; buf[i] = '\0';
+    if (!val) { vga_puts("0"); return; }
+    while (val) { buf[--i] = '0' + (val % 10); val /= 10; }
+    vga_puts(&buf[i]);
+}
+
+/* =========================================================================
+ * Demo background tasks
+ * ========================================================================= */
+/* =========================================================================
+ * kernel_main
+ * ========================================================================= */
 void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
-    /* Boot sequence */
     vga_init();
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts_color("                             Welcome to YouOS                                  \n", VGA_YELLOW,     VGA_BLACK);
@@ -52,11 +65,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     pmm_stats_t stats = pmm_get_stats();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("PMM initialized — ");
-    char buf[21]; int i = 20; buf[i] = '\0';
-    uint64_t mb = stats.free_pages * 4 / 1024;
-    if (mb == 0) { buf[--i] = '0'; }
-    else while (mb > 0) { buf[--i] = '0' + (mb % 10); mb /= 10; }
-    vga_puts(&buf[i]);
+    print_uint64(stats.free_pages * 4 / 1024);
     vga_puts(" MB free\n");
 
     vmm_init();
@@ -71,13 +80,23 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Keyboard driver loaded\n");
 
+    /* Init scheduler BEFORE enabling keyboard IRQ */
+    scheduler_init();
+    vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    vga_puts("Scheduler initialized — Round Robin active\n");
+
+    /* Unmask keyboard NOW (after scheduler is ready) */
+    pic_unmask(IRQ_KEYBOARD);
+
+
+
     vga_puts("\n");
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts_color("  YouOS shell — type 'help' for commands\n", VGA_WHITE, VGA_BLACK);
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("\n");
 
-    /* Simple command shell */
+    /* Shell loop */
     char line[256];
     while (1) {
         vga_puts_color("YouOS> ", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -89,8 +108,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    clear    - clear the screen\n");
             vga_puts("    mem      - show memory stats\n");
             vga_puts("    heap     - show heap stats\n");
+            vga_puts("    ps       - list running processes\n");
+            vga_puts("    tasks    - show background task counters\n");
             vga_puts("    version  - show YouOS version\n");
-            vga_puts("    reboot   - reboot the system\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -98,39 +118,34 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         } else if (kstrcmp(line, "mem") == 0) {
             pmm_stats_t s = pmm_get_stats();
             vga_puts_color("  Memory:\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("    Total pages : "); 
-            char b[21]; int j=20; b[j]='\0';
-            uint64_t v=s.total_pages; if(!v){b[--j]='0';}
-            else while(v){b[--j]='0'+(v%10);v/=10;}
-            vga_puts(&b[j]); vga_puts("\n");
-            vga_puts("    Free  pages : ");
-            j=20; b[j]='\0'; v=s.free_pages; if(!v){b[--j]='0';}
-            else while(v){b[--j]='0'+(v%10);v/=10;}
-            vga_puts(&b[j]); vga_puts("\n");
-            vga_puts("    Used  pages : ");
-            j=20; b[j]='\0'; v=s.used_pages; if(!v){b[--j]='0';}
-            else while(v){b[--j]='0'+(v%10);v/=10;}
-            vga_puts(&b[j]); vga_puts("\n");
+            vga_puts("    Free  : "); print_uint64(s.free_pages * 4); vga_puts(" KB\n");
+            vga_puts("    Used  : "); print_uint64(s.used_pages * 4); vga_puts(" KB\n");
+            vga_puts("    Total : "); print_uint64(s.total_pages * 4); vga_puts(" KB\n");
 
         } else if (kstrcmp(line, "heap") == 0) {
             heap_dump_stats();
 
+        } else if (kstrcmp(line, "ps") == 0) {
+            vga_puts_color("  PID  STATE    NAME\n", VGA_LIGHT_CYAN, VGA_BLACK);
+            vga_puts("  ---  -------  ----\n");
+            for (uint32_t pid = 0; pid <= 4; pid++) {
+                process_t* p = process_get(pid);
+                if (!p) continue;
+                vga_puts("  ");
+                print_uint64(p->pid);
+                vga_puts("    ");
+                const char* states[] = {"READY  ", "RUNNING", "SLEEP  ", "DEAD   "};
+                vga_puts(states[p->state]);
+                vga_puts("  ");
+                vga_puts(p->name);
+                vga_puts("\n");
+            }
+
         } else if (kstrcmp(line, "version") == 0) {
             vga_puts_color("  YouOS v0.1.0\n", VGA_YELLOW, VGA_BLACK);
-            vga_puts("  Architecture : x86_64\n");
+            vga_puts("  Architecture  : x86_64\n");
+            vga_puts("  Scheduler     : Round Robin\n");
             vga_puts("  Built from scratch — no Linux\n");
-
-        } else if (kstrcmp(line, "reboot") == 0) {
-            vga_puts_color("  Rebooting...\n", VGA_YELLOW, VGA_BLACK);
-            /* Reboot via keyboard controller reset line */
-            __asm__ volatile (
-                "cli\n"
-                "outb %%al, $0x64\n"
-                : : "a"((uint8_t)0xFE)
-            );
-            /* If that fails, try triple fault */
-            __asm__ volatile ("lidt 0(%%rax)\n int $0\n" : : "a"(0));
-            while(1) __asm__ volatile ("hlt");
 
         } else if (line[0] != '\0') {
             vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);
