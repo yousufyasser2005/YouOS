@@ -1,27 +1,22 @@
 #include <kernel/pmm.h>
 #include <kernel/vga.h>
 
-/*
- * Bitmap at 0x500000 (5MB) — safely above kernel, stack, and mb2 info
- * Supports up to 4GB RAM (128KB bitmap)
- */
-#define BITMAP_ADDR     0x500000
-#define MAX_PAGES       (1024 * 1024)
+#define BITMAP_ADDR  0x500000
+#define MAX_PAGES    65536      /* 256MB / 4KB = 65536 pages max */
 
 static uint8_t*  bitmap      = (uint8_t*)BITMAP_ADDR;
 static uint64_t  total_pages = 0;
 static uint64_t  free_pages  = 0;
 
-static inline void bitmap_set(uint64_t pfn)   { bitmap[pfn/8] |=  (1 << (pfn%8)); }
-static inline void bitmap_clear(uint64_t pfn) { bitmap[pfn/8] &= ~(1 << (pfn%8)); }
-static inline int  bitmap_test(uint64_t pfn)  { return (bitmap[pfn/8] >> (pfn%8)) & 1; }
+static inline void bitmap_set(uint64_t pfn)   { if(pfn<MAX_PAGES) bitmap[pfn/8] |=  (1<<(pfn%8)); }
+static inline void bitmap_clear(uint64_t pfn) { if(pfn<MAX_PAGES) bitmap[pfn/8] &= ~(1<<(pfn%8)); }
+static inline int  bitmap_test(uint64_t pfn)  { if(pfn>=MAX_PAGES) return 1; return (bitmap[pfn/8]>>(pfn%8))&1; }
 
 void pmm_init(uint64_t mb2_info_addr)
 {
-    /* Mark everything used first */
-    for (uint64_t i = 0; i < MAX_PAGES / 8; i++) bitmap[i] = 0xFF;
+    /* Mark everything used */
+    for (uint64_t i = 0; i < MAX_PAGES/8; i++) bitmap[i] = 0xFF;
 
-    /* Walk multiboot2 tags */
     uint8_t*   mb2        = (uint8_t*)mb2_info_addr;
     uint32_t   total_size = *(uint32_t*)mb2;
     mb2_tag_t* tag        = (mb2_tag_t*)(mb2 + 8);
@@ -36,14 +31,23 @@ void pmm_init(uint64_t mb2_info_addr)
 
             while (ep < end) {
                 mb2_memmap_entry_t* e = (mb2_memmap_entry_t*)ep;
-                uint64_t pfn_end = ADDR_TO_PFN(e->base_addr + e->length);
-                if (pfn_end > total_pages) total_pages = pfn_end;
 
-                if (e->type == MB2_MEM_AVAILABLE) {
-                    uint64_t pfn_start = ADDR_TO_PFN(e->base_addr);
-                    for (uint64_t pfn = pfn_start; pfn < pfn_end && pfn < MAX_PAGES; pfn++) {
-                        bitmap_clear(pfn);
-                        free_pages++;
+                /* Only count memory below 1GB */
+                if (e->base_addr < 0x40000000ULL) {
+                    uint64_t region_end = e->base_addr + e->length;
+                    if (region_end > 0x40000000ULL)
+                        region_end = 0x40000000ULL;
+
+                    uint64_t pfn_end = ADDR_TO_PFN(region_end);
+                    if (pfn_end > MAX_PAGES) pfn_end = MAX_PAGES;
+                    if (pfn_end > total_pages) total_pages = pfn_end;
+
+                    if (e->type == MB2_MEM_AVAILABLE) {
+                        uint64_t pfn_start = ADDR_TO_PFN(e->base_addr);
+                        for (uint64_t pfn = pfn_start; pfn < pfn_end; pfn++) {
+                            bitmap_clear(pfn);
+                            free_pages++;
+                        }
                     }
                 }
                 ep += mt->entry_size;
@@ -55,22 +59,16 @@ void pmm_init(uint64_t mb2_info_addr)
         tag = (mb2_tag_t*)((uint8_t*)tag + next);
     }
 
-    /* Reserve everything below 6MB:
-     * 0x000000 - NULL page
-     * 0x100000 - kernel load address
-     * 0x110000 - multiboot2 info
-     * 0x500000 - bitmap
-     * Give generous 6MB buffer to cover all of the above
-     */
+    /* Reserve first 6MB (kernel + bitmap + mb2 info) */
     for (uint64_t pfn = 0; pfn < ADDR_TO_PFN(0x600000); pfn++) {
-        if (!bitmap_test(pfn)) {
-            bitmap_set(pfn);
-            free_pages--;
-        }
+        if (!bitmap_test(pfn)) { bitmap_set(pfn); free_pages--; }
     }
 
     /* Reserve VGA buffer */
-    bitmap_set(ADDR_TO_PFN(0xB8000));
+    if (!bitmap_test(ADDR_TO_PFN(0xB8000))) {
+        bitmap_set(ADDR_TO_PFN(0xB8000));
+        free_pages--;
+    }
 }
 
 uint64_t pmm_alloc_page(void)
@@ -87,13 +85,12 @@ uint64_t pmm_alloc_page(void)
 
 uint64_t pmm_alloc_pages(size_t n)
 {
-    uint64_t start = 0;
-    size_t   count = 0;
+    uint64_t start = 0; size_t count = 0;
     for (uint64_t pfn = ADDR_TO_PFN(0x600000); pfn < total_pages; pfn++) {
         if (!bitmap_test(pfn)) {
             if (count == 0) start = pfn;
             if (++count == n) {
-                for (uint64_t i = start; i < start + n; i++) { bitmap_set(i); free_pages--; }
+                for (uint64_t i = start; i < start+n; i++) { bitmap_set(i); free_pages--; }
                 return PFN_TO_ADDR(start);
             }
         } else { count = 0; }

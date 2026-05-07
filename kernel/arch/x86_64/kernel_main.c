@@ -118,9 +118,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         } else if (kstrcmp(line, "mem") == 0) {
             pmm_stats_t s = pmm_get_stats();
             vga_puts_color("  Memory:\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("    Free  : "); print_uint64(s.free_pages * 4); vga_puts(" KB\n");
-            vga_puts("    Used  : "); print_uint64(s.used_pages * 4); vga_puts(" KB\n");
-            vga_puts("    Total : "); print_uint64(s.total_pages * 4); vga_puts(" KB\n");
+            vga_puts("    Free  : "); print_uint64(s.free_pages / 256); vga_puts(" MB\n");
+            vga_puts("    Used  : "); print_uint64(s.used_pages / 256); vga_puts(" MB\n");
+            vga_puts("    Total : "); print_uint64(s.total_pages / 256); vga_puts(" MB\n");
 
         } else if (kstrcmp(line, "heap") == 0) {
             heap_dump_stats();
