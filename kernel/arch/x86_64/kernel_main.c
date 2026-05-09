@@ -26,11 +26,28 @@ static void print_uint64(uint64_t val) {
 }
 
 /* =========================================================================
- * Demo background tasks
- * ========================================================================= */
-/* =========================================================================
  * kernel_main
  * ========================================================================= */
+/* =========================================================================
+ * Demo background tasks (cooperative)
+ * ========================================================================= */
+static uint64_t task_a_count = 0;
+static uint64_t task_b_count = 0;
+
+static void task_a(void) {
+    while (1) {
+        task_a_count++;
+        process_yield();
+    }
+}
+
+static void task_b(void) {
+    while (1) {
+        task_b_count++;
+        process_yield();
+    }
+}
+
 void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     vga_init();
@@ -85,6 +102,10 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Scheduler initialized — Round Robin active\n");
 
+
+    process_create("task_a", task_a);
+    process_create("task_b", task_b);
+
     /* Unmask keyboard NOW (after scheduler is ready) */
     pic_unmask(IRQ_KEYBOARD);
 
@@ -109,8 +130,8 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    mem      - show memory stats\n");
             vga_puts("    heap     - show heap stats\n");
             vga_puts("    ps       - list running processes\n");
-            vga_puts("    tasks    - show background task counters\n");
             vga_puts("    version  - show YouOS version\n");
+            vga_puts("    tasks    - show background task counters\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -146,6 +167,10 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("  Architecture  : x86_64\n");
             vga_puts("  Scheduler     : Round Robin\n");
             vga_puts("  Built from scratch — no Linux\n");
+        } else if (kstrcmp(line, "tasks") == 0) {
+            vga_puts_color("  Background tasks:\n", VGA_LIGHT_CYAN, VGA_BLACK);
+            vga_puts("    task_a count: "); print_uint64(task_a_count); vga_puts("\n");
+            vga_puts("    task_b count: "); print_uint64(task_b_count); vga_puts("\n");
 
         } else if (line[0] != '\0') {
             vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);

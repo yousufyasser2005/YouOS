@@ -2,6 +2,7 @@
 #include <kernel/irq.h>
 #include <kernel/idt.h>
 #include <kernel/pic.h>
+#include <kernel/process.h>
 
 static const char scancode_ascii[] = {
     0,    0,   '1', '2', '3', '4', '5', '6',
@@ -88,6 +89,6 @@ char keyboard_getchar(void) {
     key_event_t e;
     while (1) {
         if (kb_pop(&e) && e.ascii) return e.ascii;
-        __asm__ volatile ("hlt");
+        process_yield();
     }
 }

@@ -4,75 +4,65 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/*
- * Process states
- */
 typedef enum {
-    PROCESS_READY    = 0,   /* Ready to run         */
-    PROCESS_RUNNING  = 1,   /* Currently running    */
-    PROCESS_SLEEPING = 2,   /* Waiting for event    */
-    PROCESS_DEAD     = 3,   /* Terminated           */
+    PROCESS_READY    = 0,
+    PROCESS_RUNNING  = 1,
+    PROCESS_SLEEPING = 2,
+    PROCESS_DEAD     = 3,
 } process_state_t;
 
 /*
- * CPU context — all registers saved during context switch
+ * CPU context — saved kernel stack pointer is all we need.
+ * The full register state lives ON the kernel stack.
+ *
+ * Stack layout when a process is switched out (from IRQ):
+ *
+ *   [SS        ]  ← pushed by CPU on interrupt
+ *   [RSP       ]
+ *   [RFLAGS    ]
+ *   [CS        ]
+ *   [RIP       ]  ← return address (where process was interrupted)
+ *   [err/0     ]  ← pushed by IRQ stub
+ *   [irq_no    ]
+ *   [RAX       ]  ← pushed by irq_common
+ *   [RBX       ]
+ *   [RCX       ]
+ *   [RDX       ]
+ *   [RSI       ]
+ *   [RDI       ]
+ *   [RBP       ]
+ *   [R8..R15   ]
+ *   ← RSP saved here (kernel_rsp)
  */
 typedef struct {
-    uint64_t r15, r14, r13, r12;
-    uint64_t r11, r10, r9,  r8;
-    uint64_t rbp, rdi, rsi, rdx;
-    uint64_t rcx, rbx, rax;
-    uint64_t rip;       /* Instruction pointer  */
-    uint64_t cs;        /* Code segment         */
-    uint64_t rflags;    /* CPU flags            */
-    uint64_t rsp;       /* Stack pointer        */
-    uint64_t ss;        /* Stack segment        */
-} __attribute__((packed)) cpu_context_t;
+    uint64_t kernel_rsp;    /* Saved kernel stack pointer */
+} cpu_context_t;
 
-/*
- * Process Control Block (PCB)
- */
 #define PROCESS_NAME_MAX    32
-#define PROCESS_STACK_SIZE  (16 * 1024)   /* 16KB stack per process */
+#define PROCESS_STACK_SIZE  (16 * 1024)   /* 16KB kernel stack */
 #define MAX_PROCESSES       16
 
 typedef struct process {
-    uint32_t         pid;                       /* Process ID           */
-    char             name[PROCESS_NAME_MAX];    /* Process name         */
-    process_state_t  state;                     /* Current state        */
-    cpu_context_t    context;                   /* Saved CPU context    */
-    uint64_t         stack_base;                /* Stack memory base    */
-    uint64_t         stack_top;                 /* Stack top (initial)  */
-    uint64_t         ticks;                     /* CPU ticks used       */
-    uint64_t         wake_tick;                 /* Wake up at this tick */
-    struct process*  next;                      /* Next in run queue    */
+    uint32_t         pid;
+    char             name[PROCESS_NAME_MAX];
+    process_state_t  state;
+    cpu_context_t    context;
+    uint64_t         stack_base;
+    uint64_t         stack_top;
+    uint64_t         ticks;
+    uint64_t         wake_tick;
+    struct process*  next;
 } process_t;
 
-/* Initialize the scheduler */
-void scheduler_init(void);
-
-/* Create a new kernel process */
+void       scheduler_init(void);
 process_t* process_create(const char* name, void (*entry)(void));
-
-/* Yield CPU to next process */
-void process_yield(void);
-
-/* Sleep for n timer ticks */
-void process_sleep(uint64_t ticks);
-
-/* Exit current process */
-void process_exit(void);
-
-/* Get current running process */
+void       process_yield(void);
+void       process_sleep(uint64_t ticks);
+void       process_exit(void);
 process_t* process_current(void);
-
-/* Called by timer IRQ — picks next process */
-void scheduler_tick(void);
-
-/* Get process by PID */
 process_t* process_get(uint32_t pid);
+void       scheduler_tick(void);
+uint64_t   scheduler_get_ticks(void);
 
-#endif /* KERNEL_PROCESS_H */
-
-/* Check and perform deferred context switch */
-void scheduler_check(void);
+#endif
+#define PAGE_SIZE 4096

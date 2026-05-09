@@ -26,8 +26,8 @@ void irq_common_handler(registers_t* regs)
 
     if (irq == IRQ_TIMER) {
         ticks++;
-        scheduler_tick();   /* just updates ticks + wakes sleepers */
         pic_eoi(irq);
+        scheduler_tick();
         return;
     }
 
