@@ -8,6 +8,7 @@
 #include <kernel/vmm.h>
 #include <kernel/heap.h>
 #include <kernel/terminal.h>
+#include <kernel/syscall.h>
 #include <kernel/process.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
@@ -102,6 +103,10 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Scheduler initialized — Round Robin active\n");
 
+    syscall_init();
+    vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    vga_puts("Syscall interface initialized (SYSCALL/SYSRET)\n");
+
 
     process_create("task_a", task_a);
     process_create("task_b", task_b);
@@ -130,6 +135,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    mem      - show memory stats\n");
             vga_puts("    heap     - show heap stats\n");
             vga_puts("    ps       - list running processes\n");
+            vga_puts("    userspace - run first userspace program\n");
             vga_puts("    version  - show YouOS version\n");
             vga_puts("    tasks    - show background task counters\n");
 
@@ -171,6 +177,15 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts_color("  Background tasks:\n", VGA_LIGHT_CYAN, VGA_BLACK);
             vga_puts("    task_a count: "); print_uint64(task_a_count); vga_puts("\n");
             vga_puts("    task_b count: "); print_uint64(task_b_count); vga_puts("\n");
+
+        } else if (kstrcmp(line, "userspace") == 0) {
+            extern void hello_main(void);
+            vga_puts_color("  Running userspace program (Ring 0 simulation):\n", VGA_YELLOW, VGA_BLACK);
+            vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
+            hello_main();
+            vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
+            vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+            vga_puts("Userspace program completed\n");
 
         } else if (line[0] != '\0') {
             vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);
