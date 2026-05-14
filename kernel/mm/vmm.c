@@ -48,7 +48,7 @@ static pte_t* get_or_create(pte_t* table, uint64_t idx, uint64_t flags)
         /* Fill new PT with 4KB pages covering same physical range */
         for (int i = 0; i < 512; i++) {
             new_pt[i] = (huge_base + (uint64_t)i * PAGE_SIZE)
-                       | pt_flags | PTE_PRESENT;
+                       | flags | PTE_PRESENT;
         }
 
         /* Replace huge page entry with new PT */
@@ -147,11 +147,11 @@ void vmm_init(void)
      */
     pte_t* pdp = alloc_table();
     if (!pdp) return;
-    kernel_as.pml4[0] = (uint64_t)pdp | PTE_PRESENT | PTE_WRITABLE;
+    kernel_as.pml4[0] = (uint64_t)pdp | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
 
     pte_t* pd = alloc_table();
     if (!pd) return;
-    pdp[0] = (uint64_t)pd | PTE_PRESENT | PTE_WRITABLE;
+    pdp[0] = (uint64_t)pd | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
 
     /* 512 × 2MB huge pages = 1GB identity map */
     for (int i = 0; i < 512; i++) {

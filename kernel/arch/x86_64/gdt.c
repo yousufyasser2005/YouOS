@@ -19,6 +19,7 @@ typedef struct {
     gdt_entry_t     kernel_data;
     gdt_entry_t     user_code;
     gdt_entry_t     user_data;
+    gdt_entry_t     user_code2;
     gdt_tss_entry_t tss;
 } __attribute__((packed)) gdt_table_t;
 
@@ -77,6 +78,9 @@ void gdt_init(void)
     gdt.user_data   = make_entry(0, 0xFFFFF,
         GDT_PRESENT | GDT_RING3 | GDT_CODE_DATA | GDT_WRITABLE,
         GDT_GRAN_4K | GDT_32BIT);
+    gdt.user_code2  = make_entry(0, 0xFFFFF,
+        GDT_PRESENT | GDT_RING3 | GDT_CODE_DATA | GDT_EXECUTABLE | GDT_READABLE,
+        GDT_GRAN_4K | GDT_LONG_MODE);
     gdt.tss         = make_tss_entry((uint64_t)&tss, sizeof(tss_t) - 1);
 
     /* Load GDT pointer */

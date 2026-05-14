@@ -8,12 +8,12 @@
 #include <kernel/vmm.h>
 #include <kernel/heap.h>
 #include <kernel/terminal.h>
-#include <kernel/syscall.h>
 #include <kernel/process.h>
+#include <kernel/syscall.h>
+#include <kernel/userspace.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
-/* Simple string compare */
 static int kstrcmp(const char* a, const char* b) {
     while (*a && *a == *b) { a++; b++; }
     return *a - *b;
@@ -26,34 +26,10 @@ static void print_uint64(uint64_t val) {
     vga_puts(&buf[i]);
 }
 
-/* =========================================================================
- * kernel_main
- * ========================================================================= */
-/* =========================================================================
- * Demo background tasks (cooperative)
- * ========================================================================= */
-static uint64_t task_a_count = 0;
-static uint64_t task_b_count = 0;
-
-static void task_a(void) {
-    while (1) {
-        task_a_count++;
-        process_yield();
-    }
-}
-
-static void task_b(void) {
-    while (1) {
-        task_b_count++;
-        process_yield();
-    }
-}
-
 void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
-
     vga_init();
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    vga_puts_color("                             Welcome to YouOS                                  \n", VGA_YELLOW,     VGA_BLACK);
+    vga_puts_color("                             Welcome to YouOS                                  \n", VGA_YELLOW, VGA_BLACK);
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("\n");
 
@@ -83,7 +59,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     pmm_stats_t stats = pmm_get_stats();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("PMM initialized — ");
-    print_uint64(stats.free_pages * 4 / 1024);
+    print_uint64(stats.free_pages / 256);
     vga_puts(" MB free\n");
 
     vmm_init();
@@ -98,23 +74,15 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Keyboard driver loaded\n");
 
-    /* Init scheduler BEFORE enabling keyboard IRQ */
     scheduler_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-    vga_puts("Scheduler initialized — Round Robin active\n");
+    vga_puts("Scheduler initialized\n");
+
+    pic_unmask(IRQ_KEYBOARD);
 
     syscall_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Syscall interface initialized (SYSCALL/SYSRET)\n");
-
-
-    process_create("task_a", task_a);
-    process_create("task_b", task_b);
-
-    /* Unmask keyboard NOW (after scheduler is ready) */
-    pic_unmask(IRQ_KEYBOARD);
-
-
 
     vga_puts("\n");
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
@@ -122,7 +90,6 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("\n");
 
-    /* Shell loop */
     char line[256];
     while (1) {
         vga_puts_color("YouOS> ", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -130,14 +97,13 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
         if (kstrcmp(line, "help") == 0) {
             vga_puts_color("  Commands:\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("    help     - show this message\n");
-            vga_puts("    clear    - clear the screen\n");
-            vga_puts("    mem      - show memory stats\n");
-            vga_puts("    heap     - show heap stats\n");
-            vga_puts("    ps       - list running processes\n");
-            vga_puts("    userspace - run first userspace program\n");
-            vga_puts("    version  - show YouOS version\n");
-            vga_puts("    tasks    - show background task counters\n");
+            vga_puts("    help      - show this message\n");
+            vga_puts("    clear     - clear the screen\n");
+            vga_puts("    mem       - show memory stats\n");
+            vga_puts("    heap      - show heap stats\n");
+            vga_puts("    ps        - list processes\n");
+            vga_puts("    version   - show YouOS version\n");
+            vga_puts("    userspace - run Ring 3 program\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -145,47 +111,49 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         } else if (kstrcmp(line, "mem") == 0) {
             pmm_stats_t s = pmm_get_stats();
             vga_puts_color("  Memory:\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("    Free  : "); print_uint64(s.free_pages / 256); vga_puts(" MB\n");
-            vga_puts("    Used  : "); print_uint64(s.used_pages / 256); vga_puts(" MB\n");
-            vga_puts("    Total : "); print_uint64(s.total_pages / 256); vga_puts(" MB\n");
+            vga_puts("    Free  : "); print_uint64(s.free_pages/256); vga_puts(" MB\n");
+            vga_puts("    Used  : "); print_uint64(s.used_pages/256); vga_puts(" MB\n");
+            vga_puts("    Total : "); print_uint64(s.total_pages/256); vga_puts(" MB\n");
 
         } else if (kstrcmp(line, "heap") == 0) {
             heap_dump_stats();
 
         } else if (kstrcmp(line, "ps") == 0) {
             vga_puts_color("  PID  STATE    NAME\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("  ---  -------  ----\n");
             for (uint32_t pid = 0; pid <= 4; pid++) {
                 process_t* p = process_get(pid);
                 if (!p) continue;
-                vga_puts("  ");
-                print_uint64(p->pid);
+                vga_puts("  "); print_uint64(p->pid);
                 vga_puts("    ");
-                const char* states[] = {"READY  ", "RUNNING", "SLEEP  ", "DEAD   "};
+                const char* states[] = {"READY  ","RUNNING","SLEEP  ","DEAD   "};
                 vga_puts(states[p->state]);
-                vga_puts("  ");
-                vga_puts(p->name);
-                vga_puts("\n");
+                vga_puts("  "); vga_puts(p->name); vga_puts("\n");
             }
 
         } else if (kstrcmp(line, "version") == 0) {
             vga_puts_color("  YouOS v0.1.0\n", VGA_YELLOW, VGA_BLACK);
-            vga_puts("  Architecture  : x86_64\n");
-            vga_puts("  Scheduler     : Round Robin\n");
+            vga_puts("  Architecture : x86_64\n");
             vga_puts("  Built from scratch — no Linux\n");
-        } else if (kstrcmp(line, "tasks") == 0) {
-            vga_puts_color("  Background tasks:\n", VGA_LIGHT_CYAN, VGA_BLACK);
-            vga_puts("    task_a count: "); print_uint64(task_a_count); vga_puts("\n");
-            vga_puts("    task_b count: "); print_uint64(task_b_count); vga_puts("\n");
 
         } else if (kstrcmp(line, "userspace") == 0) {
             extern void hello_main(void);
-            vga_puts_color("  Running userspace program (Ring 0 simulation):\n", VGA_YELLOW, VGA_BLACK);
-            vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
-            hello_main();
-            vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
-            vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-            vga_puts("Userspace program completed\n");
+            extern void tss_set_kernel_stack(uint64_t stack);
+            static uint8_t ring3_kstack[8192];
+            tss_set_kernel_stack((uint64_t)ring3_kstack + sizeof(ring3_kstack));
+            vga_puts_color("  Creating Ring 3 process...\n", VGA_YELLOW, VGA_BLACK);
+            user_process_t* proc = user_process_create("hello", hello_main);
+            if (!proc) {
+                vga_puts_color("  [!!] Failed\n", VGA_LIGHT_RED, VGA_BLACK);
+            } else {
+                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts("Jumping to Ring 3...\n");
+                vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
+                user_process_exec(proc);
+                vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
+                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts("Returned from Ring 3\n");
+                user_process_destroy(proc);
+            }
 
         } else if (line[0] != '\0') {
             vga_puts_color("  Unknown command: ", VGA_LIGHT_RED, VGA_BLACK);

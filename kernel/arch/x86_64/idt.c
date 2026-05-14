@@ -88,21 +88,41 @@ void idt_common_handler(registers_t* regs)
     if (regs->int_no < 20) {
         vga_puts_color("\n  [PANIC] CPU Exception: ", VGA_LIGHT_RED, VGA_BLACK);
         vga_puts_color(exception_names[regs->int_no], VGA_WHITE, VGA_BLACK);
+        /* Print RIP and error code for all exceptions */
+        char hx[17]; hx[16] = 0; uint64_t v;
+        vga_puts_color("\n  RIP: 0x", VGA_YELLOW, VGA_BLACK);
+        v = regs->rip; for(int i=15;i>=0;i--){hx[i]="0123456789ABCDEF"[v&0xF];v>>=4;}
+        vga_puts_color(hx, VGA_YELLOW, VGA_BLACK);
+        vga_puts_color("  ERR: 0x", VGA_YELLOW, VGA_BLACK);
+        v = regs->err_code; for(int i=15;i>=0;i--){hx[i]="0123456789ABCDEF"[v&0xF];v>>=4;}
+        vga_puts_color(hx, VGA_YELLOW, VGA_BLACK);
 
         /* Show error code for exceptions that have one */
         if (regs->int_no == 14) {
-            /* Page fault — CR2 holds the faulting address */
             uint64_t cr2;
             __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-            vga_puts_color("\n  Fault address: 0x", VGA_YELLOW, VGA_BLACK);
-            /* Print CR2 in hex */
-            char hex[17];
+            char hex[17]; hex[16] = 0;
+
+            vga_puts_color("\n  Fault address : 0x", VGA_YELLOW, VGA_BLACK);
             uint64_t val = cr2;
-            for (int i = 15; i >= 0; i--) {
-                hex[i] = "0123456789ABCDEF"[val & 0xF];
-                val >>= 4;
-            }
-            hex[16] = 0;
+            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
+            vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
+
+            vga_puts_color("\n  Error code    : 0x", VGA_YELLOW, VGA_BLACK);
+            val = regs->err_code;
+            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
+            vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
+
+            vga_puts_color("\n  Bits: ", VGA_WHITE, VGA_BLACK);
+            vga_puts_color((regs->err_code & (1<<0)) ? "[PROTECTION] " : "[NOT-PRESENT] ", VGA_WHITE, VGA_BLACK);
+            vga_puts_color((regs->err_code & (1<<1)) ? "[WRITE] "       : "[READ] ",        VGA_WHITE, VGA_BLACK);
+            vga_puts_color((regs->err_code & (1<<2)) ? "[RING-3] "      : "[RING-0] ",      VGA_WHITE, VGA_BLACK);
+            vga_puts_color((regs->err_code & (1<<3)) ? "[RSVD-BIT] "   : "",               VGA_WHITE, VGA_BLACK);
+            vga_puts_color((regs->err_code & (1<<4)) ? "[NX-FETCH] "   : "",               VGA_WHITE, VGA_BLACK);
+
+            vga_puts_color("\n  RIP           : 0x", VGA_YELLOW, VGA_BLACK);
+            val = regs->rip;
+            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
             vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
         }
 

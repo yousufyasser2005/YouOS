@@ -30,6 +30,6 @@ gdt_flush:
 
 ; void tss_flush(void)
 tss_flush:
-    mov ax, 0x28
+    mov ax, 0x30
     ltr ax
     ret
