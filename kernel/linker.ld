@@ -29,5 +29,11 @@ SECTIONS {
         _bss_end = .;
     }
 
+    .initrd ALIGN(4K) : {
+        _initrd_start = .;
+        *(.initrd)
+        _initrd_end = .;
+    }
+
     _kernel_end = .;
 }

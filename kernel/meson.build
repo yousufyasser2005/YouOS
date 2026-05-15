@@ -29,6 +29,7 @@ kernel_asm_objects = kernel_asm_gen.process(
   'arch/x86_64/switch.asm',
   'arch/x86_64/syscall_entry.asm',
   'arch/x86_64/usermode.asm',
+  'fs/initrd_blob.asm',
 )
 
 executable('youos.elf',
@@ -46,6 +47,8 @@ executable('youos.elf',
   'mm/heap.c',
   'mm/userspace.c',
   'proc/scheduler.c',
+  'fs/elf.c',
+  'fs/initrd.c',
   'userspace/hello.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,

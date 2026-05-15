@@ -11,6 +11,8 @@
 #include <kernel/process.h>
 #include <kernel/syscall.h>
 #include <kernel/userspace.h>
+#include <kernel/initrd.h>
+#include <kernel/elf.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
@@ -67,6 +69,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("VMM initialized\n");
 
     heap_init();
+    initrd_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Heap initialized\n");
 
@@ -104,6 +107,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    ps        - list processes\n");
             vga_puts("    version   - show YouOS version\n");
             vga_puts("    userspace - run Ring 3 program\n");
+            vga_puts("    exec <name> - run ELF from initrd\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -135,6 +139,30 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("  Architecture : x86_64\n");
             vga_puts("  Built from scratch — no Linux\n");
 
+        } else if (line[0]=='e' && line[1]=='x' && line[2]=='e' && line[3]=='c' && line[4]==' ') {
+            const char* name = line + 5;
+            uint64_t elf_size = 0;
+            const void* elf_data = initrd_find(name, &elf_size);
+            if (!elf_data) {
+                vga_puts_color("  [!!] Not found: ", VGA_LIGHT_RED, VGA_BLACK);
+                vga_puts(name); vga_puts("\n");
+            } else {
+                elf_load_result_t res;
+                if (elf_load(elf_data, elf_size, &res) == 0) {
+                    extern void tss_set_kernel_stack(uint64_t);
+                    static uint8_t elf_kstack[8192];
+                    tss_set_kernel_stack((uint64_t)elf_kstack + sizeof(elf_kstack));
+                    uint64_t stack_base = pmm_alloc_pages(4);
+                    uint64_t stack_top  = stack_base + 4 * PAGE_SIZE;
+                    for (uint64_t a = stack_base; a < stack_top; a += 4096)
+                        vmm_map(&kernel_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+                    /* Flush TLB */
+                    __asm__ volatile("mov %%cr3,%%rax; mov %%rax,%%cr3":::"rax","memory");
+                    vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                    extern void jump_to_userspace(uint64_t entry, uint64_t stack);
+                    jump_to_userspace(res.entry, stack_top);
+                }
+            }
         } else if (kstrcmp(line, "userspace") == 0) {
             extern void hello_main(void);
             extern void tss_set_kernel_stack(uint64_t stack);
