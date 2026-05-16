@@ -9,7 +9,7 @@ CFLAGS  = -ffreestanding -fno-stack-protector -mno-red-zone \
 LDFLAGS = -T user.ld -nostdlib
 
 CRT0    = lib/crt0.o
-PROGS   = hello
+PROGS   = hello cat
 
 all: $(PROGS:%=bin/%)
 
@@ -27,3 +27,9 @@ src/hello.o: src/hello.c
 
 clean:
 	rm -f lib/*.o src/*.o bin/*
+
+bin/cat: src/cat.o $(CRT0) | bin/
+	$(LD) $(LDFLAGS) $(CRT0) $< -o $@
+
+src/cat.o: src/cat.c
+	$(CC) $(CFLAGS) -c $< -o $@

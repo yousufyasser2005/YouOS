@@ -13,6 +13,8 @@
 #include <kernel/userspace.h>
 #include <kernel/initrd.h>
 #include <kernel/elf.h>
+#include <kernel/vfs.h>
+#include <kernel/kjmp.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
@@ -70,6 +72,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     heap_init();
     initrd_init();
+    vfs_init();
+    extern vfs_node_t* ramfs_init(void);
+    vfs_mount_root(ramfs_init());
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Heap initialized\n");
 
@@ -160,7 +165,13 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                     __asm__ volatile("mov %%cr3,%%rax; mov %%rax,%%cr3":::"rax","memory");
                     vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
                     extern void jump_to_userspace(uint64_t entry, uint64_t stack);
-                    jump_to_userspace(res.entry, stack_top);
+                    extern kjmp_buf_t kernel_exit_jmp;
+                    extern int kernel_exit_jmp_valid;
+                    kernel_exit_jmp_valid = 1;
+                    if (!ksetjmp(&kernel_exit_jmp)) {
+                        jump_to_userspace(res.entry, stack_top);
+                    }
+                    vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
                 }
             }
         } else if (kstrcmp(line, "userspace") == 0) {
@@ -176,7 +187,12 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
                 vga_puts("Jumping to Ring 3...\n");
                 vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
-                user_process_exec(proc);
+                extern kjmp_buf_t kernel_exit_jmp;
+                extern int kernel_exit_jmp_valid;
+                kernel_exit_jmp_valid = 1;
+                if (!ksetjmp(&kernel_exit_jmp)) {
+                    user_process_exec(proc);
+                }
                 vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
                 vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
                 vga_puts("Returned from Ring 3\n");
