@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <kernel/vmm.h>
 
 typedef enum {
     PROCESS_READY    = 0,

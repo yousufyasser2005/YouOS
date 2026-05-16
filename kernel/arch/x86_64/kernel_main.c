@@ -199,14 +199,17 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts(name); vga_puts("\n");
             } else {
                 elf_load_result_t res;
-                if (elf_load(elf_data, elf_size, &res) == 0) {
+                /* Create isolated address space for this process */
+                address_space_t proc_as = vmm_create_user_as();
+                vmm_switch(&proc_as);
+                if (elf_load(&proc_as, elf_data, elf_size, &res) == 0) {
                     extern void tss_set_kernel_stack(uint64_t);
                     static uint8_t elf_kstack[8192];
                     tss_set_kernel_stack((uint64_t)elf_kstack + sizeof(elf_kstack));
                     uint64_t stack_base = pmm_alloc_pages(4);
                     uint64_t stack_top  = stack_base + 4 * PAGE_SIZE;
                     for (uint64_t a = stack_base; a < stack_top; a += 4096)
-                        vmm_map(&kernel_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+                        vmm_map(&proc_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
                     /* Flush TLB */
                     __asm__ volatile("mov %%cr3,%%rax; mov %%rax,%%cr3":::"rax","memory");
                     vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -217,6 +220,8 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                     if (!ksetjmp(&kernel_exit_jmp)) {
                         jump_to_userspace(res.entry, stack_top);
                     }
+                    /* Restore kernel address space */
+                    vmm_switch(&kernel_as);
                     vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
                 }
             }

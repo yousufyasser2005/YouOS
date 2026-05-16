@@ -6,11 +6,14 @@
 
 extern void jump_to_userspace(uint64_t entry, uint64_t stack);
 
+static address_space_t* current_user_as = 0;
+
 static void map_range_user(uint64_t start, uint64_t end) {
     start &= ~(uint64_t)0xFFF;
     end = (end + 0xFFF) & ~(uint64_t)0xFFF;
+    address_space_t* as = current_user_as ? current_user_as : &kernel_as;
     for (uint64_t a = start; a < end; a += PAGE_SIZE)
-        vmm_map(&kernel_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+        vmm_map(as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
 }
 
 user_process_t* user_process_create(const char* name, void (*entry)(void))
@@ -62,6 +65,8 @@ user_process_t* user_process_create(const char* name, void (*entry)(void))
 
 void user_process_exec(user_process_t* proc)
 {
+    /* Switch to process address space */
+    vmm_switch(&proc->as);
     char hex[17]; hex[16] = 0;
     vga_puts_color("  [DBG] entry=0x", VGA_YELLOW, VGA_BLACK);
     uint64_t val = proc->entry;
@@ -73,6 +78,9 @@ void user_process_exec(user_process_t* proc)
     vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
     vga_puts_color("\n", VGA_YELLOW, VGA_BLACK);
     jump_to_userspace(proc->entry, proc->stack_top);
+    /* Restore kernel address space after process exits */
+    vmm_switch(&kernel_as);
+    current_user_as = 0;
 }
 
 void user_process_destroy(user_process_t* proc)

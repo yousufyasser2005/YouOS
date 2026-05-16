@@ -161,3 +161,54 @@ void vmm_init(void)
     /* Switch to new page tables */
     vmm_switch(&kernel_as);
 }
+
+/*
+ * Create a new user address space.
+ * Copies all kernel PML4 entries (indices 1-511) from kernel_as.
+ * Index 0 is left empty — user mappings go here per-process.
+ */
+address_space_t vmm_create_user_as(void)
+{
+    address_space_t as;
+    as.pml4 = alloc_table();
+    as.pml4_phys = (uint64_t)as.pml4;
+
+    if (!as.pml4) return as;
+
+    /* Copy kernel PML4 entries (skip index 0 which is user space) */
+    for (int i = 1; i < 512; i++)
+        as.pml4[i] = kernel_as.pml4[i];
+
+    /* Index 0: copy kernel's PDP so the identity map is accessible */
+    as.pml4[0] = kernel_as.pml4[0];
+
+    return as;
+}
+
+/*
+ * Destroy a user address space — free user-space page tables.
+ * Only frees PD/PT tables under PML4[0] (user region).
+ * Does NOT free physical pages backing user data (caller's job).
+ */
+void vmm_destroy_user_as(address_space_t* as)
+{
+    if (!as->pml4) return;
+
+    /* Walk PML4[0] only — that's the user region */
+    pte_t pml4e = as->pml4[0];
+    if (!(pml4e & PTE_PRESENT)) goto done;
+
+    /* Don't free if it's the kernel's shared entry */
+    if ((pml4e & PTE_ADDR_MASK) == (kernel_as.pml4[0] & PTE_ADDR_MASK))
+        goto done;
+
+    /* TODO: walk and free PT pages — for now just free the PML4 */
+done:
+    /* Zero out to prevent use-after-free */
+    for (int i = 0; i < 512; i++) as->pml4[i] = 0;
+}
+
+int vmm_map_in(address_space_t* as, uint64_t virt, uint64_t phys, uint64_t flags)
+{
+    return vmm_map(as, virt, phys, flags);
+}

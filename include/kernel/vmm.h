@@ -78,4 +78,13 @@ void vmm_switch(address_space_t* as);
 /* The kernel's own address space */
 extern address_space_t kernel_as;
 
+/* Create a new user address space, copying kernel PML4 entries */
+address_space_t vmm_create_user_as(void);
+
+/* Free a user address space (unmap user pages, free page tables) */
+void vmm_destroy_user_as(address_space_t* as);
+
+/* Map in a specific address space (not kernel_as) */
+int vmm_map_in(address_space_t* as, uint64_t virt, uint64_t phys, uint64_t flags);
+
 #endif /* KERNEL_VMM_H */

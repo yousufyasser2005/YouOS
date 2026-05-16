@@ -11,7 +11,9 @@ static void memzero(uint8_t* dst, uint64_t n) {
     for (uint64_t i = 0; i < n; i++) dst[i] = 0;
 }
 
-int elf_load(const void* elf_data, uint64_t elf_size, elf_load_result_t* result) {
+/* Load ELF into the CURRENT address space (whatever CR3 points to).
+   Caller must have already switched to the target address space. */
+int elf_load(address_space_t* as, const void* elf_data, uint64_t elf_size, elf_load_result_t* result) {
     const uint8_t* data = (const uint8_t*)elf_data;
     if (elf_size < sizeof(Elf64_Ehdr)) { vga_puts_color("  [ELF] Too small\n", VGA_LIGHT_RED, VGA_BLACK); return -1; }
 
@@ -57,7 +59,7 @@ int elf_load(const void* elf_data, uint64_t elf_size, elf_load_result_t* result)
                         data + offset + (copy_start - vaddr),
                         copy_end - copy_start);
             }
-            vmm_map(&kernel_as, va, phys, pte_flags);
+            vmm_map(as, va, phys, pte_flags);
         }
     }
 

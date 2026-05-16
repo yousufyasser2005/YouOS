@@ -2,6 +2,7 @@
 #define KERNEL_ELF_H
 
 #include <stdint.h>
+#include <kernel/vmm.h>
 
 /* ELF64 types */
 typedef uint64_t Elf64_Addr;
@@ -69,6 +70,6 @@ typedef struct {
 
 /* Load an ELF binary from memory into user address space.
    Returns 0 on success, -1 on error. */
-int elf_load(const void* elf_data, uint64_t elf_size, elf_load_result_t* result);
+int elf_load(address_space_t* as, const void* elf_data, uint64_t elf_size, elf_load_result_t* result);
 
 #endif
