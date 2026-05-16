@@ -14,6 +14,7 @@
 #include <kernel/initrd.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
+#include <kernel/ata.h>
 #include <kernel/kjmp.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
@@ -71,6 +72,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("VMM initialized\n");
 
     heap_init();
+    ata_init();
     initrd_init();
     vfs_init();
     extern vfs_node_t* ramfs_init(void);
@@ -113,6 +115,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    version   - show YouOS version\n");
             vga_puts("    userspace - run Ring 3 program\n");
             vga_puts("    exec <name> - run ELF from initrd\n");
+            vga_puts("    disk - read sector 0 from ATA disk\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -144,6 +147,29 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("  Architecture : x86_64\n");
             vga_puts("  Built from scratch — no Linux\n");
 
+        } else if (kstrcmp(line, "disk") == 0) {
+            static uint8_t sector_buf[512];
+            if (ata_read_sectors(0, 1, sector_buf) == 0) {
+                vga_puts_color("  Sector 0: ", VGA_YELLOW, VGA_BLACK);
+                /* Print first 16 bytes as hex + ASCII */
+                for (int i = 0; i < 16; i++) {
+                    char hx[3];
+                    hx[0] = "0123456789ABCDEF"[sector_buf[i] >> 4];
+                    hx[1] = "0123456789ABCDEF"[sector_buf[i] & 0xF];
+                    hx[2] = 0;
+                    vga_puts(hx); vga_puts(" ");
+                }
+                vga_puts("  |");
+                for (int i = 0; i < 16; i++) {
+                    char c[2];
+                    c[0] = (sector_buf[i] >= 32 && sector_buf[i] < 127) ? sector_buf[i] : '.';
+                    c[1] = 0;
+                    vga_puts(c);
+                }
+                vga_puts("|\n");
+            } else {
+                vga_puts_color("  [!!] disk read failed\n", VGA_LIGHT_RED, VGA_BLACK);
+            }
         } else if (line[0]=='e' && line[1]=='x' && line[2]=='e' && line[3]=='c' && line[4]==' ') {
             const char* name = line + 5;
             uint64_t elf_size = 0;
