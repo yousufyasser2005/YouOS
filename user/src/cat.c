@@ -28,8 +28,8 @@ static inline int64_t sys_fread(int fd, void* buf, uint64_t size) {
 }
 
 int main(void) {
-    print("cat: opening /hello\n");
-    int fd = sys_open("/hello", 0);
+    print("cat: opening /greeting.txt\n");
+    int fd = sys_open("/greeting.txt", 0);
     if (fd < 0) { print("cat: open failed\n"); return 1; }
 
     char buf[256];
