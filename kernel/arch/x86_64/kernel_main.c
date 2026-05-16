@@ -116,6 +116,8 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    userspace - run Ring 3 program\n");
             vga_puts("    exec <name> - run ELF from initrd\n");
             vga_puts("    disk - read sector 0 from ATA disk\n");
+            vga_puts("    reboot   - reboot the system\n");
+            vga_puts("    shutdown - power off\n");
 
         } else if (kstrcmp(line, "clear") == 0) {
             vga_clear();
@@ -147,6 +149,24 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("  Architecture : x86_64\n");
             vga_puts("  Built from scratch — no Linux\n");
 
+        } else if (kstrcmp(line, "reboot") == 0) {
+            vga_puts_color("  Rebooting...\n", VGA_YELLOW, VGA_BLACK);
+            /* Pulse the 8042 keyboard controller reset line */
+            __asm__ volatile("cli");
+            /* Wait for keyboard controller ready */
+            uint8_t tmp;
+            do { __asm__ volatile("inb $0x64, %0" : "=a"(tmp)); } while (tmp & 0x02);
+            __asm__ volatile("outb %0, $0x64" : : "a"((uint8_t)0xFE));
+            /* If that didn't work, triple fault */
+            __asm__ volatile("cli; hlt");
+        } else if (kstrcmp(line, "shutdown") == 0) {
+            vga_puts_color("  Shutting down...\n", VGA_YELLOW, VGA_BLACK);
+            /* QEMU/Bochs debug exit port */
+            __asm__ volatile("outw %0, %1" : : "a"((uint16_t)0x2000), "Nd"((uint16_t)0x604));
+            /* ACPI shutdown via port 0xB004 (older QEMU) */
+            __asm__ volatile("outw %0, %1" : : "a"((uint16_t)0x2000), "Nd"((uint16_t)0xB004));
+            /* Halt if nothing worked */
+            __asm__ volatile("cli; hlt");
         } else if (kstrcmp(line, "disk") == 0) {
             static uint8_t sector_buf[512];
             if (ata_read_sectors(0, 1, sector_buf) == 0) {
