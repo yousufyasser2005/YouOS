@@ -67,6 +67,21 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
     return (uint64_t)vfs_close((int)fd);
 }
 
+static uint64_t sys_shutdown(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    __asm__ volatile("outw %0, %1"::"a"((uint16_t)0x2000),"Nd"((uint16_t)0x604));
+    __asm__ volatile("outw %0, %1"::"a"((uint16_t)0x2000),"Nd"((uint16_t)0xB004));
+    __asm__ volatile("cli;hlt");
+    return 0;
+}
+static uint64_t sys_reboot(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    uint8_t tmp;
+    do { __asm__ volatile("inb $0x64,%0":"=a"(tmp)); } while(tmp & 0x02);
+    __asm__ volatile("outb %0,$0x64"::"a"((uint8_t)0xFE));
+    __asm__ volatile("cli;hlt");
+    return 0;
+}
 static uint64_t sys_fread(uint64_t fd,uint64_t buf,uint64_t size,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
     return vfs_read((int)fd,(void*)buf,size);
@@ -75,7 +90,8 @@ static uint64_t sys_fread(uint64_t fd,uint64_t buf,uint64_t size,uint64_t a4,uin
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
-    sys_open, sys_close, sys_fread
+    sys_open, sys_close, sys_fread,
+    sys_shutdown, sys_reboot
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,

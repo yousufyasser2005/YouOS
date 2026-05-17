@@ -96,6 +96,33 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     vga_puts("\n");
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    /* Auto-launch user shell */
+    {
+        uint64_t sz = 0;
+        const void* sd = initrd_find("shell", &sz);
+        if (sd) {
+            elf_load_result_t r;
+            address_space_t pa = vmm_create_user_as();
+            if (elf_load(&pa, sd, sz, &r) == 0) {
+                uint64_t sb = pmm_alloc_pages(4);
+                uint64_t st = sb + 4 * PAGE_SIZE;
+                for (uint64_t a = sb; a < st; a += 4096)
+                    vmm_map(&pa, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+                static uint8_t sk[8192];
+                extern void tss_set_kernel_stack(uint64_t);
+                tss_set_kernel_stack((uint64_t)sk + sizeof(sk));
+                vmm_switch(&pa);
+                __asm__ volatile("mov %%cr3,%%rax;mov %%rax,%%cr3":::"rax","memory");
+                extern kjmp_buf_t kernel_exit_jmp;
+                extern int kernel_exit_jmp_valid;
+                kernel_exit_jmp_valid = 1;
+                extern void jump_to_userspace(uint64_t, uint64_t);
+                if (!ksetjmp(&kernel_exit_jmp))
+                    jump_to_userspace(r.entry, st);
+                vmm_switch(&kernel_as);
+            }
+        }
+    }
     vga_puts_color("  YouOS shell — type 'help' for commands\n", VGA_WHITE, VGA_BLACK);
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     vga_puts("\n");

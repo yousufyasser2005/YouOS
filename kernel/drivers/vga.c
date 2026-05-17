@@ -37,6 +37,13 @@ static void scroll(void) {
 
 void vga_putchar(char c) {
     if (c == '\n') { col = 0; if (++row >= VGA_ROWS) scroll(); return; }
+    if (c == '\r') { col = 0; return; }
+    if (c == '\b') {
+        if (col > 0) col--;
+        else if (row > 0) { row--; col = VGA_COLS - 1; }
+        buf[row * VGA_COLS + col] = mk_entry(' ', attr);
+        return;
+    }
     buf[row * VGA_COLS + col] = mk_entry(c, attr);
     if (++col >= VGA_COLS) { col = 0; if (++row >= VGA_ROWS) scroll(); }
 }

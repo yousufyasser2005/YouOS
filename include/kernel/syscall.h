@@ -9,7 +9,7 @@
 #define SYS_GETPID  3
 #define SYS_YIELD   4
 #define SYS_SLEEP   5
-#define SYSCALL_COUNT 9
+#define SYSCALL_COUNT 11
 
 void syscall_init(void);
 
