@@ -14,6 +14,7 @@
 #include <kernel/initrd.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
+#include <kernel/fat16.h>
 #include <kernel/ata.h>
 #include <kernel/kjmp.h>
 
@@ -73,6 +74,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     heap_init();
     ata_init();
+    fat16_init();
     initrd_init();
     vfs_init();
     extern vfs_node_t* ramfs_init(void);
@@ -142,7 +144,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts("    version   - show YouOS version\n");
             vga_puts("    userspace - run Ring 3 program\n");
             vga_puts("    exec <name> - run ELF from initrd\n");
-            vga_puts("    disk - read sector 0 from ATA disk\n");
+            vga_puts("    disk     - read sector 0 from ATA disk\n");
+            vga_puts("    diskcat  - read file from FAT16 disk\n");
+            vga_puts("    diskwrite- write file to FAT16 disk\n");
             vga_puts("    reboot   - reboot the system\n");
             vga_puts("    shutdown - power off\n");
 
@@ -250,6 +254,80 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                     /* Restore kernel address space */
                     vmm_switch(&kernel_as);
                     vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                }
+            }
+        } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='c'&&line[5]=='a'&&line[6]=='t'&&line[7]==' ') {
+            const char* fname = line + 8;
+            int fd = fat16_open(fname);
+            if (fd < 0) {
+                vga_puts_color("  [!!] File not found on disk\n", VGA_LIGHT_RED, VGA_BLACK);
+            } else {
+                char buf[256];
+                int n;
+                while ((n = fat16_read(fd, buf, 255)) > 0) {
+                    buf[n] = 0;
+                    vga_puts(buf);
+                }
+                fat16_close(fd);
+                vga_puts("\n");
+            }
+        } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='w'&&line[5]=='r'&&line[6]=='i'&&line[7]=='t'&&line[8]=='e'&&line[9]==' ') {
+            /* diskwrite filename content */
+            const char* rest = line + 10;
+            /* find space between filename and content */
+            int sp = 0;
+            while (rest[sp] && rest[sp] != ' ') sp++;
+            if (rest[sp] == ' ') {
+                char fname[64];
+                for (int k = 0; k < sp && k < 63; k++) fname[k] = rest[k];
+                fname[sp] = 0;
+                const char* content = rest + sp + 1;
+                int fd = fat16_create(fname);
+                if (fd < 0) {
+                    vga_puts_color("  [!!] Could not create file\n", VGA_LIGHT_RED, VGA_BLACK);
+                } else {
+                    int len = 0;
+                    while (content[len]) len++;
+                    fat16_write(fd, content, len);
+                    fat16_close(fd);
+                    vga_puts_color("  [OK] Written\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                }
+            }
+        } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='c'&&line[5]=='a'&&line[6]=='t'&&line[7]==' ') {
+            const char* fname = line + 8;
+            int fd = fat16_open(fname);
+            if (fd < 0) {
+                vga_puts_color("  [!!] File not found on disk\n", VGA_LIGHT_RED, VGA_BLACK);
+            } else {
+                char buf[256];
+                int n;
+                while ((n = fat16_read(fd, buf, 255)) > 0) {
+                    buf[n] = 0;
+                    vga_puts(buf);
+                }
+                fat16_close(fd);
+                vga_puts("\n");
+            }
+        } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='w'&&line[5]=='r'&&line[6]=='i'&&line[7]=='t'&&line[8]=='e'&&line[9]==' ') {
+            /* diskwrite filename content */
+            const char* rest = line + 10;
+            /* find space between filename and content */
+            int sp = 0;
+            while (rest[sp] && rest[sp] != ' ') sp++;
+            if (rest[sp] == ' ') {
+                char fname[64];
+                for (int k = 0; k < sp && k < 63; k++) fname[k] = rest[k];
+                fname[sp] = 0;
+                const char* content = rest + sp + 1;
+                int fd = fat16_create(fname);
+                if (fd < 0) {
+                    vga_puts_color("  [!!] Could not create file\n", VGA_LIGHT_RED, VGA_BLACK);
+                } else {
+                    int len = 0;
+                    while (content[len]) len++;
+                    fat16_write(fd, content, len);
+                    fat16_close(fd);
+                    vga_puts_color("  [OK] Written\n", VGA_LIGHT_GREEN, VGA_BLACK);
                 }
             }
         } else if (kstrcmp(line, "userspace") == 0) {

@@ -53,6 +53,7 @@ executable('youos.elf',
   'fs/initrd.c',
   'fs/vfs.c',
   'fs/ramfs.c',
+  'fs/fat16.c',
   'userspace/hello.c',
   objects   : kernel_asm_objects,
   c_args    : kernel_c_args,
@@ -63,3 +64,4 @@ executable('youos.elf',
   ],
   install   : false,
 )
+# (fat16 already added below via sources list — edit manually if needed)
