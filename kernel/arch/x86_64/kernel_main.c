@@ -79,6 +79,18 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vfs_init();
     extern vfs_node_t* ramfs_init(void);
     vfs_mount_root(ramfs_init());
+    /* Mount FAT16 as /disk */
+    {
+        vfs_node_t* disk = fat16_vfs_mount();
+        if (disk) {
+            vfs_node_t* root = vfs_resolve("/");
+            if (root) {
+                disk->next = (vfs_node_t*)root->fs_data;
+                root->fs_data = disk;
+            }
+            vga_puts_color("  [OK] /disk mounted (FAT16)\n", VGA_LIGHT_GREEN, VGA_BLACK);
+        }
+    }
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Heap initialized\n");
 

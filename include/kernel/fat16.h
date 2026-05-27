@@ -60,3 +60,7 @@ int     fat16_write(int fd, const void* buf, uint32_t size);
 int     fat16_create(const char* path);
 
 #endif
+
+/* VFS adapter */
+#include <kernel/vfs.h>
+vfs_node_t* fat16_vfs_mount(void);
