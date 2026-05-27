@@ -12,6 +12,7 @@
 #define SYS_FREAD    8
 #define SYS_SHUTDOWN 9
 #define SYS_REBOOT   10
+#define SYS_EXEC     11
 
 static inline uint64_t _sc(uint64_t n,uint64_t a,uint64_t b,uint64_t c){
     uint64_t r;
@@ -27,6 +28,7 @@ static inline int     sys_close(int fd)                          { return _sc(SY
 static inline int64_t sys_fread(int fd,void* b,uint64_t l)       { return _sc(SYS_FREAD,fd,(uint64_t)b,l); }
 static inline void    sys_shutdown(void)                         { _sc(SYS_SHUTDOWN,0,0,0); }
 static inline void    sys_reboot(void)                           { _sc(SYS_REBOOT,0,0,0); }
+static inline int64_t sys_exec(const char* name)                 { return _sc(SYS_EXEC,(uint64_t)name,0,0); }
 
 static inline uint64_t ustrlen(const char* s){uint64_t n=0;while(s[n])n++;return n;}
 static inline void print(const char* s){sys_write(1,s,ustrlen(s));}

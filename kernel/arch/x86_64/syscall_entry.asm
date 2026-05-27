@@ -55,5 +55,6 @@ syscall_entry:
     sti
     db 0x48, 0x0F, 0x07    ; sysretq
 
-section .bss
-user_rsp_tmp: resq 1
+section .data
+global user_rsp_tmp
+user_rsp_tmp: dq 0

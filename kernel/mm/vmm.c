@@ -179,8 +179,33 @@ address_space_t vmm_create_user_as(void)
     for (int i = 1; i < 512; i++)
         as.pml4[i] = kernel_as.pml4[i];
 
-    /* Index 0: copy kernel's PDP so the identity map is accessible */
-    as.pml4[0] = kernel_as.pml4[0];
+    /* Index 0: deep-copy PDP+PD so each process has its own private PD.
+     * Copy ALL huge-page entries (full identity map stays intact so kernel
+     * can access all physical memory after vmm_switch).
+     * Because each process has its own PD, vmm_map splitting pd[2] for the
+     * ELF at 0x400000 only affects that process — not the kernel or shell. */
+    pte_t* kpdp = (pte_t*)(kernel_as.pml4[0] & PTE_ADDR_MASK);
+    if (kpdp) {
+        pte_t* new_pdp = alloc_table();
+        if (new_pdp) {
+            for (int i = 0; i < 512; i++) {
+                if (!(kpdp[i] & PTE_PRESENT)) continue;
+                pte_t* kpd = (pte_t*)(kpdp[i] & PTE_ADDR_MASK);
+                pte_t* new_pd = alloc_table();
+                if (!new_pd) continue;
+                /* Copy all entries — huge pages only (not split PTs).
+                   If kpd[j] is already a PT (was split for a previous process),
+                   skip it — this process gets a fresh huge page instead. */
+                for (int j = 0; j < 512; j++) {
+                    if ((kpd[j] & PTE_PRESENT) && (kpd[j] & PTE_HUGE))
+                        new_pd[j] = kpd[j];   /* copy huge page as-is */
+                    /* else leave 0 — vmm_map creates a fresh PT */
+                }
+                new_pdp[i] = ((uint64_t)new_pd) | (kpdp[i] & 0xFFF);
+            }
+            as.pml4[0] = ((uint64_t)new_pdp) | (kernel_as.pml4[0] & 0xFFF);
+        }
+    }
 
     return as;
 }

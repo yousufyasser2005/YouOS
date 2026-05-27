@@ -124,6 +124,19 @@ void idt_common_handler(registers_t* regs)
             val = regs->rip;
             for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
             vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
+            /* Full register dump */
+            #define PREG(name, v) do { uint64_t _v=(v); char _h[17]; _h[16]=0;               for(int _i=15;_i>=0;_i--){_h[_i]="0123456789ABCDEF"[_v&0xF];_v>>=4;}               vga_puts_color("\n  " name ": 0x", VGA_CYAN, VGA_BLACK);               vga_puts_color(_h, VGA_CYAN, VGA_BLACK); } while(0)
+            PREG("RSP", regs->rsp);
+            PREG("RBP", regs->rbp);
+            PREG("RAX", regs->rax);
+            PREG("RBX", regs->rbx);
+            PREG("RCX", regs->rcx);
+            PREG("RDX", regs->rdx);
+            PREG("RSI", regs->rsi);
+            PREG("RDI", regs->rdi);
+            PREG("R14", regs->r14);
+            PREG("R15", regs->r15);
+            #undef PREG
         }
 
         vga_puts_color("\n  System Halted.\n", VGA_LIGHT_RED, VGA_BLACK);

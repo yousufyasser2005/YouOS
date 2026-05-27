@@ -21,7 +21,7 @@ pd_table:   resb 4096
 
 align 16
 stack_bottom:
-    resb 16384
+    resb 65536
 stack_top:
 
 section .rodata

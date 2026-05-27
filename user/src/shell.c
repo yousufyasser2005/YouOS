@@ -43,10 +43,8 @@ static void cmd_cat(const char* path) {
 }
 
 static void cmd_exec(const char* name) {
-    /* We can't exec from user space yet — need sys_exec syscall */
-    /* For now just print a message */
-    print("exec: need kernel support to load: ");
-    println(name);
+    int64_t r = sys_exec(name);
+    if (r < 0) { print("exec: not found: "); println(name); }
 }
 
 static void trim(char* s) {
