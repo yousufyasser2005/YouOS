@@ -1,4 +1,6 @@
 #include <kernel/fb.h>
+#include <kernel/vmm.h>
+#include <kernel/vmm.h>
 
 /* ── Framebuffer state ───────────────────────────────────────── */
 static fb_info_t fb;
@@ -245,4 +247,17 @@ void fb_terminal_puts_color(const char* s, uint32_t fg, uint32_t bg)
     term_fg = fg; term_bg = bg;
     while (*s) fb_terminal_putchar(*s++);
     term_fg = old_fg; term_bg = old_bg;
+}
+
+/* Map framebuffer into a given address space so user processes can write to it */
+
+void fb_map_into_as(void* as_ptr) {
+    if (!fb_ready) return;
+    uint64_t size  = (uint64_t)fb.height * fb.pitch + 4096;
+    uint64_t base  = fb.addr & ~(uint64_t)0xFFF;
+    uint64_t pages = (size + 4095) / 4096 + 1;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t pa = base + i * 4096;
+        vmm_map((address_space_t*)as_ptr, pa, pa, 0x3);
+    }
 }

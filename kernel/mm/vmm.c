@@ -207,6 +207,9 @@ address_space_t vmm_create_user_as(void)
         }
     }
 
+    /* Map framebuffer into every user address space */
+    extern void fb_map_into_as(address_space_t*);
+    fb_map_into_as(&as);
     return as;
 }
 
