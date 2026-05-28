@@ -3,10 +3,21 @@ bits 32
 section .multiboot2
 align 8
 mb2_start:
-    dd 0xE85250D6
-    dd 0
-    dd mb2_end - mb2_start
-    dd 0x100000000 - (0xE85250D6 + (mb2_end - mb2_start))
+    dd 0xE85250D6           ; magic
+    dd 0                    ; architecture: i386
+    dd mb2_end - mb2_start  ; header length
+    dd 0x100000000 - (0xE85250D6 + (mb2_end - mb2_start))  ; checksum
+
+    ; Framebuffer tag — request linear framebuffer 1024x768x32
+    align 8
+    dw 5                    ; tag type: framebuffer
+    dw 0                    ; flags
+    dd 20                   ; size
+    dd 1024                 ; width
+    dd 768                  ; height
+    dd 32                   ; depth (bits per pixel)
+
+    ; End tag
     align 8
     dw 0
     dw 0

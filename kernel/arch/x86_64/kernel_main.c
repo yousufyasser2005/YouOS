@@ -17,6 +17,7 @@
 #include <kernel/fat16.h>
 #include <kernel/ata.h>
 #include <kernel/kjmp.h>
+#include <kernel/fb.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
@@ -71,6 +72,41 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vmm_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("VMM initialized\n");
+
+    /* Parse multiboot2 tags to find framebuffer info */
+    {
+        uint8_t* p = (uint8_t*)(uint64_t)(mb2_info + 8); /* skip total_size+reserved */
+        uint8_t* end = (uint8_t*)(uint64_t)mb2_info
+                     + *(uint32_t*)(uint64_t)mb2_info;
+        while (p < end) {
+            uint32_t type = *(uint32_t*)p;
+            uint32_t size = *(uint32_t*)(p + 4);
+            if (type == 8) { /* framebuffer tag */
+                uint64_t fb_addr  = *(uint64_t*)(p + 8);
+                uint32_t fb_pitch = *(uint32_t*)(p + 16);
+                uint32_t fb_w     = *(uint32_t*)(p + 20);
+                uint32_t fb_h     = *(uint32_t*)(p + 24);
+                uint8_t  fb_bpp   = *(uint8_t* )(p + 28);
+                /* Map framebuffer into virtual address space */
+                /* Framebuffer may be above 1GB identity map — map it explicitly */
+                uint64_t fb_pages = (fb_h * fb_pitch + 4095) / 4096 + 1;
+                for (uint64_t pg = 0; pg < fb_pages; pg++) {
+                    uint64_t pa = (fb_addr & ~(uint64_t)0xFFF) + pg * 4096;
+                    vmm_map(&kernel_as, pa, pa,
+                            PTE_PRESENT | PTE_WRITABLE);
+                }
+                fb_init(fb_addr, fb_w, fb_h, fb_pitch, fb_bpp);
+                fb_terminal_init();
+                vga_puts_color("  [OK] Framebuffer: ", VGA_LIGHT_GREEN, VGA_BLACK);
+                print_uint64(fb_w); vga_puts("x");
+                print_uint64(fb_h); vga_puts("x");
+                print_uint64(fb_bpp); vga_puts("bpp\n");
+                break;
+            }
+            if (type == 0) break; /* end tag */
+            p += (size + 7) & ~7; /* align to 8 bytes */
+        }
+    }
 
     heap_init();
     ata_init();
