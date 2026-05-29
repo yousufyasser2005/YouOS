@@ -9,7 +9,7 @@ CFLAGS  = -ffreestanding -fno-stack-protector -mno-red-zone \
 LDFLAGS = -T user.ld -nostdlib
 
 CRT0    = lib/crt0.o
-PROGS   = hello cat shell
+PROGS   = hello cat shell fbtest
 
 all: $(PROGS:%=bin/%)
 
@@ -38,4 +38,10 @@ bin/shell: src/shell.o $(CRT0) | bin/
 	$(LD) $(LDFLAGS) $(CRT0) $< -o $@
 
 src/shell.o: src/shell.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+bin/fbtest: src/fbtest.o $(CRT0) | bin/
+	$(LD) $(LDFLAGS) $(CRT0) $< -o $@
+
+src/fbtest.o: src/fbtest.c
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -6,6 +6,7 @@
 #include <kernel/initrd.h>
 #include <kernel/kjmp.h>
 #include <kernel/gdt.h>
+#include <kernel/fb.h>
 
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
@@ -142,12 +143,55 @@ static uint64_t sys_fread(uint64_t fd,uint64_t buf,uint64_t size,uint64_t a4,uin
     return vfs_read((int)fd,(void*)buf,size);
 }
 
+/* ── Framebuffer syscalls ────────────────────────────────────── */
+
+/* sys_fbinfo(buf) — writes 5 uint64_t values into user buffer:
+ *   [0] framebuffer physical address
+ *   [1] width  (pixels)
+ *   [2] height (pixels)
+ *   [3] pitch  (bytes per row)
+ *   [4] bpp    (bits per pixel)
+ * Returns 0 on success, -1 if no framebuffer */
+static uint64_t sys_fbinfo(uint64_t buf, uint64_t a2, uint64_t a3,
+                            uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    if (!fb_available()) return (uint64_t)-1;
+    uint64_t* out = (uint64_t*)buf;
+    fb_info_t* info = fb_get_info();
+    out[0] = info->addr;
+    out[1] = info->width;
+    out[2] = info->height;
+    out[3] = info->pitch;
+    out[4] = info->bpp;
+    return 0;
+}
+
+/* sys_fbwrite(x, y, w, h, pixels) — blit a w×h ARGB pixel buffer
+ * at screen position (x,y). pixels points to w*h uint32_t values.
+ * Returns 0 on success, -1 if no framebuffer or out of bounds. */
+static uint64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
+                             uint64_t h, uint64_t pixels) {
+    if (!fb_available()) return (uint64_t)-1;
+    fb_info_t* info = fb_get_info();
+    if (x + w > info->width || y + h > info->height) return (uint64_t)-1;
+    uint32_t* src = (uint32_t*)pixels;
+    for (uint64_t row = 0; row < h; row++) {
+        uint32_t* dst = (uint32_t*)(info->addr
+                        + (y + row) * info->pitch
+                        + x * (info->bpp / 8));
+        for (uint64_t col = 0; col < w; col++)
+            dst[col] = src[row * w + col];
+    }
+    return 0;
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
     sys_open, sys_close, sys_fread,
     sys_shutdown, sys_reboot,
-    sys_exec
+    sys_exec,
+    sys_fbinfo, sys_fbwrite
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,

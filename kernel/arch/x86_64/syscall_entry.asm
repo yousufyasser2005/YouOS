@@ -30,8 +30,8 @@ syscall_entry:
     mov rsi, [rsp+88]    ; a1
     mov rdx, [rsp+80]    ; a2
     mov rcx, [rsp+72]    ; a3  (ok to clobber rcx here, restored from stack after call)
-    mov r8,  [rsp+56]    ; a4
-    mov r9,  [rsp+48]    ; a5
+    mov r8,  [rsp+64]    ; a4 (from r10 slot — user passes a4 in r10)
+    mov r9,  [rsp+56]    ; a5 (from r8 slot  — user passes a5 in r8)
     call syscall_handler
     ; rax = return value — DO NOT touch rax after this
 

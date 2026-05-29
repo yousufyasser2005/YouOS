@@ -261,3 +261,5 @@ void fb_map_into_as(void* as_ptr) {
         vmm_map((address_space_t*)as_ptr, pa, pa, 0x3);
     }
 }
+
+fb_info_t* fb_get_info(void) { return &fb; }
