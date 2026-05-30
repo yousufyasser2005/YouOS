@@ -59,3 +59,9 @@ static inline int64_t sys_fbinfo(uint64_t* buf)
 static inline int64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
                                    uint64_t h, void* pixels)
     { return (int64_t)_sc(SYS_FBWRITE, x, y, w, h, (uint64_t)pixels); }
+#define SYS_KEYPOLL  14
+#define SYS_TICKS    15
+static inline int64_t sys_keypoll(void)
+    { return (int64_t)_sc(SYS_KEYPOLL, 0, 0, 0, 0, 0); }
+static inline uint64_t sys_ticks(void)
+    { return _sc(SYS_TICKS, 0, 0, 0, 0, 0); }

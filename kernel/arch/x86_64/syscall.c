@@ -6,6 +6,7 @@
 #include <kernel/initrd.h>
 #include <kernel/kjmp.h>
 #include <kernel/gdt.h>
+#include <kernel/keyboard.h>
 #include <kernel/fb.h>
 
 uint64_t kernel_stack_top  = 0;
@@ -185,13 +186,32 @@ static uint64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
     return 0;
 }
 
+static uint64_t sys_keypoll(uint64_t a1,uint64_t a2,uint64_t a3,
+                             uint64_t a4,uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    extern int keyboard_get_event(key_event_t*);
+    extern int keyboard_available(void);
+    if (!keyboard_available()) return 0;
+    key_event_t e;
+    if (keyboard_get_event(&e) && e.ascii) return (uint64_t)e.ascii;
+    return 0;
+}
+
+static uint64_t sys_ticks(uint64_t a1,uint64_t a2,uint64_t a3,
+                           uint64_t a4,uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    extern uint64_t scheduler_get_ticks(void);
+    return scheduler_get_ticks();
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
     sys_open, sys_close, sys_fread,
     sys_shutdown, sys_reboot,
     sys_exec,
-    sys_fbinfo, sys_fbwrite
+    sys_fbinfo, sys_fbwrite,
+    sys_keypoll, sys_ticks
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
