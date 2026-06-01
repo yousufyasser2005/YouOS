@@ -18,6 +18,7 @@
 #include <kernel/ata.h>
 #include <kernel/kjmp.h>
 #include <kernel/fb.h>
+#include <kernel/mouse.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
 
@@ -139,6 +140,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("Scheduler initialized\n");
 
     pic_unmask(IRQ_KEYBOARD);
+    pic_unmask(2);
+    mouse_init();
+    pic_unmask(12);
 
     syscall_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);

@@ -8,6 +8,7 @@
 #include <kernel/gdt.h>
 #include <kernel/keyboard.h>
 #include <kernel/fb.h>
+#include <kernel/mouse.h>
 
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
@@ -111,7 +112,6 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         jump_to_userspace(res.entry, stack_top);
     }
 
-    /* Child exited — restore parent shell context */
     kernel_exit_jmp      = exec_saved_jmp;
     kernel_exit_jmp_valid = 1;
     kernel_stack_top     = exec_saved_kstack;
@@ -144,15 +144,6 @@ static uint64_t sys_fread(uint64_t fd,uint64_t buf,uint64_t size,uint64_t a4,uin
     return vfs_read((int)fd,(void*)buf,size);
 }
 
-/* ── Framebuffer syscalls ────────────────────────────────────── */
-
-/* sys_fbinfo(buf) — writes 5 uint64_t values into user buffer:
- *   [0] framebuffer physical address
- *   [1] width  (pixels)
- *   [2] height (pixels)
- *   [3] pitch  (bytes per row)
- *   [4] bpp    (bits per pixel)
- * Returns 0 on success, -1 if no framebuffer */
 static uint64_t sys_fbinfo(uint64_t buf, uint64_t a2, uint64_t a3,
                             uint64_t a4, uint64_t a5) {
     (void)a2;(void)a3;(void)a4;(void)a5;
@@ -167,9 +158,6 @@ static uint64_t sys_fbinfo(uint64_t buf, uint64_t a2, uint64_t a3,
     return 0;
 }
 
-/* sys_fbwrite(x, y, w, h, pixels) — blit a w×h ARGB pixel buffer
- * at screen position (x,y). pixels points to w*h uint32_t values.
- * Returns 0 on success, -1 if no framebuffer or out of bounds. */
 static uint64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
                              uint64_t h, uint64_t pixels) {
     if (!fb_available()) return (uint64_t)-1;
@@ -204,6 +192,17 @@ static uint64_t sys_ticks(uint64_t a1,uint64_t a2,uint64_t a3,
     return scheduler_get_ticks();
 }
 
+static uint64_t sys_mouseread(uint64_t buf, uint64_t a2, uint64_t a3,
+                               uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    uint64_t* out = (uint64_t*)buf;
+    if (!out) return (uint64_t)-1;
+    out[0] = (uint64_t)mouse_get_x();
+    out[1] = (uint64_t)mouse_get_y();
+    out[2] = (uint64_t)mouse_get_buttons();
+    return 0;
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
@@ -211,7 +210,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_shutdown, sys_reboot,
     sys_exec,
     sys_fbinfo, sys_fbwrite,
-    sys_keypoll, sys_ticks
+    sys_keypoll, sys_ticks,
+    sys_mouseread
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,

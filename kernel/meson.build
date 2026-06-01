@@ -44,6 +44,7 @@ executable('youos.elf',
   'drivers/ata.c',
   'drivers/fb.c',
   'drivers/keyboard.c',
+  'drivers/mouse.c',
   'drivers/terminal.c',
   'mm/pmm.c',
   'mm/vmm.c',
@@ -66,4 +67,3 @@ executable('youos.elf',
   ],
   install   : false,
 )
-# (fat16 already added below via sources list — edit manually if needed)

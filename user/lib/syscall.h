@@ -65,3 +65,8 @@ static inline int64_t sys_keypoll(void)
     { return (int64_t)_sc(SYS_KEYPOLL, 0, 0, 0, 0, 0); }
 static inline uint64_t sys_ticks(void)
     { return _sc(SYS_TICKS, 0, 0, 0, 0, 0); }
+
+/* syscall 16 — mouse: out[0]=X  out[1]=Y  out[2]=buttons */
+static inline long sys_mouseread(unsigned long long *out) {
+    return _sc(16, (long)out, 0, 0, 0, 0);
+}
