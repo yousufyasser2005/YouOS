@@ -1,6 +1,5 @@
 #ifndef KERNEL_FAT16_H
 #define KERNEL_FAT16_H
-
 #include <stdint.h>
 
 typedef struct __attribute__((packed)) {
@@ -49,15 +48,24 @@ typedef struct __attribute__((packed)) {
 #define FAT16_ATTR_DIRECTORY 0x10
 #define FAT16_ATTR_ARCHIVE   0x20
 #define FAT16_ATTR_LFN       0x0F
-
 #define FAT16_EOC 0xFFF8
 
-int     fat16_init(void);
-int     fat16_open(const char* path);
-int     fat16_read(int fd, void* buf, uint32_t size);
-int     fat16_close(int fd);
-int     fat16_write(int fd, const void* buf, uint32_t size);
-int     fat16_create(const char* path);
+/* Entry filled by fat16_list */
+typedef struct {
+    char     name[32];   /* null-terminated display name  */
+    uint32_t size;       /* file size in bytes, 0 for dirs */
+    uint8_t  is_dir;     /* 1 = directory, 0 = file       */
+} fat16_entry_t;
+
+int  fat16_init(void);
+int  fat16_open(const char* path);
+int  fat16_read(int fd, void* buf, uint32_t size);
+int  fat16_close(int fd);
+int  fat16_write(int fd, const void* buf, uint32_t size);
+int  fat16_create(const char* path);
+
+/* List root directory. Fills entries[], returns count (max max_entries). */
+int  fat16_list(fat16_entry_t* entries, int max_entries);
 
 #endif
 

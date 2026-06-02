@@ -1,6 +1,5 @@
 #ifndef KERNEL_SYSCALL_H
 #define KERNEL_SYSCALL_H
-
 #include <stdint.h>
 
 #define SYS_EXIT      0
@@ -14,9 +13,9 @@
 #define SYS_KEYPOLL   14
 #define SYS_TICKS     15
 #define SYS_MOUSEREAD 16
+#define SYS_READDIR   17
 
-#define SYSCALL_COUNT 17
+#define SYSCALL_COUNT 18
 
 void syscall_init(void);
-
 #endif

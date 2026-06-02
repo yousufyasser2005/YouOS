@@ -437,3 +437,52 @@ int fat16_close(int fd) {
     fds[fd].used = 0;
     return 0;
 }
+
+/* ── fat16_list: read root directory entries ─────────────────── */
+int fat16_list(fat16_entry_t* entries, int max_entries) {
+    fat16_dirent_t dir[16];
+    int count = 0;
+    uint32_t root_lba = bpb.reserved_sectors
+                      + bpb.num_fats * bpb.sectors_per_fat;
+    uint32_t root_sectors = (bpb.root_entry_count * 32
+                             + bpb.bytes_per_sector - 1)
+                            / bpb.bytes_per_sector;
+
+    for (uint32_t sec = 0; sec < root_sectors && count < max_entries; sec++) {
+        if (ata_read_sectors(root_lba + sec, 1, (uint8_t*)dir) != 0)
+            break;
+        for (int e = 0; e < 16 && count < max_entries; e++) {
+            uint8_t first = (uint8_t)dir[e].name[0];
+            if (first == 0x00) goto done;   /* no more entries */
+            if (first == 0xE5) continue;    /* deleted */
+            uint8_t attr = dir[e].attributes;
+            if (attr == FAT16_ATTR_LFN)    continue;
+            if (attr & FAT16_ATTR_VOLUME_ID) continue;
+            if (attr & FAT16_ATTR_HIDDEN)  continue;
+            if (attr & FAT16_ATTR_SYSTEM)  continue;
+
+            /* Build display name: "NAME    EXT" → "name.ext" */
+            fat16_entry_t* out = &entries[count];
+            int ni = 0, k;
+            for (k = 0; k < 8 && dir[e].name[k] != ' '; k++)
+                out->name[ni++] = (dir[e].name[k] >= 'A' && dir[e].name[k] <= 'Z')
+                                  ? dir[e].name[k] + 32 : dir[e].name[k];
+            if (!(attr & FAT16_ATTR_DIRECTORY)) {
+                int has_ext = 0;
+                for (k = 0; k < 3; k++) if (dir[e].ext[k] != ' ') { has_ext=1; break; }
+                if (has_ext) {
+                    out->name[ni++] = '.';
+                    for (k = 0; k < 3 && dir[e].ext[k] != ' '; k++)
+                        out->name[ni++] = (dir[e].ext[k] >= 'A' && dir[e].ext[k] <= 'Z')
+                                          ? dir[e].ext[k] + 32 : dir[e].ext[k];
+                }
+            }
+            out->name[ni] = 0;
+            out->size   = dir[e].file_size;
+            out->is_dir = (attr & FAT16_ATTR_DIRECTORY) ? 1 : 0;
+            count++;
+        }
+    }
+done:
+    return count;
+}

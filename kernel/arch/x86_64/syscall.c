@@ -203,6 +203,16 @@ static uint64_t sys_mouseread(uint64_t buf, uint64_t a2, uint64_t a3,
     return 0;
 }
 
+#include <kernel/fat16.h>
+
+static uint64_t sys_readdir(uint64_t buf, uint64_t max, uint64_t a3,
+                             uint64_t a4, uint64_t a5) {
+    (void)a3;(void)a4;(void)a5;
+    fat16_entry_t* entries = (fat16_entry_t*)buf;
+    if (!entries || max == 0) return 0;
+    return (uint64_t)fat16_list(entries, (int)max);
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
@@ -211,7 +221,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exec,
     sys_fbinfo, sys_fbwrite,
     sys_keypoll, sys_ticks,
-    sys_mouseread
+    sys_mouseread,
+    sys_readdir
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,

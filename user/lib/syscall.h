@@ -70,3 +70,10 @@ static inline uint64_t sys_ticks(void)
 static inline long sys_mouseread(unsigned long long *out) {
     return _sc(16, (long)out, 0, 0, 0, 0);
 }
+
+/* syscall 17 — readdir: fills entries[], returns count
+ * entry layout: name[32], size(u32), is_dir(u8) = 37 bytes each */
+#define DIRENT_SIZE 37
+static inline long sys_readdir(void* buf, long max) {
+    return (long)_sc(17, (uint64_t)buf, (uint64_t)max, 0, 0, 0);
+}
