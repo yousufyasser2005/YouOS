@@ -6,6 +6,7 @@ typedef unsigned short u16;
 typedef unsigned char  u8;
 typedef signed long    s64;
 
+/* ── framebuffer ─────────────────────────────────────────────── */
 static u64 FB_W, FB_H;
 static u32 buf[1024 * 768];
 
@@ -19,10 +20,15 @@ static void outline(int x,int y,int w,int h,u32 c){
     for(int i=x;i<x+w;i++){px(i,y,c);px(i,y+h-1,c);}
     for(int i=y;i<y+h;i++){px(x,i,c);px(x+w-1,i,c);}
 }
-static void hline(int x,int y,int w,u32 c){ for(int i=0;i<w;i++) px(x+i,y,c); }
-static void vline(int x,int y,int h,u32 c){ for(int i=0;i<h;i++) px(x,y+i,c); }
+static void hline(int x,int y,int w,u32 c){
+    for(int i=0;i<w;i++) px(x+i,y,c);
+}
+static void vline(int x,int y,int h,u32 c){
+    for(int i=0;i<h;i++) px(x,y+i,c);
+}
 static void flush(void){ sys_fbwrite(0,0,1024,768,buf); }
 
+/* ── font ────────────────────────────────────────────────────── */
 static const u8 font[96][16]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x18,0x18,0x18,0x18,0x18,0x18,0,0x18,0,0,0,0,0,0},
 {0,0,0x6C,0x6C,0x6C,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x6C,0x6C,0xFE,0x6C,0xFE,0x6C,0x6C,0,0,0,0,0,0,0},
@@ -87,23 +93,21 @@ static void text_center(int cx,int y,const char*s,u32 fg,u32 bg){
     text(cx-l*4,y,s,fg,bg);
 }
 
+/* ── math ────────────────────────────────────────────────────── */
 static s64 isin(int deg){
     static const short t[]={0,17,34,52,69,87,104,121,139,156,173,190,207,224,241,258,275,292,309,325,342,358,374,390,406,422,438,453,469,484,499,515,529,544,559,573,587,601,615,629,642,656,669,681,694,707,719,731,743,754,766,777,788,798,809,819,829,838,848,857,866,874,882,891,898,906,913,920,927,933,939,945,951,956,961,965,970,974,978,981,984,987,990,992,994,996,997,998,999,999,1000,999,999,998,997,996,994,992,990,987,984,981,978,974,970,965,961,956,951,945,939,933,927,920,913,906,898,891,882,874,866,857,848,838,829,819,809,798,788,777,766,754,743,731,719,707,694,681,669,656,642,629,615,601,587,573,559,544,529,515,499,484,469,453,438,422,406,390,374,358,342,325,309,292,275,258,241,224,207,190,173,156,139,121,104,87,69,52,34,17};
     deg=((deg%360)+360)%360;
-    if(deg<180) return t[deg];
-    return -t[deg-180];
+    if(deg<180) return t[deg]; return -t[deg-180];
 }
 static s64 icos(int deg){ return isin(deg+90); }
-
 static void line_aa(int x0,int y0,int x1,int y1,u32 c){
-    int dx=x1-x0,dy=y1-y0;
-    int steps=dx<0?-dx:dx;
+    int dx=x1-x0,dy=y1-y0,steps=dx<0?-dx:dx;
     if((dy<0?-dy:dy)>steps) steps=(dy<0?-dy:dy);
     if(!steps){px(x0,y0,c);return;}
-    for(int i=0;i<=steps;i++)
-        px(x0+dx*i/steps, y0+dy*i/steps, c);
+    for(int i=0;i<=steps;i++) px(x0+dx*i/steps,y0+dy*i/steps,c);
 }
 
+/* ── colors ──────────────────────────────────────────────────── */
 #define BG       0x0D1117
 #define PANEL_BG 0x161B22
 #define TASKBAR  0x0D1117
@@ -119,94 +123,222 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_H   40
 #define PANEL_W  240
 #define PANEL_X  (1024-PANEL_W)
+#define TITLEBAR_H 28
 
-static int TW_X=130, TW_Y=60, TW_W=600, TW_H=500;
-#define TW_PAD 8
+/* ── hit test ────────────────────────────────────────────────── */
+static int in_box(int px2,int py,int x,int y,int w,int h){
+    return px2>=x&&px2<x+w&&py>=y&&py<y+h;
+}
 
+/* ═══════════════════════════════════════════════════════════════
+ * WINDOW MANAGER
+ * ═══════════════════════════════════════════════════════════════ */
+#define MAX_WINDOWS  8
+#define WIN_TERMINAL 0
+#define WIN_ABOUT    1
+
+typedef struct {
+    int  id;
+    int  x, y, w, h;
+    int  visible;
+    int  minimized;
+    int  z;            /* higher = drawn on top */
+    char title[32];
+    u32  accent;       /* title bar accent color */
+} Win;
+
+static Win wins[MAX_WINDOWS];
+static int win_count = 0;
+static int focused   = -1;  /* index into wins[] of focused window */
+
+/* drag state */
+static int drag_win  = -1;
+static int drag_ox   = 0;
+static int drag_oy   = 0;
+
+/* mouse */
 static int mouse_x=512, mouse_y=384, mouse_btn=0, prev_btn=0;
-static int drag=0, drag_ox=0, drag_oy=0;
-static int term_visible=1, term_minimized=0, cursor_blink=0;
 
+/* ── window manager helpers ──────────────────────────────────── */
+static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
+    if(win_count>=MAX_WINDOWS) return -1;
+    int i=win_count++;
+    wins[i].id=id; wins[i].x=x; wins[i].y=y;
+    wins[i].w=w;   wins[i].h=h;
+    wins[i].visible=1; wins[i].minimized=0;
+    wins[i].z=i; wins[i].accent=accent;
+    int k=0; while(title[k]&&k<31){wins[i].title[k]=title[k];k++;}
+    wins[i].title[k]=0;
+    focused=i;
+    return i;
+}
+
+/* bring window index i to top of z-order */
+static void wm_focus(int i){
+    if(i<0||i>=win_count) return;
+    int topz=wins[i].z;
+    /* shift all windows above i down by 1 */
+    for(int j=0;j<win_count;j++)
+        if(j!=i && wins[j].z>topz) wins[j].z--;
+    wins[i].z=win_count-1;
+    focused=i;
+}
+
+/* return index of topmost window under (mx,my), -1 if none */
+static int wm_hit(int mx,int my){
+    int best=-1, bestz=-1;
+    for(int i=0;i<win_count;i++){
+        if(!wins[i].visible) continue;
+        int wh=wins[i].minimized?TITLEBAR_H:wins[i].h;
+        if(in_box(mx,my,wins[i].x,wins[i].y,wins[i].w,wh)){
+            if(wins[i].z>bestz){bestz=wins[i].z;best=i;}
+        }
+    }
+    return best;
+}
+
+/* draw a window frame; returns 1 if content area should be drawn */
+static int wm_draw_frame(int i){
+    Win*w=&wins[i];
+    if(!w->visible) return 0;
+    int is_focused=(i==focused);
+
+    if(!w->minimized){
+        /* shadow */
+        rect(w->x+4,w->y+4,w->w,w->h,0x000000);
+        /* body */
+        rect(w->x,w->y,w->w,w->h,0x0D1117);
+    }
+
+    /* title bar */
+    u32 tbar_bg = is_focused ? 0x1C2128 : 0x13161B;
+    u32 border_c = is_focused ? w->accent : BORDER;
+    rect(w->x,w->y,w->w,TITLEBAR_H,tbar_bg);
+    hline(w->x,w->y+TITLEBAR_H,w->w,border_c);
+    outline(w->x,w->y,w->w,w->minimized?TITLEBAR_H:w->h,border_c);
+
+    /* accent line at top of focused window */
+    if(is_focused) hline(w->x,w->y,w->w,w->accent);
+
+    /* traffic lights */
+    int hov_cl=in_box(mouse_x,mouse_y,w->x+8, w->y+7,14,14);
+    int hov_mn=in_box(mouse_x,mouse_y,w->x+24,w->y+7,14,14);
+    int hov_mx=in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14);
+    rect(w->x+8, w->y+7,14,14,hov_cl?0xFF5F57:0xED4245);
+    rect(w->x+24,w->y+7,14,14,hov_mn?0xFFBD2E:0xFAA61A);
+    rect(w->x+40,w->y+7,14,14,hov_mx?0x28C840:0x57F287);
+
+    /* title */
+    text_center(w->x+w->w/2,w->y+6,w->title,
+                is_focused?TEXT:DIM, tbar_bg);
+
+    return !w->minimized;
+}
+
+/* sort indices by z ascending (painter order: low z first) */
+static int z_order[MAX_WINDOWS];
+static void wm_sort(void){
+    for(int i=0;i<win_count;i++) z_order[i]=i;
+    /* simple insertion sort */
+    for(int i=1;i<win_count;i++){
+        int key=z_order[i],j=i-1;
+        while(j>=0 && wins[z_order[j]].z > wins[key].z){
+            z_order[j+1]=z_order[j]; j--;
+        }
+        z_order[j+1]=key;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * TERMINAL WINDOW CONTENT
+ * ═══════════════════════════════════════════════════════════════ */
+static char tlines[32][128];
+static int  trow=0;
+static char tinput[128];
+static int  tinput_len=0;
+static int  cursor_blink=0;
+
+static void tprint(const char*s){
+    if(trow>=32){
+        for(int i=0;i<31;i++){
+            int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}
+            tlines[i][j]=0;
+        }
+        trow=31;
+    }
+    int j=0; while(*s&&j<127) tlines[trow][j++]=*s++;
+    tlines[trow][j]=0; trow++;
+}
+
+static void tcmd(const char*cmd){
+    char echo[134]; echo[0]='$'; echo[1]=' ';
+    int i=0; while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;} echo[i+2]=0;
+    tprint(echo);
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls";
+    int mh=1,mc=1,ma=1,ms=1,ml=1;
+    for(int k=0;help[k]||cmd[k];k++) if(help[k]!=cmd[k]){mh=0;break;}
+    for(int k=0;clr[k]||cmd[k];k++)  if(clr[k]!=cmd[k]) {mc=0;break;}
+    for(int k=0;abt[k]||cmd[k];k++)  if(abt[k]!=cmd[k]) {ma=0;break;}
+    for(int k=0;sd[k]||cmd[k];k++)   if(sd[k]!=cmd[k])  {ms=0;break;}
+    for(int k=0;ls[k]||cmd[k];k++)   if(ls[k]!=cmd[k])  {ml=0;break;}
+    if(mh){ tprint("Commands: help clear about ls shutdown"); }
+    else if(mc){ trow=0; for(int r=0;r<32;r++) tlines[r][0]=0; }
+    else if(ma){ tprint("YouOS v0.2 - Phase 2: Window Manager"); tprint("x86_64 | FAT16 | ELF | WM"); }
+    else if(ml){ tprint("hello  cat  shell  fbtest  desktop"); }
+    else if(ms){ tprint("Shutting down..."); flush(); sys_shutdown(); }
+    else { char m[64]; m[0]='?'; m[1]=' ';
+           int k=0; while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;} m[k+2]=0; tprint(m); }
+}
+
+static void draw_terminal_content(int i){
+    Win*w=&wins[i];
+    int cx=w->x+8, cy=w->y+TITLEBAR_H+8;
+    int max_rows=(w->h-TITLEBAR_H-32)/16;
+    int start=trow>max_rows?trow-max_rows:0;
+    for(int r=start;r<trow;r++){
+        u32 fg=TEXT;
+        if(tlines[r][0]=='$') fg=GREEN;
+        else if(tlines[r][0]=='?') fg=RED;
+        text(cx,cy+(r-start)*16,tlines[r],fg,0x0D1117);
+    }
+    int iy=w->y+w->h-24;
+    hline(w->x,iy-2,w->w,BORDER);
+    rect(w->x,iy,w->w,22,0x0A0D10);
+    text(w->x+8,iy+3,"$ ",GREEN,0x0A0D10);
+    text(w->x+24,iy+3,tinput,TEXT,0x0A0D10);
+    if(cursor_blink<50)
+        rect(w->x+24+tinput_len*8,iy+2,8,14,ACCENT);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * ABOUT WINDOW CONTENT
+ * ═══════════════════════════════════════════════════════════════ */
+static void draw_about_content(int i){
+    Win*w=&wins[i];
+    int cx=w->x+w->w/2, y=w->y+TITLEBAR_H+20;
+    text_center(cx,y,   "YouOS",ACCENT,0x0D1117);        y+=24;
+    text_center(cx,y,   "Version 0.2.0",TEXT,0x0D1117);  y+=20;
+    hline(w->x+20,y,w->w-40,BORDER);                     y+=12;
+    text_center(cx,y,   "Architecture: x86_64",DIM,0x0D1117); y+=18;
+    text_center(cx,y,   "Bootloader:   GRUB2 + Multiboot2",DIM,0x0D1117); y+=18;
+    text_center(cx,y,   "Filesystem:   FAT16 + initrd",DIM,0x0D1117); y+=18;
+    text_center(cx,y,   "Display:      1024x768x32bpp",DIM,0x0D1117); y+=18;
+    text_center(cx,y,   "Syscalls:     17",DIM,0x0D1117); y+=18;
+    hline(w->x+20,y,w->w-40,BORDER);                     y+=12;
+    text_center(cx,y,   "Built from scratch in C + NASM",GREEN,0x0D1117);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * WALLPAPER & PANEL
+ * ═══════════════════════════════════════════════════════════════ */
 static void wallpaper(void){
     for(int y=0;y<768-TBAR_H;y++){
-        u32 r=0x0D, g=0x11+(y*8)/768, b=0x17+(y*20)/768;
+        u32 r=0x0D,g=0x11+(y*8)/768,b=0x17+(y*20)/768;
         u32 c=(r<<16)|(g<<8)|b;
         for(int x=0;x<PANEL_X;x++) px(x,y,c);
     }
     for(int y=0;y<768-TBAR_H;y+=80) for(int x=0;x<PANEL_X;x++) px(x,y,0x161B22);
-    for(int x=0;x<PANEL_X;x+=80) for(int y=0;y<768-TBAR_H;y++) px(x,y,0x161B22);
-}
-
-typedef struct { int x,y; const char* name; u32 color; } Icon;
-static Icon icons[]={
-    {60, 80,  "Terminal", 0x58A6FF},
-    {60, 180, "Files",    0x3FB950},
-    {60, 280, "About",    0xBC8CFF},
-};
-#define N_ICONS 3
-static int icon_hovered=-1;
-
-static void draw_icon(int i){
-    Icon*ic=&icons[i];
-    u32 bg=(i==icon_hovered)?0x21262D:BG;
-    rect(ic->x-4,ic->y-4,72,72,bg);
-    outline(ic->x-4,ic->y-4,72,72,i==icon_hovered?ACCENT:BORDER);
-    rect(ic->x+10,ic->y+10,52,40,ic->color);
-    for(int r=ic->y+12;r<ic->y+48;r++)
-        for(int c2=ic->x+12;c2<ic->x+60;c2++){
-            u32 col=buf[r*1024+c2];
-            u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
-            buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
-        }
-    int llen=0; const char*p=ic->name; while(*p++)llen++;
-    text(ic->x+(64-llen*8)/2, ic->y+66, ic->name, TEXT, BG);
-}
-static void draw_icons(void){ for(int i=0;i<N_ICONS;i++) draw_icon(i); }
-
-static int menu_open=0;
-static const char* menu_items[]={"Terminal","Files","About","Settings","Shutdown"};
-#define N_MENU 5
-static int menu_sel=-1;
-
-static void draw_menu(void){
-    if(!menu_open) return;
-    int mx=4, my=768-TBAR_H-N_MENU*32-8;
-    rect(mx,my,220,N_MENU*32+8,PANEL_BG);
-    outline(mx,my,220,N_MENU*32+8,BORDER);
-    text(mx+8,my+4,"Applications",DIM,PANEL_BG);
-    for(int i=0;i<N_MENU;i++){
-        int iy=my+20+i*32;
-        u32 bg=(i==menu_sel)?0x21262D:PANEL_BG;
-        rect(mx+2,iy,216,28,bg);
-        u32 dots[]={ACCENT,GREEN,PURPLE,YELLOW,RED};
-        rect(mx+8,iy+8,12,12,dots[i]);
-        text(mx+26,iy+6,menu_items[i],TEXT,bg);
-    }
-}
-
-static void draw_taskbar(void){
-    int ty=768-TBAR_H;
-    rect(0,ty,1024,TBAR_H,TASKBAR);
-    hline(0,ty,1024,BORDER);
-    int hover_start=(mouse_x>=4&&mouse_x<=84&&mouse_y>=ty+4&&mouse_y<=ty+TBAR_H-4);
-    u32 sbg=menu_open?ACCENT:(hover_start?0x2D333B:0x21262D);
-    rect(4,ty+4,80,TBAR_H-8,sbg);
-    outline(4,ty+4,80,TBAR_H-8,menu_open?0x79C0FF:BORDER);
-    text(12,ty+12,"  YouOS",menu_open?0x0D1117:ACCENT,sbg);
-    if(term_visible){
-        u32 tbtnbg=term_minimized?0x161B22:0x21262D;
-        rect(92,ty+4,120,TBAR_H-8,tbtnbg);
-        outline(92,ty+4,120,TBAR_H-8,ACCENT);
-        if(!term_minimized) hline(92,ty+TBAR_H-2,120,ACCENT);
-        text(100,ty+12,"Desktop",TEXT,tbtnbg);
-    }
-    u64 ticks=sys_ticks(); u64 secs=ticks/100;
-    u64 hh=(secs/3600)%24, mm=(secs/60)%60, ss=secs%60;
-    char clk[9];
-    clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';
-    clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';
-    clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
-    text(1024-PANEL_W-80,ty+12,clk,TEXT,TASKBAR);
+    for(int x=0;x<PANEL_X;x+=80)   for(int y=0;y<768-TBAR_H;y++) px(x,y,0x161B22);
 }
 
 static void draw_panel_bg(void){
@@ -215,19 +347,19 @@ static void draw_panel_bg(void){
 }
 
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
-    int hh=(secs/3600)%12, mm=(secs/60)%60, ss=secs%60;
+    int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
     for(int deg=0;deg<360;deg+=2){
-        px(cx+(int)(icos(deg)*r/1000), cy-(int)(isin(deg)*r/1000), BORDER);
-        px(cx+(int)(icos(deg)*(r-1)/1000), cy-(int)(isin(deg)*(r-1)/1000), BORDER);
+        px(cx+(int)(icos(deg)*r/1000),cy-(int)(isin(deg)*r/1000),BORDER);
+        px(cx+(int)(icos(deg)*(r-1)/1000),cy-(int)(isin(deg)*(r-1)/1000),BORDER);
     }
     for(int dy=-r+2;dy<r-1;dy++)
         for(int dx=-r+2;dx<r-1;dx++)
             if(dx*dx+dy*dy<(r-2)*(r-2)) px(cx+dx,cy+dy,0x161B22);
     for(int i=0;i<12;i++){
         int deg=i*30;
-        int x1=cx+(int)(icos(deg)*(r-4)/1000), y1=cy-(int)(isin(deg)*(r-4)/1000);
-        int x2=cx+(int)(icos(deg)*(r-10)/1000), y2=cy-(int)(isin(deg)*(r-10)/1000);
-        line_aa(x1,y1,x2,y2,(i==0||i==3||i==6||i==9)?WHITE:DIM);
+        line_aa(cx+(int)(icos(deg)*(r-4)/1000),cy-(int)(isin(deg)*(r-4)/1000),
+                cx+(int)(icos(deg)*(r-10)/1000),cy-(int)(isin(deg)*(r-10)/1000),
+                (i==0||i==3||i==6||i==9)?WHITE:DIM);
     }
     int hdeg=(hh*30+mm/2)-90;
     line_aa(cx,cy,cx+(int)(icos(hdeg)*(r-28)/1000),cy-(int)(isin(hdeg)*(r-28)/1000),WHITE);
@@ -235,8 +367,7 @@ static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int mdeg=mm*6-90;
     line_aa(cx,cy,cx+(int)(icos(mdeg)*(r-18)/1000),cy-(int)(isin(mdeg)*(r-18)/1000),ACCENT);
     line_aa(cx,cy,cx+(int)(icos(mdeg+1)*(r-18)/1000),cy-(int)(isin(mdeg+1)*(r-18)/1000),ACCENT);
-    int sdeg=ss*6-90;
-    line_aa(cx,cy,cx+(int)(icos(sdeg)*(r-14)/1000),cy-(int)(isin(sdeg)*(r-14)/1000),RED);
+    line_aa(cx,cy,cx+(int)(icos(ss*6-90)*(r-14)/1000),cy-(int)(isin(ss*6-90)*(r-14)/1000),RED);
     rect(cx-3,cy-3,6,6,WHITE);
 }
 
@@ -255,12 +386,12 @@ static void draw_calendar(int x,int y,int month,int year,int today){
     hline(x,y+20,PANEL_W-8,BORDER);
     for(int d=0;d<7;d++) text(x+4+d*30,y+24,day_names[d],DIM,0x0D1117);
     hline(x,y+38,PANEL_W-8,0x21262D);
-    int first_dow=4, days=days_in_month[month-1], col=first_dow, row=0;
+    int col=4,row=0,days=days_in_month[month-1];
     for(int d=1;d<=days;d++){
-        int dx=x+4+col*30, dy=y+42+row*18;
-        u32 fg=TEXT, bg2=0x0D1117;
+        int dx=x+4+col*30,dy=y+42+row*18;
+        u32 fg=TEXT,bg2=0x0D1117;
         if(d==today){rect(dx-2,dy-1,18,16,ACCENT);fg=0x0D1117;bg2=ACCENT;}
-        else if(col>=5){fg=RED;}
+        else if(col>=5) fg=RED;
         char ds[3]; ds[0]=(d<10)?' ':'0'+d/10; ds[1]='0'+d%10; ds[2]=0;
         text(dx,dy,ds,fg,bg2);
         if(++col==7){col=0;row++;}
@@ -274,7 +405,7 @@ static void draw_digital_clock(int x,int y,u64 secs){
     t[3]='0'+mm/10;t[4]='0'+mm%10;t[5]=':';
     t[6]='0'+ss/10;t[7]='0'+ss%10;t[8]=0;
     int cx=x+PANEL_W/2-4;
-    for(int i=0;t[i];i++){ int gx=cx-36+i*14; glyph(gx,y,t[i],ACCENT,PANEL_BG); glyph(gx,y+8,t[i],ACCENT,PANEL_BG); }
+    for(int i=0;t[i];i++){int gx=cx-36+i*14;glyph(gx,y,t[i],ACCENT,PANEL_BG);glyph(gx,y+8,t[i],ACCENT,PANEL_BG);}
     text_center(cx,y+28,"Fri May 29 2026",DIM,PANEL_BG);
 }
 
@@ -290,74 +421,97 @@ static void draw_stats(int x,int y){
     text(x+190,y+36,"50%",DIM,0x0D1117);
 }
 
-static char tlines[32][128];
-static int  trow=0;
-static char tinput[128];
-static int  tinput_len=0;
+/* ═══════════════════════════════════════════════════════════════
+ * DESKTOP ICONS
+ * ═══════════════════════════════════════════════════════════════ */
+typedef struct { int x,y; const char*name; u32 color; } Icon;
+static Icon icons[]={
+    {60, 80,  "Terminal", ACCENT},
+    {60, 180, "Files",    GREEN},
+    {60, 280, "About",    PURPLE},
+};
+#define N_ICONS 3
+static int icon_hovered=-1;
 
-static void tprint(const char*s){
-    if(trow>=32){
-        for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j;}tlines[i][j]=0;}
-        trow=31;
+static void draw_icons(void){
+    for(int i=0;i<N_ICONS;i++){
+        Icon*ic=&icons[i];
+        u32 bg=(i==icon_hovered)?0x21262D:BG;
+        rect(ic->x-4,ic->y-4,72,72,bg);
+        outline(ic->x-4,ic->y-4,72,72,i==icon_hovered?ACCENT:BORDER);
+        rect(ic->x+10,ic->y+10,52,40,ic->color);
+        for(int r=ic->y+12;r<ic->y+48;r++)
+            for(int c2=ic->x+12;c2<ic->x+60;c2++){
+                u32 col=buf[r*1024+c2];
+                u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
+                buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
+            }
+        int llen=0; const char*p=ic->name; while(*p++)llen++;
+        text(ic->x+(64-llen*8)/2,ic->y+66,ic->name,TEXT,BG);
     }
-    int j=0; while(*s&&j<127) tlines[trow][j++]=*s++; tlines[trow][j]=0; trow++;
 }
 
-static void tcmd(const char*cmd){
-    char echo[134]; echo[0]='$'; echo[1]=' ';
-    int i=0; while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;} echo[i+2]=0;
-    tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls";
-    int mh=1,mc=1,ma=1,ms=1,ml=1;
-    for(int k=0;help[k]||cmd[k];k++) if(help[k]!=cmd[k]){mh=0;break;}
-    for(int k=0;clr[k]||cmd[k];k++)  if(clr[k]!=cmd[k]) {mc=0;break;}
-    for(int k=0;abt[k]||cmd[k];k++)  if(abt[k]!=cmd[k]) {ma=0;break;}
-    for(int k=0;sd[k]||cmd[k];k++)   if(sd[k]!=cmd[k])  {ms=0;break;}
-    for(int k=0;ls[k]||cmd[k];k++)   if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh){ tprint("Commands: help clear about ls shutdown"); }
-    else if(mc){ trow=0; for(int r=0;r<32;r++) tlines[r][0]=0; }
-    else if(ma){ tprint("YouOS v0.1 - Built from scratch in C"); tprint("x86_64 | FAT16 | ELF | Framebuffer DE"); }
-    else if(ml){ tprint("hello  cat  shell  fbtest  desktop"); }
-    else if(ms){ tprint("Shutting down..."); flush(); sys_shutdown(); }
-    else { char m[64]; m[0]='?'; m[1]=' '; int k=0; while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;} m[k+2]=0; tprint(m); }
+/* ═══════════════════════════════════════════════════════════════
+ * START MENU
+ * ═══════════════════════════════════════════════════════════════ */
+static int menu_open=0, menu_sel=-1;
+static const char*menu_items[]={"Terminal","Files","About","Settings","Shutdown"};
+#define N_MENU 5
+
+static void draw_menu(void){
+    if(!menu_open) return;
+    int mx=4,my=768-TBAR_H-N_MENU*32-8;
+    rect(mx,my,220,N_MENU*32+8,PANEL_BG);
+    outline(mx,my,220,N_MENU*32+8,BORDER);
+    text(mx+8,my+4,"Applications",DIM,PANEL_BG);
+    u32 dots[]={ACCENT,GREEN,PURPLE,YELLOW,RED};
+    for(int i=0;i<N_MENU;i++){
+        int iy=my+20+i*32;
+        u32 bg=(i==menu_sel)?0x21262D:PANEL_BG;
+        rect(mx+2,iy,216,28,bg);
+        rect(mx+8,iy+8,12,12,dots[i]);
+        text(mx+26,iy+6,menu_items[i],TEXT,bg);
+    }
 }
 
-static void draw_terminal(void){
-    if(!term_visible) return;
-    if(!term_minimized){
-        rect(TW_X+6,TW_Y+6,TW_W,TW_H,0x000000);
-        rect(TW_X,TW_Y,TW_W,TW_H,0x0D1117);
+/* ═══════════════════════════════════════════════════════════════
+ * TASKBAR
+ * ═══════════════════════════════════════════════════════════════ */
+static void draw_taskbar(u64 secs){
+    int ty=768-TBAR_H;
+    rect(0,ty,1024,TBAR_H,TASKBAR);
+    hline(0,ty,1024,BORDER);
+
+    /* start button */
+    int hs=in_box(mouse_x,mouse_y,4,ty+4,80,TBAR_H-8);
+    u32 sbg=menu_open?ACCENT:(hs?0x2D333B:0x21262D);
+    rect(4,ty+4,80,TBAR_H-8,sbg);
+    outline(4,ty+4,80,TBAR_H-8,menu_open?0x79C0FF:BORDER);
+    text(12,ty+12,"  YouOS",menu_open?0x0D1117:ACCENT,sbg);
+
+    /* one taskbar button per visible window */
+    int bx=92;
+    for(int i=0;i<win_count;i++){
+        if(!wins[i].visible) continue;
+        int is_foc=(i==focused);
+        u32 bbg=is_foc?0x21262D:0x13161B;
+        rect(bx,ty+4,112,TBAR_H-8,bbg);
+        outline(bx,ty+4,112,TBAR_H-8,is_foc?wins[i].accent:BORDER);
+        if(is_foc) hline(bx,ty+TBAR_H-2,112,wins[i].accent);
+        text(bx+8,ty+12,wins[i].title,is_foc?TEXT:DIM,bbg);
+        bx+=120;
     }
-    int titlebar_hovered=(!drag&&mouse_x>=TW_X+60&&mouse_x<TW_X+TW_W&&mouse_y>=TW_Y&&mouse_y<TW_Y+28);
-    u32 tbar_bg=titlebar_hovered?0x1C2128:0x161B22;
-    rect(TW_X,TW_Y,TW_W,28,tbar_bg);
-    hline(TW_X,TW_Y+28,TW_W,BORDER);
-    outline(TW_X,TW_Y,TW_W,term_minimized?28:TW_H,BORDER);
-    u32 cl_bg=(mouse_x>=TW_X+8&&mouse_x<=TW_X+21&&mouse_y>=TW_Y+6&&mouse_y<=TW_Y+21)?0xFF5F57:0xED4245;
-    u32 mn_bg=(mouse_x>=TW_X+24&&mouse_x<=TW_X+37&&mouse_y>=TW_Y+6&&mouse_y<=TW_Y+21)?0xFFBD2E:0xFAA61A;
-    u32 mx_bg=(mouse_x>=TW_X+40&&mouse_x<=TW_X+53&&mouse_y>=TW_Y+6&&mouse_y<=TW_Y+21)?0x28C840:0x57F287;
-    rect(TW_X+8, TW_Y+7,14,14,cl_bg);
-    rect(TW_X+24,TW_Y+7,14,14,mn_bg);
-    rect(TW_X+40,TW_Y+7,14,14,mx_bg);
-    text(TW_X+TW_W/2-56,TW_Y+8,"YouOS Terminal",DIM,tbar_bg);
-    if(term_minimized) return;
-    int cx=TW_X+TW_PAD, cy=TW_Y+32+TW_PAD;
-    int max_rows=(TW_H-60)/16;
-    int start=trow>max_rows?trow-max_rows:0;
-    for(int i=start;i<trow;i++){
-        u32 fg=TEXT;
-        if(tlines[i][0]=='$') fg=GREEN;
-        else if(tlines[i][0]=='?') fg=RED;
-        text(cx,cy+(i-start)*16,tlines[i],fg,0x0D1117);
-    }
-    int iy=TW_Y+TW_H-24;
-    hline(TW_X,iy-2,TW_W,BORDER);
-    rect(TW_X,iy,TW_W,22,0x0A0D10);
-    text(TW_X+TW_PAD,iy+3,"$ ",GREEN,0x0A0D10);
-    text(TW_X+TW_PAD+16,iy+3,tinput,TEXT,0x0A0D10);
-    if(cursor_blink<50) rect(TW_X+TW_PAD+16+tinput_len*8,iy+2,8,14,ACCENT);
+
+    /* clock */
+    u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
+    char clk[9];
+    clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';
+    clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';
+    clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
+    text(1024-PANEL_W-80,ty+12,clk,TEXT,TASKBAR);
 }
 
+/* ── cursor ──────────────────────────────────────────────────── */
 static void draw_cursor(int mx,int my){
     static const u8 C[15][10]={
         {2,0,0,0,0,0,0,0,0,0},{2,2,0,0,0,0,0,0,0,0},{2,1,2,0,0,0,0,0,0,0},
@@ -374,17 +528,36 @@ static void draw_cursor(int mx,int my){
         }
 }
 
-static int in_box(int px2,int py,int x,int y,int w,int h){
-    return px2>=x&&px2<x+w&&py>=y&&py<y+h;
+/* ═══════════════════════════════════════════════════════════════
+ * OPEN / CLOSE WINDOW HELPERS
+ * ═══════════════════════════════════════════════════════════════ */
+static int find_win(int id){
+    for(int i=0;i<win_count;i++) if(wins[i].id==id) return i;
+    return -1;
+}
+static void open_terminal(void){
+    int i=find_win(WIN_TERMINAL);
+    if(i>=0){ wins[i].visible=1; wins[i].minimized=0; wm_focus(i); }
+    else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",ACCENT);
+}
+static void open_about(void){
+    int i=find_win(WIN_ABOUT);
+    if(i>=0){ wins[i].visible=1; wins[i].minimized=0; wm_focus(i); }
+    else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ * MAIN
+ * ═══════════════════════════════════════════════════════════════ */
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0) return 1;
     FB_W=info[1]; FB_H=info[2];
 
+    /* open terminal on startup */
+    open_terminal();
     tprint("YouOS Desktop v0.2");
-    tprint("Mouse support enabled!");
+    tprint("Window manager active!");
     tprint("Type 'help' for commands");
 
     u64 last_ticks=0;
@@ -393,73 +566,113 @@ int main(void){
         u64 ticks=sys_ticks();
         u64 secs=ticks/100;
 
+        /* ── mouse ──────────────────────────────────────────── */
         unsigned long long mstate[3];
         sys_mouseread(mstate);
-        mouse_x=(int)mstate[0];
-        mouse_y=(int)mstate[1];
-        mouse_btn=(int)mstate[2];
-
+        mouse_x=(int)mstate[0]; mouse_y=(int)mstate[1]; mouse_btn=(int)mstate[2];
         int btn_down=(mouse_btn&1)&&!(prev_btn&1);
-        int btn_up=!(mouse_btn&1)&&(prev_btn&1);
+        int btn_up  =!(mouse_btn&1)&&(prev_btn&1);
 
-        if(btn_up&&drag) drag=0;
+        /* ── release drag ───────────────────────────────────── */
+        if(btn_up && drag_win>=0) drag_win=-1;
 
-        if(drag){
-            TW_X=mouse_x-drag_ox; TW_Y=mouse_y-drag_oy;
-            if(TW_X<-(TW_W-50))   TW_X=-(TW_W-50);
-            if(TW_X>PANEL_X-50)   TW_X=PANEL_X-50;
-            if(TW_Y<0)             TW_Y=0;
-            if(TW_Y>768-TBAR_H-28) TW_Y=768-TBAR_H-28;
+        /* ── update drag ────────────────────────────────────── */
+        if(drag_win>=0){
+            Win*w=&wins[drag_win];
+            w->x=mouse_x-drag_ox; w->y=mouse_y-drag_oy;
+            if(w->x<-(w->w-50))      w->x=-(w->w-50);
+            if(w->x>PANEL_X-50)      w->x=PANEL_X-50;
+            if(w->y<0)               w->y=0;
+            if(w->y>768-TBAR_H-TITLEBAR_H) w->y=768-TBAR_H-TITLEBAR_H;
         }
 
-        if(btn_down&&!drag){
-            if(term_visible&&in_box(mouse_x,mouse_y,TW_X+8,TW_Y+7,14,14)){
-                term_visible=0; goto click_done;
-            }
-            if(term_visible&&in_box(mouse_x,mouse_y,TW_X+24,TW_Y+7,14,14)){
-                term_minimized=!term_minimized; goto click_done;
-            }
-            if(term_visible&&in_box(mouse_x,mouse_y,TW_X+40,TW_Y+7,14,14)){
-                if(TW_W<800){TW_X=20;TW_Y=20;TW_W=740;TW_H=700;}
-                else{TW_X=130;TW_Y=60;TW_W=600;TW_H=500;}
+        /* ── click handling ─────────────────────────────────── */
+        if(btn_down && drag_win<0){
+            int hit=wm_hit(mouse_x,mouse_y);
+
+            /* clicking any window brings it to focus */
+            if(hit>=0 && hit!=focused) wm_focus(hit);
+
+            if(hit>=0){
+                Win*w=&wins[hit];
+
+                /* close button */
+                if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
+                    w->visible=0;
+                    /* refocus next visible window */
+                    focused=-1;
+                    int bestz=-1;
+                    for(int i=0;i<win_count;i++)
+                        if(wins[i].visible&&wins[i].z>bestz){bestz=wins[i].z;focused=i;}
+                    goto click_done;
+                }
+                /* minimize button */
+                if(in_box(mouse_x,mouse_y,w->x+24,w->y+7,14,14)){
+                    w->minimized=!w->minimized; goto click_done;
+                }
+                /* maximize button */
+                if(in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14)){
+                    if(w->w<700){w->x=20;w->y=20;w->w=750;w->h=700;}
+                    else{w->x=130;w->y=60;w->w=600;w->h=500;}
+                    goto click_done;
+                }
+                /* title bar drag */
+                if(in_box(mouse_x,mouse_y,w->x+60,w->y,w->w-60,TITLEBAR_H)){
+                    drag_win=hit; drag_ox=mouse_x-w->x; drag_oy=mouse_y-w->y;
+                    goto click_done;
+                }
                 goto click_done;
             }
-            if(term_visible&&in_box(mouse_x,mouse_y,TW_X+60,TW_Y,TW_W-60,28)){
-                drag=1; drag_ox=mouse_x-TW_X; drag_oy=mouse_y-TW_Y; goto click_done;
+
+            /* taskbar window buttons */
+            int ty2=768-TBAR_H;
+            int bx=92;
+            for(int i=0;i<win_count;i++){
+                if(!wins[i].visible) continue;
+                if(in_box(mouse_x,mouse_y,bx,ty2+4,112,TBAR_H-8)){
+                    if(i==focused) wins[i].minimized=!wins[i].minimized;
+                    else{ wins[i].minimized=0; wm_focus(i); }
+                    goto click_done;
+                }
+                bx+=120;
             }
-            if(in_box(mouse_x,mouse_y,92,768-TBAR_H+4,120,TBAR_H-8)){
-                if(!term_visible){term_visible=1;term_minimized=0;}
-                else term_minimized=!term_minimized;
-                goto click_done;
-            }
-            if(in_box(mouse_x,mouse_y,4,768-TBAR_H+4,80,TBAR_H-8)){
+
+            /* start button */
+            if(in_box(mouse_x,mouse_y,4,ty2+4,80,TBAR_H-8)){
                 menu_open=!menu_open; goto click_done;
             }
+
+            /* start menu items */
             if(menu_open){
-                int mx2=4, my2=768-TBAR_H-N_MENU*32-8;
+                int mx2=4,my2=768-TBAR_H-N_MENU*32-8;
                 for(int i=0;i<N_MENU;i++){
                     int iy=my2+20+i*32;
                     if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28)){
                         menu_open=0;
-                        if(i==0){term_visible=1;term_minimized=0;}
-                        else if(i==4){tprint("Shutting down...");flush();sys_shutdown();}
+                        if(i==0) open_terminal();
+                        else if(i==2) open_about();
+                        else if(i==4){ tprint("Shutting down..."); flush(); sys_shutdown(); }
                         goto click_done;
                     }
                 }
                 menu_open=0; goto click_done;
             }
+
+            /* desktop icons */
             for(int i=0;i<N_ICONS;i++){
                 Icon*ic=&icons[i];
                 if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)){
-                    if(i==0){term_visible=1;term_minimized=0;tprint("Terminal opened.");}
+                    if(i==0) open_terminal();
+                    else if(i==2) open_about();
                     goto click_done;
                 }
             }
         }
         click_done:;
 
+        /* ── keyboard (goes to focused window only) ─────────── */
         s64 ch=sys_keypoll();
-        if(ch>0){
+        if(ch>0 && focused>=0 && wins[focused].id==WIN_TERMINAL){
             char c=(char)ch;
             if(c=='\n'||c=='\r'){
                 tinput[tinput_len]=0;
@@ -472,15 +685,15 @@ int main(void){
             }
         }
 
+        /* ── hover updates ──────────────────────────────────── */
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){
             Icon*ic=&icons[i];
             if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)) icon_hovered=i;
         }
-
         menu_sel=-1;
         if(menu_open){
-            int mx2=4, my2=768-TBAR_H-N_MENU*32-8;
+            int mx2=4,my2=768-TBAR_H-N_MENU*32-8;
             for(int i=0;i<N_MENU;i++){
                 int iy=my2+20+i*32;
                 if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28)) menu_sel=i;
@@ -493,16 +706,29 @@ int main(void){
         if(ticks-last_ticks<1&&ch<=0&&cursor_blink!=0&&cursor_blink!=50) continue;
         last_ticks=ticks;
 
+        /* ── draw ───────────────────────────────────────────── */
         wallpaper();
         draw_icons();
         draw_panel_bg();
+
         int px2=PANEL_X+4;
         draw_analog_clock(PANEL_X+PANEL_W/2,95,80,secs);
         draw_digital_clock(px2,182,secs);
         draw_calendar(px2,220,5,2026,29);
         draw_stats(px2,392);
-        draw_terminal();
-        draw_taskbar();
+
+        /* composite windows back-to-front */
+        wm_sort();
+        for(int si=0;si<win_count;si++){
+            int i=z_order[si];
+            if(!wins[i].visible) continue;
+            int draw_body=wm_draw_frame(i);
+            if(!draw_body) continue;
+            if(wins[i].id==WIN_TERMINAL) draw_terminal_content(i);
+            else if(wins[i].id==WIN_ABOUT) draw_about_content(i);
+        }
+
+        draw_taskbar(secs);
         draw_menu();
         draw_cursor(mouse_x,mouse_y);
         flush();
