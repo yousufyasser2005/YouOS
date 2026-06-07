@@ -181,7 +181,22 @@ static uint64_t sys_keypoll(uint64_t a1,uint64_t a2,uint64_t a3,
     extern int keyboard_available(void);
     if (!keyboard_available()) return 0;
     key_event_t e;
-    if (keyboard_get_event(&e) && e.ascii) return (uint64_t)e.ascii;
+    if (!keyboard_get_event(&e)) return 0;
+    if (!e.pressed) return 0;
+    /* Scancodes checked FIRST — arrow keys produce numpad ASCII chars
+       (4/6/8/2) on some keyboards so we must intercept before e.ascii */
+    switch (e.scancode) {
+        case 0x48: return 1001;
+        case 0x50: return 1002;
+        case 0x4B: return 1003;
+        case 0x4D: return 1004;
+        case 0x47: return 1005;
+        case 0x4F: return 1006;
+        case 0x53: return 1007;
+        case 0x49: return 1008;
+        case 0x51: return 1009;
+    }
+    if (e.ascii) return (uint64_t)e.ascii;
     return 0;
 }
 
@@ -213,6 +228,21 @@ static uint64_t sys_readdir(uint64_t buf, uint64_t max, uint64_t a3,
     return (uint64_t)fat16_list(entries, (int)max);
 }
 
+static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
+                              uint64_t size, uint64_t a4, uint64_t a5) {
+    (void)a4;(void)a5;
+    const char* path = (const char*)path_arg;
+    /* extract filename after last '/' */
+    const char* name = path;
+    for(const char* p = path; *p; p++) if(*p=='/') name=p+1;
+    if(!name[0]) return (uint64_t)-1;
+    int fd = fat16_create(name);
+    if(fd < 0) return (uint64_t)-1;
+    int n = fat16_write(fd, (const void*)buf, (uint32_t)size);
+    fat16_close(fd);
+    return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+}
+
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,
@@ -222,7 +252,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_fbinfo, sys_fbwrite,
     sys_keypoll, sys_ticks,
     sys_mouseread,
-    sys_readdir
+    sys_readdir,
+    sys_savefile
 };
 
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,

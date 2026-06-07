@@ -89,14 +89,23 @@ static int fat_toupper(int c) {
 static void to_83(const char* name, char out[11]) {
     for (int i = 0; i < 11; i++) out[i] = ' ';
     int i = 0, j = 0;
-    while (name[i] && name[i] != '.' && j < 8)
-        out[j++] = (char)fat_toupper((unsigned char)name[i++]);
+    while (name[i] && name[i] != '.' && j < 8) {
+        unsigned char c = (unsigned char)name[i++];
+        /* FAT8.3: spaces and illegal chars become underscore */
+        if (c == ' ' || c == '+' || c == ',' || c == ';' ||
+            c == '=' || c == '[' || c == ']')
+            c = '_';
+        out[j++] = (char)fat_toupper(c);
+    }
     while (name[i] && name[i] != '.') i++; /* skip rest of name */
     if (name[i] == '.') {
         i++;
         j = 8;
-        while (name[i] && j < 11)
-            out[j++] = (char)fat_toupper((unsigned char)name[i++]);
+        while (name[i] && j < 11) {
+            unsigned char c = (unsigned char)name[i++];
+            if (c == ' ') c = '_';
+            out[j++] = (char)fat_toupper(c);
+        }
     }
 }
 

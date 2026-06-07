@@ -6,9 +6,8 @@ typedef unsigned short u16;
 typedef unsigned char  u8;
 typedef signed long    s64;
 
-/* ── framebuffer ─────────────────────────────────────────────── */
-static u64 FB_W, FB_H;
-static u32 buf[1024 * 768];
+static u64 FB_W,FB_H;
+static u32 buf[1024*768];
 static void px(int x,int y,u32 c){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*1024+x]=c;}
 static void rect(int x,int y,int w,int h,u32 c){for(int r=y;r<y+h;r++)for(int col=x;col<x+w;col++)px(col,r,c);}
 static void outline(int x,int y,int w,int h,u32 c){for(int i=x;i<x+w;i++){px(i,y,c);px(i,y+h-1,c);}for(int i=y;i<y+h;i++){px(x,i,c);px(x+w-1,i,c);}}
@@ -16,7 +15,6 @@ static void hline(int x,int y,int w,u32 c){for(int i=0;i<w;i++)px(x+i,y,c);}
 static void vline(int x,int y,int h,u32 c){for(int i=0;i<h;i++)px(x,y+i,c);}
 static void flush(void){sys_fbwrite(0,0,1024,768,buf);}
 
-/* ── font ────────────────────────────────────────────────────── */
 static const u8 font[96][16]={
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x18,0x18,0x18,0x18,0x18,0x18,0,0x18,0,0,0,0,0,0},
 {0,0,0x6C,0x6C,0x6C,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x6C,0x6C,0xFE,0x6C,0xFE,0x6C,0x6C,0,0,0,0,0,0,0},
@@ -75,7 +73,6 @@ static void text(int x,int y,const char*s,u32 fg,u32 bg){while(*s){glyph(x,y,*s+
 static void text_center(int cx,int y,const char*s,u32 fg,u32 bg){int l=0;const char*p=s;while(*p++)l++;text(cx-l*4,y,s,fg,bg);}
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
 
-/* ── math ────────────────────────────────────────────────────── */
 static s64 isin(int deg){
     static const short t[]={0,17,34,52,69,87,104,121,139,156,173,190,207,224,241,258,275,292,309,325,342,358,374,390,406,422,438,453,469,484,499,515,529,544,559,573,587,601,615,629,642,656,669,681,694,707,719,731,743,754,766,777,788,798,809,819,829,838,848,857,866,874,882,891,898,906,913,920,927,933,939,945,951,956,961,965,970,974,978,981,984,987,990,992,994,996,997,998,999,999,1000,999,999,998,997,996,994,992,990,987,984,981,978,974,970,965,961,956,951,945,939,933,927,920,913,906,898,891,882,874,866,857,848,838,829,819,809,798,788,777,766,754,743,731,719,707,694,681,669,656,642,629,615,601,587,573,559,544,529,515,499,484,469,453,438,422,406,390,374,358,342,325,309,292,275,258,241,224,207,190,173,156,139,121,104,87,69,52,34,17};
     deg=((deg%360)+360)%360;if(deg<180)return t[deg];return -t[deg-180];
@@ -88,7 +85,6 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
     for(int i=0;i<=steps;i++)px(x0+dx*i/steps,y0+dy*i/steps,c);
 }
 
-/* ── colors ──────────────────────────────────────────────────── */
 #define BG       0x0D1117
 #define PANEL_BG 0x161B22
 #define TASKBAR  0x0D1117
@@ -102,42 +98,47 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define PURPLE   0xBC8CFF
 #define ORANGE   0xF78166
 #define WHITE    0xFFFFFF
-#define TBAR_H      40
-#define PANEL_W     240
-#define PANEL_X     (1024-PANEL_W)
-#define TITLEBAR_H  28
+#define TBAR_H     40
+#define PANEL_W    240
+#define PANEL_X    (1024-PANEL_W)
+#define TITLEBAR_H 28
+#define RESIZE_GRIP 8
+#define ANIM_TICKS  8
 
-static int in_box(int px2,int py,int x,int y,int w,int h){return px2>=x&&px2<x+w&&py>=y&&py<y+h;}
+static int in_box(int px2,int py,int x,int y,int w,int h){
+    return px2>=x&&px2<x+w&&py>=y&&py<y+h;
+}
 
-/* ═══════════════════════════════════════════════════════════════
- * WINDOW MANAGER
- * ═══════════════════════════════════════════════════════════════ */
-#define MAX_WINDOWS  12
-#define WIN_TERMINAL  0
-#define WIN_ABOUT     1
-#define WIN_FILES     2
-#define WIN_TEXTVIEW  3   /* 3,4,5,... for multiple text viewers */
+/* ═══ WINDOW MANAGER ════════════════════════════════════════════ */
+#define MAX_WINDOWS 12
+#define WIN_TERMINAL 0
+#define WIN_ABOUT    1
+#define WIN_FILES    2
+#define WIN_NOTEPAD  3
 
 typedef struct {
-    int  id;
-    int  x,y,w,h;
-    int  visible,minimized;
-    int  z;
+    int id,x,y,w,h,visible,minimized,z;
     char title[40];
-    u32  accent;
+    u32 accent;
+    int anim,anim_type,min_w,min_h;
 } Win;
 
-static Win  wins[MAX_WINDOWS];
-static int  win_count=0;
-static int  focused=-1;
-static int  drag_win=-1,drag_ox=0,drag_oy=0;
-static int  mouse_x=512,mouse_y=384,mouse_btn=0,prev_btn=0;
+static Win wins[MAX_WINDOWS];
+static int win_count=0,focused=-1;
+static int drag_win=-1,drag_ox=0,drag_oy=0;
+static int resize_win=-1,resize_edge=0;
+static int resize_start_x=0,resize_start_y=0;
+static int resize_start_w=0,resize_start_h=0;
+static int resize_orig_x=0,resize_orig_y=0;
+static int mouse_x=512,mouse_y=384,mouse_btn=0,prev_btn=0;
 
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
     if(win_count>=MAX_WINDOWS)return -1;
     int i=win_count++;
     wins[i].id=id;wins[i].x=x;wins[i].y=y;wins[i].w=w;wins[i].h=h;
     wins[i].visible=1;wins[i].minimized=0;wins[i].z=i;wins[i].accent=accent;
+    wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;
+    wins[i].min_w=200;wins[i].min_h=120;
     int k=0;while(title[k]&&k<39){wins[i].title[k]=title[k];k++;}wins[i].title[k]=0;
     focused=i;return i;
 }
@@ -150,45 +151,76 @@ static void wm_focus(int i){
 static int wm_hit(int mx,int my){
     int best=-1,bestz=-1;
     for(int i=0;i<win_count;i++){
-        if(!wins[i].visible)continue;
-        int wh=wins[i].minimized?TITLEBAR_H:wins[i].h;
-        if(in_box(mx,my,wins[i].x,wins[i].y,wins[i].w,wh)&&wins[i].z>bestz){bestz=wins[i].z;best=i;}
+        if(!wins[i].visible||wins[i].minimized)continue;
+        int g=RESIZE_GRIP;
+        if(in_box(mx,my,wins[i].x-g,wins[i].y-g,wins[i].w+g*2,wins[i].h+g*2)&&wins[i].z>bestz){
+            bestz=wins[i].z;best=i;
+        }
     }
     return best;
 }
 static int z_order[MAX_WINDOWS];
 static void wm_sort(void){
     for(int i=0;i<win_count;i++)z_order[i]=i;
-    for(int i=1;i<win_count;i++){int key=z_order[i],j=i-1;while(j>=0&&wins[z_order[j]].z>wins[key].z){z_order[j+1]=z_order[j];j--;}z_order[j+1]=key;}
+    for(int i=1;i<win_count;i++){
+        int key=z_order[i],j=i-1;
+        while(j>=0&&wins[z_order[j]].z>wins[key].z){z_order[j+1]=z_order[j];j--;}
+        z_order[j+1]=key;
+    }
 }
+
+static void btn_icon(int cx,int cy,int type,u32 col){
+    if(type==0){line_aa(cx-3,cy-3,cx+3,cy+3,col);line_aa(cx+3,cy-3,cx-3,cy+3,col);}
+    else if(type==1){hline(cx-3,cy,7,col);hline(cx-3,cy+1,7,col);}
+    else{outline(cx-3,cy-3,7,7,col);}
+}
+
 static int wm_draw_frame(int i){
-    Win*w=&wins[i];
-    if(!w->visible)return 0;
+    Win*w=&wins[i];if(!w->visible)return 0;
     int foc=(i==focused);
-    if(!w->minimized){rect(w->x+4,w->y+4,w->w,w->h,0x000000);rect(w->x,w->y,w->w,w->h,0x0D1117);}
+    int dx=w->x,dy=w->y,dw=w->w,dh=w->h;
+    if(w->anim>0&&w->anim_type==1){
+        int prog=ANIM_TICKS-w->anim;
+        int scale=850+prog*150/ANIM_TICKS;
+        int nw=dw*scale/1000,nh=dh*scale/1000;
+        dx=dx+(dw-nw)/2;dy=dy+(dh-nh)/2;dw=nw;dh=nh;
+        w->anim--;
+    }
+    if(!w->minimized){
+        rect(dx+4,dy+4,dw,dh,0x000000);
+        rect(dx+2,dy+2,dw,dh,0x080808);
+        rect(dx,dy,dw,dh,0x0D1117);
+    }
     u32 tbar_bg=foc?0x1C2128:0x13161B;
     u32 bord=foc?w->accent:BORDER;
-    rect(w->x,w->y,w->w,TITLEBAR_H,tbar_bg);
-    hline(w->x,w->y+TITLEBAR_H,w->w,bord);
-    outline(w->x,w->y,w->w,w->minimized?TITLEBAR_H:w->h,bord);
-    if(foc)hline(w->x,w->y,w->w,w->accent);
-    int hcl=in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14);
-    int hmn=in_box(mouse_x,mouse_y,w->x+24,w->y+7,14,14);
-    int hmx=in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14);
-    rect(w->x+8, w->y+7,14,14,hcl?0xFF5F57:0xED4245);
-    rect(w->x+24,w->y+7,14,14,hmn?0xFFBD2E:0xFAA61A);
-    rect(w->x+40,w->y+7,14,14,hmx?0x28C840:0x57F287);
-    text_center(w->x+w->w/2,w->y+6,w->title,foc?TEXT:DIM,tbar_bg);
+    rect(dx,dy,dw,TITLEBAR_H,tbar_bg);
+    hline(dx,dy+TITLEBAR_H,dw,bord);
+    outline(dx,dy,dw,w->minimized?TITLEBAR_H:dh,bord);
+    if(foc)hline(dx,dy,dw,w->accent);
+    if(foc&&!w->minimized){
+        u32 g1=0x2D333B,g2=0x404850;
+        for(int gy=dy+TITLEBAR_H+6;gy<dy+dh-6;gy+=6){px(dx+dw-2,gy,g1);px(dx+1,gy,g1);}
+        for(int gx=dx+6;gx<dx+dw-6;gx+=6){px(gx,dy+dh-2,g1);px(gx,dy+1,g1);}
+        rect(dx,dy,5,5,g2);rect(dx+dw-5,dy,5,5,g2);
+        rect(dx,dy+dh-5,5,5,g2);rect(dx+dw-5,dy+dh-5,5,5,g2);
+    }
+    int hcl=in_box(mouse_x,mouse_y,dx+8,dy+7,14,14);
+    int hmn=in_box(mouse_x,mouse_y,dx+24,dy+7,14,14);
+    int hmx=in_box(mouse_x,mouse_y,dx+40,dy+7,14,14);
+    rect(dx+8, dy+7,14,14,hcl?0xFF5F57:0xED4245);
+    rect(dx+24,dy+7,14,14,hmn?0xFFBD2E:0xFAA61A);
+    rect(dx+40,dy+7,14,14,hmx?0x28C840:0x57F287);
+    btn_icon(dx+15,dy+14,0,hcl?0x7A0000:0xC0392B);
+    btn_icon(dx+31,dy+14,1,hmn?0x7A4000:0x9A6000);
+    btn_icon(dx+47,dy+14,2,hmx?0x007A00:0x1A7A1A);
+    text_center(dx+dw/2,dy+6,w->title,foc?TEXT:DIM,tbar_bg);
     return !w->minimized;
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * TERMINAL
- * ═══════════════════════════════════════════════════════════════ */
+/* ═══ TERMINAL ══════════════════════════════════════════════════ */
 static char tlines[32][128];
 static int  trow=0,tinput_len=0,cursor_blink=0;
 static char tinput[128];
-
 static void tprint(const char*s){
     if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;}
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
@@ -204,241 +236,345 @@ static void tcmd(const char*cmd){
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
     if(mh)tprint("Commands: help clear about ls shutdown");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
-    else if(ma){tprint("YouOS v0.2 - WM + File Manager");tprint("x86_64 | FAT16 | ELF");}
-    else if(ml)tprint("hello  cat  shell  fbtest  desktop");
+    else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
+    else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
     else{char m[64];m[0]='?';m[1]=' ';int k=0;while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;}m[k+2]=0;tprint(m);}
 }
 static void draw_terminal_content(int i){
-    Win*w=&wins[i];
-    int cx=w->x+8,cy=w->y+TITLEBAR_H+8;
-    int max_rows=(w->h-TITLEBAR_H-32)/16;
+    Win*w=&wins[i];int pad=8;
+    int cx=w->x+pad,cy=w->y+TITLEBAR_H+pad;
+    int max_cols=(w->w-pad*2)/8;int max_rows=(w->h-TITLEBAR_H-32)/16;
+    if(max_rows<1||max_cols<1)return;
+    rect(w->x,w->y+TITLEBAR_H,w->w,w->h-TITLEBAR_H,0x0D1117);
     int start=trow>max_rows?trow-max_rows:0;
     for(int r=start;r<trow;r++){
         u32 fg=TEXT;if(tlines[r][0]=='$')fg=GREEN;else if(tlines[r][0]=='?')fg=RED;
-        text(cx,cy+(r-start)*16,tlines[r],fg,0x0D1117);
+        char clip[128];int k=0;while(tlines[r][k]&&k<max_cols&&k<127){clip[k]=tlines[r][k];k++;}clip[k]=0;
+        text(cx,cy+(r-start)*16,clip,fg,0x0D1117);
     }
     int iy=w->y+w->h-24;
     hline(w->x,iy-2,w->w,BORDER);rect(w->x,iy,w->w,22,0x0A0D10);
-    text(w->x+8,iy+3,"$ ",GREEN,0x0A0D10);text(w->x+24,iy+3,tinput,TEXT,0x0A0D10);
-    if(cursor_blink<50)rect(w->x+24+tinput_len*8,iy+2,8,14,ACCENT);
+    text(w->x+pad,iy+3,"$ ",GREEN,0x0A0D10);
+    int input_max=(w->w-pad*2-16)/8;if(input_max<0)input_max=0;
+    char iclip[128];int k=0;while(tinput[k]&&k<input_max&&k<127){iclip[k]=tinput[k];k++;}iclip[k]=0;
+    text(w->x+pad+16,iy+3,iclip,TEXT,0x0A0D10);
+    int cur_x=w->x+pad+16+tinput_len*8;
+    if(cursor_blink<50&&cur_x+8<w->x+w->w)rect(cur_x,iy+2,8,14,ACCENT);
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * FILE MANAGER
- * ═══════════════════════════════════════════════════════════════ */
-
-/* dirent layout must match fat16_entry_t: name[32] + u32 size + u8 is_dir */
-typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Dirent;
+/* ═══ FILE MANAGER ══════════════════════════════════════════════ */
+typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
 static Dirent fm_entries[MAX_FILES];
-static int    fm_count=0;
-static int    fm_scroll=0;
-static int    fm_hovered=-1;
-static int    fm_loaded=0;
-
-static void fm_load(void){
-    fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
-    fm_scroll=0; fm_loaded=1;
-}
-
-/* format size: "1.2 KB" etc */
-static void fmt_size(unsigned int sz, char*out){
+static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
+static void fm_load(void){fm_count=(int)sys_readdir(fm_entries,MAX_FILES);fm_scroll=0;fm_loaded=1;}
+static void fmt_size(unsigned int sz,char*out){
     if(sz==0){out[0]='d';out[1]='i';out[2]='r';out[3]=0;return;}
     if(sz<1024){
-        out[0]='0'+(sz/100)%10;out[1]='0'+(sz/10)%10;out[2]='0'+sz%10;out[3]=' ';out[4]='B';out[5]=0;
-        /* trim leading zeros */
-        int s=0;while(out[s]=='0'&&out[s+1]!=' ')s++;
-        int d=0;while(out[s+d]){{out[d]=out[s+d];}d++;}out[d]=0;
-        return;
+        int i=0;
+        if(sz>=100)out[i++]='0'+sz/100;
+        if(sz>=10) out[i++]='0'+(sz/10)%10;
+        out[i++]='0'+sz%10;out[i++]=' ';out[i++]='B';out[i]=0;return;
     }
     unsigned int kb=sz/1024,fr=(sz%1024)*10/1024;
     int i=0;
-    if(kb>=100){out[i++]='0'+kb/100;}
-    if(kb>=10) {out[i++]='0'+(kb/10)%10;}
+    if(kb>=100)out[i++]='0'+kb/100;
+    if(kb>=10) out[i++]='0'+(kb/10)%10;
     out[i++]='0'+kb%10;out[i++]='.';out[i++]='0'+fr;
     out[i++]=' ';out[i++]='K';out[i++]='B';out[i]=0;
 }
-
 static void draw_files_content(int wi){
     Win*w=&wins[wi];
-    if(!fm_loaded) fm_load();
-
-    int x=w->x,y=w->y+TITLEBAR_H;
-    int cw=w->w, ch=w->h-TITLEBAR_H;
-
-    /* toolbar */
-    rect(x,y,cw,28,0x161B22);
-    hline(x,y+28,cw,BORDER);
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+    rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
     text(x+8,y+6,"/disk",ACCENT,0x161B22);
-    /* refresh button */
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
-    rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);
-    outline(x+cw-60,y+4,52,20,BORDER);
+    rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
-
-    /* column headers */
-    int hy=y+32;
-    rect(x,hy,cw,18,0x13161B);
-    hline(x,hy+18,cw,BORDER);
-    text(x+28,hy+1,"Name",DIM,0x13161B);
-    text(x+cw-90,hy+1,"Size",DIM,0x13161B);
+    int hy=y+32;rect(x,hy,cw,18,0x13161B);hline(x,hy+18,cw,BORDER);
+    text(x+28,hy+1,"Name",DIM,0x13161B);text(x+cw-90,hy+1,"Size",DIM,0x13161B);
     vline(x+cw-100,hy,18,BORDER);
-
-    /* file rows */
-    int row_y=hy+20;
-    int row_h=22;
-    int max_vis=(ch-72)/row_h;
-    int start=fm_scroll;
-    int end=start+max_vis;
-    if(end>fm_count)end=fm_count;
-
-    for(int i=start;i<end;i++){
-        int ry=row_y+(i-start)*row_h;
-        int hov=(i==fm_hovered);
-        u32 rbg=hov?0x21262D:0x0D1117;
+    int row_y=hy+20,row_h=22,status_h=20;
+    int max_vis=(ch-72-status_h)/row_h;if(max_vis<1)max_vis=1;
+    int end=fm_scroll+max_vis;if(end>fm_count)end=fm_count;
+    int size_col_x=x+cw-96;
+    for(int i=fm_scroll;i<end;i++){
+        int ry=row_y+(i-fm_scroll)*row_h;
+        int hov=(i==fm_hovered);u32 rbg=hov?0x21262D:0x0D1117;
         rect(x,ry,cw,row_h,rbg);
-
-        /* icon */
         u32 icol=fm_entries[i].is_dir?YELLOW:ACCENT;
         rect(x+8,ry+5,12,12,icol);
-        /* darken icon */
         for(int r2=ry+6;r2<ry+16;r2++)for(int c2=x+9;c2<x+19;c2++){
             u32 col=buf[r2*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
             buf[r2*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
         }
-        /* name */
-        text(x+26,ry+3,fm_entries[i].name,fm_entries[i].is_dir?YELLOW:TEXT,rbg);
-        /* size */
+        int name_max=(size_col_x-x-30)/8;if(name_max<1)name_max=1;
+        char nclip[32];int k=0;while(fm_entries[i].name[k]&&k<name_max&&k<31){nclip[k]=fm_entries[i].name[k];k++;}nclip[k]=0;
+        text(x+26,ry+3,nclip,fm_entries[i].is_dir?YELLOW:TEXT,rbg);
         char szstr[16];fmt_size(fm_entries[i].size,szstr);
-        int sl=slen(szstr);
-        text(x+cw-96+(6-sl)*8,ry+3,szstr,DIM,rbg);
-
+        int sl=slen(szstr);text(size_col_x+(6-sl)*8,ry+3,szstr,DIM,rbg);
         hline(x,ry+row_h-1,cw,0x161B22);
     }
-
-    /* scroll arrows if needed */
     if(fm_count>max_vis){
         rect(x+cw-16,y+50,14,14,fm_scroll>0?0x21262D:0x13161B);
-        text(x+cw-14,y+51,fm_scroll>0?"^":"^",fm_scroll>0?TEXT:BORDER,fm_scroll>0?0x21262D:0x13161B);
+        text(x+cw-14,y+51,"^",fm_scroll>0?TEXT:BORDER,fm_scroll>0?0x21262D:0x13161B);
         int can_dn=fm_scroll+max_vis<fm_count;
         rect(x+cw-16,y+66,14,14,can_dn?0x21262D:0x13161B);
         text(x+cw-14,y+67,"v",can_dn?TEXT:BORDER,can_dn?0x21262D:0x13161B);
     }
-
-    /* status bar */
-    int sb=w->y+w->h-20;
-    rect(x,sb,cw,20,0x161B22);
-    hline(x,sb,cw,BORDER);
-    char stat[48];
-    stat[0]='0'+fm_count/10;stat[1]='0'+fm_count%10;
-    int si=fm_count>=10?2:1;if(fm_count<10)stat[0]='0'+fm_count,si=1;
+    int sb=w->y+w->h-status_h;rect(x,sb,cw,status_h,0x161B22);hline(x,sb,cw,BORDER);
+    char stat[32];int si=0;
+    if(fm_count>=10)stat[si++]='0'+fm_count/10;stat[si++]='0'+fm_count%10;
     const char*suf=" items on /disk";int sf=0;while(suf[sf])stat[si++]=suf[sf++];stat[si]=0;
     text(x+8,sb+2,stat,DIM,0x161B22);
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * TEXT VIEWER
- * ═══════════════════════════════════════════════════════════════ */
-#define MAX_VIEWERS 4
-typedef struct {
-    char  filename[32];
-    char  content[4096];
-    int   content_len;
-    int   scroll;        /* line scroll offset */
-    int   win_idx;       /* index into wins[] */
-} TextView;
-static TextView viewers[MAX_VIEWERS];
-static int      viewer_count=0;
+/* ═══ NOTEPAD ═══════════════════════════════════════════════════ */
+#define NP_BUFSIZE 8192
+typedef struct{
+    char text[NP_BUFSIZE];
+    int  text_len,cursor,scroll;
+    char filename[48];
+    int  modified,mode,save_flash;
+    char dlg_buf[32];
+    int  dlg_len,dlg_hov,dlg_scroll;
+    int  mode3_err;
+    char err_name[36];
+}Notepad;
+static Notepad np;
+static int np_win_idx=-1;
 
-static void tv_open(const char*name){
-    /* don't open duplicates */
-    for(int i=0;i<viewer_count;i++){
-        int match=1;for(int k=0;name[k]||viewers[i].filename[k];k++)if(name[k]!=viewers[i].filename[k]){match=0;break;}
-        if(match){wm_focus(viewers[i].win_idx);return;}
-    }
-    if(viewer_count>=MAX_VIEWERS)return;
-
-    /* read file */
-    char path[48];
-    path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
-    int k=0;while(name[k]&&k<40){path[6+k]=name[k];k++;}path[6+k]=0;
-
-    int fd=sys_open(path,0);
-    if(fd<0)return;
-
-    TextView*tv=&viewers[viewer_count];
-    int n=0;
-    s64 r;
-    while(n<4000&&(r=sys_fread(fd,tv->content+n,64))>0)n+=(int)r;
-    tv->content[n]=0;tv->content_len=n;
-    sys_close(fd);
-
-    k=0;while(name[k]&&k<31){tv->filename[k]=name[k];k++;}tv->filename[k]=0;
-    tv->scroll=0;
-
-    /* build window title */
-    char title[40];
-    title[0]='"';k=0;while(name[k]&&k<36){title[1+k]=name[k];k++;}title[1+k]='"';title[2+k]=0;
-
-    /* offset each viewer so they don't stack exactly */
-    int ox=viewer_count*24, oy=viewer_count*24;
-    int wi=wm_new(WIN_TEXTVIEW+viewer_count,160+ox,80+oy,520,380,title,ORANGE);
-    tv->win_idx=wi;
-    viewer_count++;
+static void np_insert(char c){
+    if(np.text_len>=NP_BUFSIZE-1)return;
+    for(int i=np.text_len;i>np.cursor;i--)np.text[i]=np.text[i-1];
+    np.text[np.cursor++]=c;np.text_len++;np.text[np.text_len]=0;np.modified=1;
 }
-
-static void draw_textview_content(int wi){
-    Win*w=&wins[wi];
-    /* find which viewer this is */
-    TextView*tv=0;
-    for(int i=0;i<viewer_count;i++)if(viewers[i].win_idx==wi){tv=&viewers[i];break;}
-    if(!tv)return;
-
-    int x=w->x+8,y=w->y+TITLEBAR_H+8;
-    int max_cols=(w->w-16)/8;
-    int max_rows=(w->h-TITLEBAR_H-24)/16;
-    int line=0,col=0,drawn=0;
-    int ci=0;
-    while(tv->content[ci]){
-        char c=tv->content[ci++];
-        if(c=='\r'){continue;}
-        if(c=='\n'){line++;col=0;continue;}
-        if(line>=tv->scroll&&drawn<max_rows*max_cols){
-            int r=line-tv->scroll;
-            if(r>=0&&r<max_rows&&col<max_cols){
-                glyph(x+col*8,y+r*16,c,TEXT,0x0D1117);
-            }
+static void np_backspace(void){
+    if(np.cursor<=0)return;
+    for(int i=np.cursor-1;i<np.text_len-1;i++)np.text[i]=np.text[i+1];
+    np.text_len--;np.cursor--;np.text[np.text_len]=0;np.modified=1;
+}
+static void np_del_fwd(void){
+    if(np.cursor>=np.text_len)return;
+    for(int i=np.cursor;i<np.text_len-1;i++)np.text[i]=np.text[i+1];
+    np.text_len--;np.text[np.text_len]=0;np.modified=1;
+}
+static void np_cursor_pos(int*ln,int*col){
+    int l=0,c=0;
+    for(int i=0;i<np.cursor;i++){if(np.text[i]=='\n'){l++;c=0;}else c++;}
+    *ln=l;*col=c;
+}
+static int np_total_lines(void){int n=1;for(int i=0;i<np.text_len;i++)if(np.text[i]=='\n')n++;return n;}
+static int np_line_start(int line){int l=0,i=0;while(i<np.text_len&&l<line){if(np.text[i]=='\n')l++;i++;}return i;}
+static int np_line_end(int ls){int i=ls;while(i<np.text_len&&np.text[i]!='\n')i++;return i;}
+static void np_left(void){if(np.cursor>0)np.cursor--;}
+static void np_right(void){if(np.cursor<np.text_len)np.cursor++;}
+static void np_up(void){
+    int ln,col;np_cursor_pos(&ln,&col);if(ln==0){np.cursor=0;return;}
+    int ps=np_line_start(ln-1),pe=np_line_end(ps);
+    np.cursor=ps+(col<pe-ps?col:pe-ps);
+}
+static void np_down(void){
+    int ln,col;np_cursor_pos(&ln,&col);
+    int tot=np_total_lines();if(ln+1>=tot){np.cursor=np.text_len;return;}
+    int ns=np_line_start(ln+1),ne=np_line_end(ns);
+    np.cursor=ns+(col<ne-ns?col:ne-ns);
+}
+static void np_home(void){int ln,col;np_cursor_pos(&ln,&col);(void)col;np.cursor=np_line_start(ln);}
+static void np_end(void){int ln,col;np_cursor_pos(&ln,&col);(void)col;np.cursor=np_line_end(np_line_start(ln));}
+static void np_ensure_vis(int max_rows){
+    int ln,col;np_cursor_pos(&ln,&col);(void)col;
+    if(ln<np.scroll)np.scroll=ln;
+    if(ln>=np.scroll+max_rows)np.scroll=ln-max_rows+1;
+}
+static void np_load(const char*path,const char*shortname){
+    int fd=sys_open(path,0);if(fd<0)return;
+    np.text_len=0;s64 r;
+    while(np.text_len<NP_BUFSIZE-1&&(r=sys_fread(fd,np.text+np.text_len,128))>0)np.text_len+=(int)r;
+    np.text[np.text_len]=0;sys_close(fd);
+    np.cursor=0;np.scroll=0;np.modified=0;
+    int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
+}
+static void np_do_save(void){
+    char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+    int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
+    sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
+    np.modified=0;fm_loaded=0;np.save_flash=80;
+    if(np_win_idx>=0){
+        j=0;while(np.filename[j]&&j<39){wins[np_win_idx].title[j]=np.filename[j];j++;}
+        wins[np_win_idx].title[j]=0;
+    }
+}
+static void np_do_saveas(void){
+    if(np.dlg_len<=0)return;
+    /* build filename: spaces allowed, stored as-is (FAT driver handles) */
+    char name[40];int k=0,j=0;
+    while(np.dlg_buf[j]&&k<28){
+        char c=np.dlg_buf[j++];
+        /* only block truly illegal chars */
+        if(c==(char)47||c==(char)92||c==58||c==42||c==63||c==34||c==60||c==62||c==124)c=95;
+        name[k++]=c;
+    }
+    name[k++]=46;name[k++]=116;name[k++]=120;name[k++]=116;name[k]=0;
+    /* check for duplicate — show error dialog if found */
+    Dirent existing[64];
+    int total=(int)sys_readdir(existing,64);
+    int found=0;
+    for(int fi=0;fi<total;fi++){
+        int match=1;
+        for(int mi=0;name[mi]||existing[fi].name[mi];mi++){
+            char ac=name[mi],bc=existing[fi].name[mi];
+            if(ac>=65&&ac<=90)ac+=32;
+            if(bc>=65&&bc<=90)bc+=32;
+            if(ac!=bc){match=0;break;}
         }
-        col++;
-        if(col>=max_cols){col=0;line++;}
+        if(match){found=1;break;}
     }
-    /* scroll hint */
-    if(tv->scroll>0){
-        text(w->x+w->w/2-20,w->y+TITLEBAR_H+2,"[scroll]",DIM,0x0D1117);
+    if(found){
+        np.mode3_err=1;
+        int ei=0;while(name[ei]&&ei<35){np.err_name[ei]=name[ei];ei++;}np.err_name[ei]=0;
+        return;
+    }
+    int ci=0;while(name[ci]&&ci<47){np.filename[ci]=name[ci];ci++;}np.filename[ci]=0;
+    np_do_save();np.mode=0;np.dlg_len=0;np.dlg_buf[0]=0;np.mode3_err=0;
+}
+
+static Dirent np_dlg_files[MAX_FILES];
+static int    np_dlg_count=0;
+static void np_load_filelist(void){
+    int tot=(int)sys_readdir(np_dlg_files,MAX_FILES);np_dlg_count=0;
+    for(int i=0;i<tot;i++){
+        if(np_dlg_files[i].is_dir)continue;
+        char*n=np_dlg_files[i].name;int nl=slen(n);
+        if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
+            np_dlg_files[np_dlg_count++]=np_dlg_files[i];
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * ABOUT
- * ═══════════════════════════════════════════════════════════════ */
+static void draw_floppy(int x,int y){
+    rect(x,y,16,15,0x4A7AB5);rect(x+2,y+1,9,5,0xD0E8F8);
+    hline(x+3,y+2,7,0x90B8D0);hline(x+3,y+4,7,0x90B8D0);
+    rect(x+2,y+9,12,5,0x7A8A98);rect(x+5,y+10,4,3,0x1A2535);
+    rect(x+12,y,4,4,0x0D1117);
+}
+
+static void draw_notepad_content(int wi){
+    Win*w=&wins[wi];
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+    /* toolbar */
+    rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
+    int nwh=in_box(mouse_x,mouse_y,x+4,y+4,40,20);
+    rect(x+4,y+4,40,20,nwh?0x21262D:0x13161B);outline(x+4,y+4,40,20,BORDER);
+    text(x+10,y+6,"New",nwh?TEXT:DIM,nwh?0x21262D:0x13161B);
+    int oh=in_box(mouse_x,mouse_y,x+50,y+4,52,20);
+    rect(x+50,y+4,52,20,oh?0x21262D:0x13161B);outline(x+50,y+4,52,20,BORDER);
+    text(x+58,y+6,"Open",oh?TEXT:DIM,oh?0x21262D:0x13161B);
+    int sh=in_box(mouse_x,mouse_y,x+108,y+4,70,20);
+    rect(x+108,y+4,70,20,sh?0x21262D:0x13161B);outline(x+108,y+4,70,20,BORDER);
+    draw_floppy(x+111,y+6);text(x+130,y+6,"Save",sh?TEXT:DIM,sh?0x21262D:0x13161B);
+    if(np.save_flash>0){text(x+186,y+6,"[Saved]",GREEN,0x161B22);np.save_flash--;}
+    char hdr[56];int hi=0;
+    const char*fn=np.filename[0]?np.filename:"New File";
+    while(fn[hi]&&hi<40){hdr[hi]=fn[hi];hi++;}
+    if(np.modified){hdr[hi++]=' ';hdr[hi++]='[';hdr[hi++]='*';hdr[hi++]=']';}hdr[hi]=0;
+    text_center(x+cw/2,y+6,hdr,DIM,0x161B22);
+    /* text area */
+    int ta_x=x+8,ta_y=y+32;
+    int max_cols=(cw-16)/8;if(max_cols<1)max_cols=1;
+    int max_rows=(ch-52)/16;if(max_rows<1)max_rows=1;
+    np_ensure_vis(max_rows);
+    int cur_ln=0,cur_col=0;np_cursor_pos(&cur_ln,&cur_col);
+    int ci=0,rline=0;
+    while(ci<np.text_len&&rline<np.scroll){if(np.text[ci]=='\n')rline++;ci++;}
+    int rcol=0,rl=np.scroll;
+    while(ci<=np.text_len&&rl<np.scroll+max_rows){
+        char c=(ci<np.text_len)?np.text[ci]:0;
+        if(ci==np.text_len||c=='\n'){rl++;rcol=0;ci++;continue;}
+        if(rcol<max_cols)glyph(ta_x+rcol*8,ta_y+(rl-np.scroll)*16,c,TEXT,0x0D1117);
+        rcol++;ci++;
+    }
+    /* cursor */
+    if(wi==focused&&np.mode==0&&cursor_blink<50){
+        if(cur_ln>=np.scroll&&cur_ln<np.scroll+max_rows&&cur_col<=max_cols)
+            rect(ta_x+cur_col*8,ta_y+(cur_ln-np.scroll)*16,2,16,ACCENT);
+    }
+    /* status bar */
+    int sb=y+ch-18;rect(x,sb,cw,18,0x161B22);hline(x,sb,cw,BORDER);
+    char pos[24];int pi=0;
+    pos[pi++]='L';pos[pi++]='n';pos[pi++]=':';
+    int cl1=cur_ln+1;
+    if(cl1>=100)pos[pi++]='0'+cl1/100;
+    if(cl1>=10) pos[pi++]='0'+(cl1/10)%10;
+    pos[pi++]='0'+cl1%10;pos[pi++]=' ';
+    pos[pi++]='C';pos[pi++]='o';pos[pi++]='l';pos[pi++]=':';
+    int cc1=cur_col+1;
+    if(cc1>=100)pos[pi++]='0'+cc1/100;
+    if(cc1>=10) pos[pi++]='0'+(cc1/10)%10;
+    pos[pi++]='0'+cc1%10;pos[pi]=0;
+    text(x+8,sb+1,pos,DIM,0x161B22);
+    /* open dialog */
+    if(np.mode==1){
+        int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
+        int dw=280,dh=dh2,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
+        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,ACCENT);
+        rect(dx,dy2,dw,24,0x1C2128);hline(dx,dy2+24,dw,BORDER);
+        text_center(dx+dw/2,dy2+4,"Open .txt File",TEXT,0x1C2128);
+        text(dx+dw-18,dy2+4,"x",RED,0x1C2128);
+        int ly=dy2+28,max_vis2=(dh-36)/20;
+        for(int i=np.dlg_scroll;i<np_dlg_count&&i<np.dlg_scroll+max_vis2;i++){
+            int ry=ly+(i-np.dlg_scroll)*20;int hov=(i==np.dlg_hov);
+            rect(dx+2,ry,dw-4,20,hov?0x21262D:0x161B22);
+            text(dx+10,ry+2,np_dlg_files[i].name,hov?TEXT:DIM,hov?0x21262D:0x161B22);
+        }
+        if(np_dlg_count==0)text_center(dx+dw/2,dy2+50,"No .txt files found",DIM,0x161B22);
+    }
+    /* save-as dialog */
+    if(np.mode==2){
+        int dw=300,dh=104,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
+        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,ACCENT);
+        rect(dx,dy2,dw,24,0x1C2128);hline(dx,dy2+24,dw,BORDER);
+        text_center(dx+dw/2,dy2+4,"Save As",TEXT,0x1C2128);
+        text(dx+8,dy2+30,"Name (spaces OK, .txt added):",DIM,0x161B22);
+        rect(dx+8,dy2+50,dw-16,20,0x0D1117);outline(dx+8,dy2+50,dw-16,20,ACCENT);
+        text(dx+12,dy2+52,np.dlg_buf,TEXT,0x0D1117);
+        if(cursor_blink<50)rect(dx+12+np.dlg_len*8,dy2+52,2,16,ACCENT);
+        int ok_h=in_box(mouse_x,mouse_y,dx+dw/2-30,dy2+76,60,20);
+        rect(dx+dw/2-30,dy2+76,60,20,ok_h?ACCENT:0x21262D);
+        text_center(dx+dw/2,dy2+78,"Save",ok_h?0x0D1117:TEXT,ok_h?ACCENT:0x21262D);
+    if(np.mode3_err){
+        int dw=320,dh=90,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
+        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,RED);
+        rect(dx,dy2,dw,24,0x2A1010);hline(dx,dy2+24,dw,0x5A2020);
+        text_center(dx+dw/2,dy2+4,"File Already Exists",RED,0x2A1010);
+        char emsg[60];int ei=0;
+        while(np.err_name[ei]&&ei<35){emsg[ei]=np.err_name[ei];ei++;}emsg[ei]=0;
+        text_center(dx+dw/2,dy2+34,emsg,TEXT,0x161B22);
+        int ok_h2=in_box(mouse_x,mouse_y,dx+dw/2-20,dy2+62,40,20);
+        rect(dx+dw/2-20,dy2+62,40,20,ok_h2?ACCENT:0x21262D);
+        text_center(dx+dw/2,dy2+64,"OK",ok_h2?0x0D1117:TEXT,ok_h2?ACCENT:0x21262D);
+    }
+    }
+}
+
+/* ═══ ABOUT ═════════════════════════════════════════════════════ */
 static void draw_about_content(int i){
     Win*w=&wins[i];int cx=w->x+w->w/2,y=w->y+TITLEBAR_H+20;
     text_center(cx,y,"YouOS",ACCENT,0x0D1117);y+=24;
-    text_center(cx,y,"Version 0.2.0",TEXT,0x0D1117);y+=20;
+    text_center(cx,y,"Version 0.3.0",TEXT,0x0D1117);y+=20;
     hline(w->x+20,y,w->w-40,BORDER);y+=12;
     text_center(cx,y,"Architecture: x86_64",DIM,0x0D1117);y+=18;
-    text_center(cx,y,"Bootloader:   GRUB2 + Multiboot2",DIM,0x0D1117);y+=18;
-    text_center(cx,y,"Filesystem:   FAT16 + initrd",DIM,0x0D1117);y+=18;
+    text_center(cx,y,"Bootloader:   GRUB2+Multiboot2",DIM,0x0D1117);y+=18;
+    text_center(cx,y,"Filesystem:   FAT16+initrd",DIM,0x0D1117);y+=18;
     text_center(cx,y,"Display:      1024x768x32bpp",DIM,0x0D1117);y+=18;
-    text_center(cx,y,"Syscalls:     18",DIM,0x0D1117);y+=18;
+    text_center(cx,y,"Syscalls:     19",DIM,0x0D1117);y+=18;
     hline(w->x+20,y,w->w-40,BORDER);y+=12;
-    text_center(cx,y,"Built from scratch in C + NASM",GREEN,0x0D1117);
+    text_center(cx,y,"Built from scratch in C+NASM",GREEN,0x0D1117);
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * WALLPAPER + PANEL
- * ═══════════════════════════════════════════════════════════════ */
+/* ═══ WALLPAPER + PANEL ═════════════════════════════════════════ */
 static void wallpaper(void){
     for(int y=0;y<768-TBAR_H;y++){
         u32 r=0x0D,g=0x11+(y*8)/768,b=0x17+(y*20)/768;
@@ -451,7 +587,10 @@ static void wallpaper(void){
 static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,768,PANEL_BG);vline(PANEL_X,0,768,BORDER);}
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
-    for(int deg=0;deg<360;deg+=2){px(cx+(int)(icos(deg)*r/1000),cy-(int)(isin(deg)*r/1000),BORDER);px(cx+(int)(icos(deg)*(r-1)/1000),cy-(int)(isin(deg)*(r-1)/1000),BORDER);}
+    for(int deg=0;deg<360;deg+=2){
+        px(cx+(int)(icos(deg)*r/1000),cy-(int)(isin(deg)*r/1000),BORDER);
+        px(cx+(int)(icos(deg)*(r-1)/1000),cy-(int)(isin(deg)*(r-1)/1000),BORDER);
+    }
     for(int dy=-r+2;dy<r-1;dy++)for(int dx=-r+2;dx<r-1;dx++)if(dx*dx+dy*dy<(r-2)*(r-2))px(cx+dx,cy+dy,0x161B22);
     for(int i=0;i<12;i++){int deg=i*30;line_aa(cx+(int)(icos(deg)*(r-4)/1000),cy-(int)(isin(deg)*(r-4)/1000),cx+(int)(icos(deg)*(r-10)/1000),cy-(int)(isin(deg)*(r-10)/1000),(i==0||i==3||i==6||i==9)?WHITE:DIM);}
     int hdeg=(hh*30+mm/2)-90;
@@ -496,25 +635,28 @@ static void draw_stats(int x,int y){
     text(x+6,y+36,"MEM",DIM,0x0D1117);rect(x+36,y+38,150,8,0x21262D);rect(x+36,y+38,75,8,ACCENT);text(x+190,y+36,"50%",DIM,0x0D1117);
 }
 
-/* ── icons ───────────────────────────────────────────────────── */
+/* ═══ ICONS ═════════════════════════════════════════════════════ */
 typedef struct{int x,y;const char*name;u32 color;}Icon;
-static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE}};
-#define N_ICONS 3
+static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW}};
+#define N_ICONS 4
 static int icon_hovered=-1;
 static void draw_icons(void){
     for(int i=0;i<N_ICONS;i++){
         Icon*ic=&icons[i];u32 bg=(i==icon_hovered)?0x21262D:BG;
         rect(ic->x-4,ic->y-4,72,72,bg);outline(ic->x-4,ic->y-4,72,72,i==icon_hovered?ACCENT:BORDER);
         rect(ic->x+10,ic->y+10,52,40,ic->color);
-        for(int r=ic->y+12;r<ic->y+48;r++)for(int c2=ic->x+12;c2<ic->x+60;c2++){u32 col=buf[r*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);}
+        for(int r=ic->y+12;r<ic->y+48;r++)for(int c2=ic->x+12;c2<ic->x+60;c2++){
+            u32 col=buf[r*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
+            buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
+        }
         int llen=0;const char*p=ic->name;while(*p++)llen++;
         text(ic->x+(64-llen*8)/2,ic->y+66,ic->name,TEXT,BG);
     }
 }
 
-/* ── menu ────────────────────────────────────────────────────── */
+/* ═══ MENU ══════════════════════════════════════════════════════ */
 static int menu_open=0,menu_sel=-1;
-static const char*menu_items[]={"Terminal","Files","About","Settings","Shutdown"};
+static const char*menu_items[]={"Terminal","Files","About","Notepad","Shutdown"};
 #define N_MENU 5
 static void draw_menu(void){
     if(!menu_open)return;
@@ -528,7 +670,7 @@ static void draw_menu(void){
     }
 }
 
-/* ── taskbar ─────────────────────────────────────────────────── */
+/* ═══ TASKBAR ═══════════════════════════════════════════════════ */
 static void draw_taskbar(u64 secs){
     int ty=768-TBAR_H;rect(0,ty,1024,TBAR_H,TASKBAR);hline(0,ty,1024,BORDER);
     int hs=in_box(mouse_x,mouse_y,4,ty+4,80,TBAR_H-8);
@@ -541,42 +683,53 @@ static void draw_taskbar(u64 secs){
         int foc=(i==focused);u32 bbg=foc?0x21262D:0x13161B;
         rect(bx,ty+4,112,TBAR_H-8,bbg);outline(bx,ty+4,112,TBAR_H-8,foc?wins[i].accent:BORDER);
         if(foc)hline(bx,ty+TBAR_H-2,112,wins[i].accent);
-        /* truncate title to fit */
-        char tshort[13];int k=0;while(wins[i].title[k]&&k<12){tshort[k]=wins[i].title[k];k++;}
-        if(slen(wins[i].title)>12){tshort[11]='.';tshort[12]='.';k=13;}
-        tshort[k]=0;
-        text(bx+8,ty+12,tshort,foc?TEXT:DIM,bbg);
-        bx+=120;
+        char ts[14];int k=0;while(wins[i].title[k]&&k<12){ts[k]=wins[i].title[k];k++;}
+        if(slen(wins[i].title)>12){ts[11]='.';ts[12]='.';k=13;}ts[k]=0;
+        text(bx+8,ty+12,ts,foc?TEXT:DIM,bbg);bx+=120;
     }
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
     char clk[9];clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
     text(1024-PANEL_W-80,ty+12,clk,TEXT,TASKBAR);
 }
 
-/* ── cursor ──────────────────────────────────────────────────── */
+/* ═══ CURSOR ════════════════════════════════════════════════════ */
 static void draw_cursor(int mx,int my){
     static const u8 C[15][10]={{2,0,0,0,0,0,0,0,0,0},{2,2,0,0,0,0,0,0,0,0},{2,1,2,0,0,0,0,0,0,0},{2,1,1,2,0,0,0,0,0,0},{2,1,1,1,2,0,0,0,0,0},{2,1,1,1,1,2,0,0,0,0},{2,1,1,1,1,1,2,0,0,0},{2,1,1,1,1,1,1,2,0,0},{2,1,1,1,1,1,2,0,0,0},{2,1,1,2,1,1,1,2,0,0},{2,2,0,0,2,1,1,2,0,0},{0,0,0,0,2,1,1,2,0,0},{0,0,0,0,2,1,2,0,0,0},{0,0,0,0,2,2,0,0,0,0},{0,0,0,0,0,0,0,0,0,0}};
     for(int r=0;r<15;r++)for(int c=0;c<10;c++){u8 v=C[r][c];if(v==1)px(mx+c,my+r,0xFFFFFF);else if(v==2)px(mx+c,my+r,0x000000);}
 }
 
-/* ═══════════════════════════════════════════════════════════════
- * OPEN HELPERS
- * ═══════════════════════════════════════════════════════════════ */
+/* ═══ OPEN HELPERS ══════════════════════════════════════════════ */
 static int find_win(int id){for(int i=0;i<win_count;i++)if(wins[i].id==id)return i;return -1;}
 static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",ACCENT);}
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
 static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;}}
+static void open_notepad(const char*fn){
+    int i=find_win(WIN_NOTEPAD);
+    if(i<0){
+        i=wm_new(WIN_NOTEPAD,150,70,580,460,"YC Notepad",YELLOW);
+        np_win_idx=i;
+        np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
+        np.modified=0;np.mode=0;np.filename[0]=0;
+        np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
+    } else {
+        wins[i].visible=1;wins[i].minimized=0;wm_focus(i);np_win_idx=i;
+    }
+    if(fn&&fn[0]){
+        char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+        int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
+        np_load(path,fn);
+        j=0;while(fn[j]&&j<39){wins[i].title[j]=fn[j];j++;}wins[i].title[j]=0;
+    }
+}
 
-/* ═══════════════════════════════════════════════════════════════
- * MAIN
- * ═══════════════════════════════════════════════════════════════ */
+/* ═══ MAIN ══════════════════════════════════════════════════════ */
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
     open_terminal();
     tprint("YouOS Desktop v0.3");
-    tprint("File manager ready — click Files icon");
+    tprint("File manager + Notepad ready");
     tprint("Type 'help' for commands");
     u64 last_ticks=0;
 
@@ -591,8 +744,9 @@ int main(void){
         int btn_down=(mouse_btn&1)&&!(prev_btn&1);
         int btn_up  =!(mouse_btn&1)&&(prev_btn&1);
 
-        if(btn_up&&drag_win>=0)drag_win=-1;
+        if(btn_up){drag_win=-1;resize_win=-1;}
 
+        /* drag update */
         if(drag_win>=0){
             Win*w=&wins[drag_win];
             w->x=mouse_x-drag_ox;w->y=mouse_y-drag_oy;
@@ -602,7 +756,18 @@ int main(void){
             if(w->y>768-TBAR_H-TITLEBAR_H)w->y=768-TBAR_H-TITLEBAR_H;
         }
 
-        if(btn_down&&drag_win<0){
+        /* resize update */
+        if(resize_win>=0){
+            Win*w=&wins[resize_win];
+            int ddx=mouse_x-resize_start_x,ddy=mouse_y-resize_start_y,e=resize_edge;
+            if(e==1||e==3||e==7){int nw=resize_start_w+ddx;if(nw>=w->min_w&&resize_orig_x+nw<PANEL_X)w->w=nw;}
+            if(e==2||e==3||e==8){int nh=resize_start_h+ddy;if(nh>=w->min_h&&resize_orig_y+nh<768-TBAR_H)w->h=nh;}
+            if(e==4||e==6||e==8){int nw=resize_start_w-ddx,nx=resize_orig_x+ddx;if(nw>=w->min_w&&nx>=0){w->w=nw;w->x=nx;}}
+            if(e==5||e==6||e==7){int nh=resize_start_h-ddy,ny=resize_orig_y+ddy;if(nh>=w->min_h&&ny>=0){w->h=nh;w->y=ny;}}
+        }
+
+        /* click handling */
+        if(btn_down&&drag_win<0&&resize_win<0){
             int hit=wm_hit(mouse_x,mouse_y);
             if(hit>=0&&hit!=focused)wm_focus(hit);
 
@@ -611,60 +776,135 @@ int main(void){
                 /* close */
                 if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
                     w->visible=0;
-                    /* if text viewer, free slot */
-                    for(int i=0;i<viewer_count;i++)if(viewers[i].win_idx==hit){
-                        for(int j=i;j<viewer_count-1;j++)viewers[j]=viewers[j+1];
-                        viewer_count--;break;
-                    }
+                    if(wins[hit].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
                     focused=-1;int bz=-1;
                     for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
                     goto click_done;
                 }
                 /* minimize */
-                if(in_box(mouse_x,mouse_y,w->x+24,w->y+7,14,14)){w->minimized=!w->minimized;goto click_done;}
+                if(in_box(mouse_x,mouse_y,w->x+24,w->y+7,14,14)){
+                    w->minimized=!w->minimized;w->anim=ANIM_TICKS;w->anim_type=w->minimized?3:1;
+                    goto click_done;
+                }
                 /* maximize */
                 if(in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14)){
                     if(w->w<700){w->x=20;w->y=20;w->w=750;w->h=700;}
                     else{w->x=100;w->y=60;w->w=560;w->h=420;}
                     goto click_done;
                 }
-                /* drag */
-                if(in_box(mouse_x,mouse_y,w->x+60,w->y,w->w-60,TITLEBAR_H)){drag_win=hit;drag_ox=mouse_x-w->x;drag_oy=mouse_y-w->y;goto click_done;}
-
+                /* resize edges */
+                if(!w->minimized){
+                    int rx=w->x,ry=w->y,rw=w->w,rh=w->h,g=RESIZE_GRIP,g2=g*2;
+                    int on_l=mouse_x>=rx-g&&mouse_x<rx+g&&mouse_y>=ry+TITLEBAR_H&&mouse_y<ry+rh-g2;
+                    int on_r=mouse_x>=rx+rw-g&&mouse_x<rx+rw+g&&mouse_y>=ry+TITLEBAR_H&&mouse_y<ry+rh-g2;
+                    int on_t=mouse_y>=ry-g&&mouse_y<ry+g&&mouse_x>=rx+g2&&mouse_x<rx+rw-g2;
+                    int on_b=mouse_y>=ry+rh-g&&mouse_y<ry+rh+g&&mouse_x>=rx+g2&&mouse_x<rx+rw-g2;
+                    int on_tl=mouse_x>=rx-g&&mouse_x<rx+g2&&mouse_y>=ry-g&&mouse_y<ry+g2;
+                    int on_tr=mouse_x>=rx+rw-g2&&mouse_x<rx+rw+g&&mouse_y>=ry-g&&mouse_y<ry+g2;
+                    int on_bl=mouse_x>=rx-g&&mouse_x<rx+g2&&mouse_y>=ry+rh-g2&&mouse_y<ry+rh+g;
+                    int on_br=mouse_x>=rx+rw-g2&&mouse_x<rx+rw+g&&mouse_y>=ry+rh-g2&&mouse_y<ry+rh+g;
+                    int edge=0;
+                    if(on_r)edge=1;if(on_b)edge=2;if(on_l)edge=4;if(on_t)edge=5;
+                    if(on_br)edge=3;if(on_tl)edge=6;if(on_tr)edge=7;if(on_bl)edge=8;
+                    if(edge){
+                        resize_win=hit;resize_edge=edge;
+                        resize_start_x=mouse_x;resize_start_y=mouse_y;
+                        resize_start_w=w->w;resize_start_h=w->h;
+                        resize_orig_x=w->x;resize_orig_y=w->y;
+                        goto click_done;
+                    }
+                }
+                /* drag titlebar */
+                if(in_box(mouse_x,mouse_y,w->x+60,w->y,w->w-60,TITLEBAR_H)){
+                    drag_win=hit;drag_ox=mouse_x-w->x;drag_oy=mouse_y-w->y;goto click_done;
+                }
+                /* notepad toolbar */
+                    /* error dialog click — checked first */
+                    if(np.mode3_err){
+                        int edw=320,edh=90;
+                        int edx=w->x+(w->w-edw)/2;
+                        int edy=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-edh)/2;
+                        if(in_box(mouse_x,mouse_y,edx+edw/2-20,edy+62,40,20)){np.mode3_err=0;goto click_done;}
+                        goto click_done;
+                    }
+                if(w->id==WIN_NOTEPAD&&!w->minimized){
+                    int bary=w->y+TITLEBAR_H;
+                    if(in_box(mouse_x,mouse_y,w->x+4,bary+4,40,20)){
+                        np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
+                        np.modified=0;np.filename[0]=0;np.mode=0;
+                        if(np_win_idx>=0){int j=0;const char*t="YC Notepad";while(t[j]&&j<39){wins[np_win_idx].title[j]=t[j];j++;}wins[np_win_idx].title[j]=0;}
+                        goto click_done;
+                    }
+                    if(in_box(mouse_x,mouse_y,w->x+50,bary+4,52,20)){
+                        np_load_filelist();np.mode=1;np.dlg_hov=-1;np.dlg_scroll=0;goto click_done;
+                    }
+                    if(in_box(mouse_x,mouse_y,w->x+108,bary+4,70,20)){
+                        if(np.filename[0])np_do_save();
+                        else{np.mode=2;np.dlg_len=0;np.dlg_buf[0]=0;}
+                        goto click_done;
+                    }
+                    /* open dialog interactions */
+                    if(np.mode==1){
+                        int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
+                        int dw=280,dh=dh2,dx=w->x+(w->w-dw)/2,dy2=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,dx+dw-18,dy2+4,14,18)){np.mode=0;goto click_done;}
+                        int ly=dy2+28,max_vis2=(dh-36)/20;
+                        for(int fi=np.dlg_scroll;fi<np_dlg_count&&fi<np.dlg_scroll+max_vis2;fi++){
+                            int ry=ly+(fi-np.dlg_scroll)*20;
+                            if(in_box(mouse_x,mouse_y,dx+2,ry,dw-4,20)){
+                                char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+                                int pk=6,pj=0;while(np_dlg_files[fi].name[pj]&&pk<55){path[pk++]=np_dlg_files[fi].name[pj++];}path[pk]=0;
+                                np_load(path,np_dlg_files[fi].name);
+                                if(np_win_idx>=0){pj=0;while(np_dlg_files[fi].name[pj]&&pj<39){wins[np_win_idx].title[pj]=np_dlg_files[fi].name[pj];pj++;}wins[np_win_idx].title[pj]=0;}
+                                np.mode=0;goto click_done;
+                            }
+                        }
+                        if(!in_box(mouse_x,mouse_y,dx,dy2,dw,dh))np.mode=0;
+                        goto click_done;
+                    }
+                    /* save-as dialog */
+                    if(np.mode==2){
+                        int dw=300,dh=104,dx=w->x+(w->w-dw)/2,dy2=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,dx+dw/2-30,dy2+76,60,20)){np_do_saveas();goto click_done;}
+                        if(!in_box(mouse_x,mouse_y,dx,dy2,dw,dh))np.mode=0;
+                        goto click_done;
+                    }
+                    /* click in text area to position cursor */
+                    if(np.mode==0){
+                        int ta_y0=bary+32,ta_y1=w->y+w->h-18;
+                        if(mouse_y>=ta_y0&&mouse_y<ta_y1&&mouse_x>=w->x+8&&mouse_x<w->x+w->w-8){
+                            int cl=(mouse_x-(w->x+8))/8;
+                            int ln=(mouse_y-ta_y0)/16+np.scroll;
+                            if(cl<0)cl=0;if(ln<0)ln=0;
+                            int tot=np_total_lines();if(ln>=tot)ln=tot-1;
+                            int ls=np_line_start(ln),le=np_line_end(ls);
+                            if(cl>le-ls)cl=le-ls;
+                            np.cursor=ls+cl;
+                            if(np.cursor>np.text_len)np.cursor=np.text_len;
+                            goto click_done;
+                        }
+                    }
+                }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
                     int fy=w->y+TITLEBAR_H;
-                    /* reload button */
                     if(in_box(mouse_x,mouse_y,w->x+w->w-60,fy+4,52,20)){fm_load();goto click_done;}
-                    /* scroll up */
+                    int max_vis2=(w->h-TITLEBAR_H-72-20)/22;if(max_vis2<1)max_vis2=1;
                     if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+50,14,14)&&fm_scroll>0){fm_scroll--;goto click_done;}
-                    /* scroll down */
-                    int max_vis=(w->h-TITLEBAR_H-72)/22;
-                    if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+66,14,14)&&fm_scroll+max_vis<fm_count){fm_scroll++;goto click_done;}
-                    /* file row click */
-                    int row_y=fy+72;
-                    int start=fm_scroll;
-                    for(int fi=start;fi<fm_count;fi++){
-                        int ry=row_y+(fi-start)*22;
+                    if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+66,14,14)&&fm_scroll+max_vis2<fm_count){fm_scroll++;goto click_done;}
+                    int row_y=w->y+TITLEBAR_H+72;
+                    for(int fi=fm_scroll;fi<fm_count&&fi<fm_scroll+max_vis2;fi++){
+                        int ry=row_y+(fi-fm_scroll)*22;
                         if(in_box(mouse_x,mouse_y,w->x,ry,w->w,22)){
                             if(!fm_entries[fi].is_dir){
-                                /* check if .txt */
-                                char*n=fm_entries[fi].name;
-                                int nl=slen(n);
-                                if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t'){
-                                    tv_open(n);
-                                } else {
-                                    tprint("Can only open .txt files");
-                                    int ti=find_win(WIN_TERMINAL);
-                                    if(ti>=0){wins[ti].visible=1;wins[ti].minimized=0;wm_focus(ti);}
-                                }
+                                char*n=fm_entries[fi].name;int nl=slen(n);
+                                if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
+                                    open_notepad(n);
                             }
                             goto click_done;
                         }
                     }
                 }
-
-                /* text viewer scroll via arrow keys handled below */
                 goto click_done;
             }
 
@@ -673,15 +913,15 @@ int main(void){
             for(int i=0;i<win_count;i++){
                 if(!wins[i].visible)continue;
                 if(in_box(mouse_x,mouse_y,bx,ty2+4,112,TBAR_H-8)){
-                    if(i==focused)wins[i].minimized=!wins[i].minimized;
-                    else{wins[i].minimized=0;wm_focus(i);}
+                    if(i==focused){wins[i].minimized=!wins[i].minimized;wins[i].anim=ANIM_TICKS;wins[i].anim_type=wins[i].minimized?3:1;}
+                    else{wins[i].minimized=0;wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;wm_focus(i);}
                     goto click_done;
                 }
                 bx+=120;
             }
             /* start button */
             if(in_box(mouse_x,mouse_y,4,768-TBAR_H+4,80,TBAR_H-8)){menu_open=!menu_open;goto click_done;}
-            /* menu */
+            /* menu items */
             if(menu_open){
                 int mx2=4,my2=768-TBAR_H-N_MENU*32-8;
                 for(int i=0;i<N_MENU;i++){
@@ -691,6 +931,7 @@ int main(void){
                         if(i==0)open_terminal();
                         else if(i==1)open_files();
                         else if(i==2)open_about();
+                        else if(i==3)open_notepad(0);
                         else if(i==4){tprint("Shutting down...");flush();sys_shutdown();}
                         goto click_done;
                     }
@@ -701,7 +942,8 @@ int main(void){
             for(int i=0;i<N_ICONS;i++){
                 Icon*ic=&icons[i];
                 if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)){
-                    if(i==0)open_terminal();else if(i==1)open_files();else if(i==2)open_about();
+                    if(i==0)open_terminal();else if(i==1)open_files();
+                    else if(i==2)open_about();else if(i==3)open_notepad(0);
                     goto click_done;
                 }
             }
@@ -710,46 +952,76 @@ int main(void){
 
         /* keyboard */
         s64 ch=sys_keypoll();
-        if(ch>0&&focused>=0){
-            /* terminal */
-            if(wins[focused].id==WIN_TERMINAL){
+        if(ch!=0&&focused>=0){
+            if(wins[focused].id==WIN_TERMINAL&&ch>0&&ch<256){
                 char c=(char)ch;
                 if(c=='\n'||c=='\r'){tinput[tinput_len]=0;if(tinput_len>0)tcmd(tinput);tinput_len=0;tinput[0]=0;}
                 else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
                 else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
             }
-            /* text viewer scroll */
-            if(wins[focused].id>=WIN_TEXTVIEW){
-                for(int i=0;i<viewer_count;i++){
-                    if(viewers[i].win_idx==focused){
-                        if((char)ch=='k'||ch==72)viewers[i].scroll=viewers[i].scroll>0?viewers[i].scroll-1:0;
-                        if((char)ch=='j'||ch==80)viewers[i].scroll++;
-                        break;
+            if(wins[focused].id==WIN_NOTEPAD&&wins[focused].visible){
+                if(np.mode==2){
+                    if(ch>0&&ch<256){
+                        char c=(char)ch;
+                        if(c=='\b'||c==127){if(np.dlg_len>0)np.dlg_buf[--np.dlg_len]=0;}
+                        else if(c=='\n'||c=='\r')np_do_saveas();
+                        else if(c>=32&&c<127&&np.dlg_len<30){np.dlg_buf[np.dlg_len++]=c;np.dlg_buf[np.dlg_len]=0;}
+                        else if(c==32&&np.dlg_len<30){np.dlg_buf[np.dlg_len++]='_';np.dlg_buf[np.dlg_len]=0;}
+                    }
+                } else if(np.mode==0){
+                    if(ch>0&&ch<256){
+                        char c=(char)ch;
+                        if(c=='\b'||c==127)np_backspace();
+                        else if(c=='\n'||c=='\r')np_insert('\n');
+                        else if(c>=32&&c<127)np_insert(c);
+                    } else if(ch>=1001){
+                        /* magic constants from sys_keypoll */
+                        if     (ch==1001)np_up();
+                        else if(ch==1002)np_down();
+                        else if(ch==1003)np_left();
+                        else if(ch==1004)np_right();
+                        else if(ch==1005)np_home();
+                        else if(ch==1006)np_end();
+                        else if(ch==1007)np_del_fwd();
+                        else if(ch==1008){np.scroll=np.scroll>5?np.scroll-5:0;}
+                        else if(ch==1009)np.scroll+=5;
                     }
                 }
             }
         }
 
-        /* hover */
+        /* hover updates */
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
         menu_sel=-1;
         if(menu_open){int mx2=4,my2=768-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
-        /* file manager hover */
         fm_hovered=-1;
         int fi2=find_win(WIN_FILES);
         if(fi2>=0&&wins[fi2].visible&&!wins[fi2].minimized){
             Win*wf=&wins[fi2];
             int row_y=wf->y+TITLEBAR_H+72,start=fm_scroll;
-            for(int i=start;i<fm_count;i++){int ry=row_y+(i-start)*22;if(in_box(mouse_x,mouse_y,wf->x,ry,wf->w,22))fm_hovered=i;}
+            int max_vis3=(wf->h-TITLEBAR_H-72-20)/22;if(max_vis3<1)max_vis3=1;
+            for(int i=start;i<fm_count&&i<start+max_vis3;i++){int ry=row_y+(i-start)*22;if(in_box(mouse_x,mouse_y,wf->x,ry,wf->w,22))fm_hovered=i;}
+        }
+        np.dlg_hov=-1;
+        if(np_win_idx>=0&&np_win_idx<MAX_WINDOWS&&wins[np_win_idx].visible&&np.mode==1){
+            Win*wn=&wins[np_win_idx];
+            int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
+            int dw=280,dh=dh2,dx=wn->x+(wn->w-dw)/2,dy2=wn->y+TITLEBAR_H+(wn->h-TITLEBAR_H-dh)/2;
+            int ly=dy2+28,max_vis2=(dh-36)/20;
+            for(int i=np.dlg_scroll;i<np_dlg_count&&i<np.dlg_scroll+max_vis2;i++){
+                int ry=ly+(i-np.dlg_scroll)*20;
+                if(in_box(mouse_x,mouse_y,dx+2,ry,dw-4,20))np.dlg_hov=i;
+            }
         }
 
         cursor_blink=(cursor_blink+1)%100;
         prev_btn=mouse_btn;
-        if(ticks-last_ticks<1&&ch<=0&&cursor_blink!=0&&cursor_blink!=50)continue;
+        if(!fm_loaded)fm_load();
+
+        if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0)continue;
         last_ticks=ticks;
 
-        /* draw */
         wallpaper();draw_icons();draw_panel_bg();
         int px2=PANEL_X+4;
         draw_analog_clock(PANEL_X+PANEL_W/2,95,80,secs);
@@ -758,12 +1030,12 @@ int main(void){
         draw_stats(px2,392);
         wm_sort();
         for(int si=0;si<win_count;si++){
-            int i=z_order[si];if(!wins[i].visible)continue;
+            int i=z_order[si];if(!wins[i].visible||wins[i].minimized)continue;
             int db=wm_draw_frame(i);if(!db)continue;
             if(wins[i].id==WIN_TERMINAL)draw_terminal_content(i);
             else if(wins[i].id==WIN_ABOUT)draw_about_content(i);
             else if(wins[i].id==WIN_FILES)draw_files_content(i);
-            else draw_textview_content(i);
+            else if(wins[i].id==WIN_NOTEPAD)draw_notepad_content(i);
         }
         draw_taskbar(secs);draw_menu();draw_cursor(mouse_x,mouse_y);
         flush();sys_yield();

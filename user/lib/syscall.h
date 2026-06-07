@@ -77,3 +77,10 @@ static inline long sys_mouseread(unsigned long long *out) {
 static inline long sys_readdir(void* buf, long max) {
     return (long)_sc(17, (uint64_t)buf, (uint64_t)max, 0, 0, 0);
 }
+
+/* syscall 18 — save file: write buf[0..size] to /disk/<filename> */
+static inline long sys_save_file(unsigned long long path,
+                                  unsigned long long buf,
+                                  unsigned long long size){
+    return (long)_sc(18,path,buf,size,0,0);
+}
