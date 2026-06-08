@@ -52,6 +52,7 @@ typedef struct process {
     uint64_t         stack_top;
     uint64_t         ticks;
     uint64_t         wake_tick;
+    uint32_t         timeslice;   /* ticks remaining in current slice */
     struct process*  next;
 } process_t;
 

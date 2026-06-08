@@ -60,6 +60,14 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("IDT loaded\n");
 
     irq_init();
+
+    /* Program PIT channel 0 to 100Hz (divisor = 1193180/100 = 11931) */
+    {
+        uint16_t divisor = 11931;
+        __asm__ volatile("outb %0, $0x43" :: "a"((uint8_t)0x36));
+        __asm__ volatile("outb %0, $0x40" :: "a"((uint8_t)(divisor & 0xFF)));
+        __asm__ volatile("outb %0, $0x40" :: "a"((uint8_t)(divisor >> 8)));
+    }
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("PIC initialized\n");
 
@@ -136,6 +144,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("Keyboard driver loaded\n");
 
     scheduler_init();
+    pic_unmask(IRQ_TIMER);
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Scheduler initialized\n");
 
