@@ -136,6 +136,8 @@ static u32  cfg_accent=0x58A6FF;
 static int  cfg_24h=1,cfg_showsecs=1;
 static int  rctx_open=0,rctx_x=0,rctx_y=0,rctx_target=-1,rctx_hov=-1;
 static int  settings_win_idx=-1;
+static int  fm_selected=-1,fm_last_fi=-1,fm_del_confirm=0;
+static u64  fm_last_tick=0;
 
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
     if(win_count>=MAX_WINDOWS)return -1;
@@ -273,7 +275,7 @@ typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
 static Dirent fm_entries[MAX_FILES];
 static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
-static void fm_load(void){fm_count=(int)sys_readdir(fm_entries,MAX_FILES);fm_scroll=0;fm_loaded=1;}
+static void fm_load(void){fm_count=(int)sys_readdir(fm_entries,MAX_FILES);fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;fm_loaded=1;}
 static void fmt_size(unsigned int sz,char*out){
     if(sz==0){out[0]='d';out[1]='i';out[2]='r';out[3]=0;return;}
     if(sz<1024){
@@ -298,6 +300,11 @@ static void draw_files_content(int wi){
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
     rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
+    int can_del=fm_selected>=0&&!fm_entries[fm_selected].is_dir;
+    int dhov=in_box(mouse_x,mouse_y,x+cw-120,y+4,52,20);
+    rect(x+cw-120,y+4,52,20,can_del?(dhov?0xA01010:0x6B1010):0x13161B);
+    outline(x+cw-120,y+4,52,20,can_del?RED:BORDER);
+    text(x+cw-116,y+6,"Delete",can_del?TEXT:DIM,can_del?(dhov?0xA01010:0x6B1010):0x13161B);
     int hy=y+32;rect(x,hy,cw,18,0x13161B);hline(x,hy+18,cw,BORDER);
     text(x+28,hy+1,"Name",DIM,0x13161B);text(x+cw-90,hy+1,"Size",DIM,0x13161B);
     vline(x+cw-100,hy,18,BORDER);
@@ -307,7 +314,7 @@ static void draw_files_content(int wi){
     int size_col_x=x+cw-96;
     for(int i=fm_scroll;i<end;i++){
         int ry=row_y+(i-fm_scroll)*row_h;
-        int hov=(i==fm_hovered);u32 rbg=hov?0x21262D:0x0D1117;
+        int hov=(i==fm_hovered);int sel=(i==fm_selected);u32 rbg=sel?0x1C3A1C:(hov?0x21262D:0x0D1117);
         rect(x,ry,cw,row_h,rbg);
         u32 icol=fm_entries[i].is_dir?YELLOW:ACCENT;
         rect(x+8,ry+5,12,12,icol);
@@ -334,6 +341,20 @@ static void draw_files_content(int wi){
     if(fm_count>=10)stat[si++]='0'+fm_count/10;stat[si++]='0'+fm_count%10;
     const char*suf=" items on /disk";int sf=0;while(suf[sf])stat[si++]=suf[sf++];stat[si]=0;
     text(x+8,sb+2,stat,DIM,0x161B22);
+    if(fm_del_confirm&&fm_selected>=0){
+        int dw=300,dh=88,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
+        rect(ddx+3,ddy+3,dw,dh,0x050810);
+        rect(ddx,ddy,dw,dh,0x1C2128);outline(ddx,ddy,dw,dh,RED);
+        rect(ddx,ddy,dw,24,0x2A1010);hline(ddx,ddy+24,dw,0x5A2020);
+        text_center(ddx+dw/2,ddy+4,"Delete File?",RED,0x2A1010);
+        text_center(ddx+dw/2,ddy+34,fm_entries[fm_selected].name,TEXT,0x1C2128);
+        int yhov=in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22);
+        int nhov=in_box(mouse_x,mouse_y,ddx+dw-110,ddy+60,80,22);
+        rect(ddx+30,ddy+60,80,22,yhov?RED:0x6B1010);outline(ddx+30,ddy+60,80,22,RED);
+        text_center(ddx+70,ddy+62,"Yes, Delete",yhov?WHITE:TEXT,yhov?RED:0x6B1010);
+        rect(ddx+dw-110,ddy+60,80,22,nhov?0x21262D:0x13161B);outline(ddx+dw-110,ddy+60,80,22,BORDER);
+        text_center(ddx+dw-70,ddy+62,"Cancel",TEXT,nhov?0x21262D:0x13161B);
+    }
 }
 
 /* ═══ NOTEPAD ═══════════════════════════════════════════════════ */
@@ -602,8 +623,8 @@ static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     line_aa(cx,cy,cx+(int)(icos(hdeg)*(r-28)/1000),cy-(int)(isin(hdeg)*(r-28)/1000),WHITE);
     line_aa(cx,cy,cx+(int)(icos(hdeg+1)*(r-28)/1000),cy-(int)(isin(hdeg+1)*(r-28)/1000),WHITE);
     int mdeg=mm*6-90;
-    line_aa(cx,cy,cx+(int)(icos(mdeg)*(r-18)/1000),cy-(int)(isin(mdeg)*(r-18)/1000),cfg_accent);
-    line_aa(cx,cy,cx+(int)(icos(mdeg+1)*(r-18)/1000),cy-(int)(isin(mdeg+1)*(r-18)/1000),cfg_accent);
+    line_aa(cx,cy,cx+(int)(icos(mdeg)*(r-18)/1000),cy-(int)(isin(mdeg)*(r-18)/1000),ACCENT);
+    line_aa(cx,cy,cx+(int)(icos(mdeg+1)*(r-18)/1000),cy-(int)(isin(mdeg+1)*(r-18)/1000),ACCENT);
     line_aa(cx,cy,cx+(int)(icos(ss*6-90)*(r-14)/1000),cy-(int)(isin(ss*6-90)*(r-14)/1000),RED);
     rect(cx-3,cy-3,6,6,WHITE);
 }
@@ -628,16 +649,9 @@ static void draw_calendar(int x,int y,int month,int year,int today){
 }
 static void draw_digital_clock(int x,int y,u64 secs){
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
-    char ampm[3]={'A','M',0};
-    if(!cfg_24h){if(hh>=12)ampm[0]='P';if(hh>12)hh-=12;else if(hh==0)hh=12;}
-    char t[9];int tl=0;
-    t[tl++]=(char)('0'+hh/10);t[tl++]=(char)('0'+hh%10);t[tl++]=':';
-    t[tl++]=(char)('0'+mm/10);t[tl++]=(char)('0'+mm%10);
-    if(cfg_showsecs){t[tl++]=':';t[tl++]=(char)('0'+ss/10);t[tl++]=(char)('0'+ss%10);}
-    t[tl]=0;
-    int cx=x+PANEL_W/2-4;int tw=tl*14;int gx0=cx-tw/2;
-    for(int i=0;t[i];i++){int gx=gx0+i*14;glyph(gx,y,t[i],cfg_accent,PANEL_BG);glyph(gx,y+8,t[i],cfg_accent,PANEL_BG);}
-    if(!cfg_24h)text(cx+tw/2+4,y+4,ampm,cfg_accent,PANEL_BG);
+    char t[9];t[0]='0'+hh/10;t[1]='0'+hh%10;t[2]=':';t[3]='0'+mm/10;t[4]='0'+mm%10;t[5]=':';t[6]='0'+ss/10;t[7]='0'+ss%10;t[8]=0;
+    int cx=x+PANEL_W/2-4;
+    for(int i=0;t[i];i++){int gx=cx-36+i*14;glyph(gx,y,t[i],ACCENT,PANEL_BG);glyph(gx,y+8,t[i],ACCENT,PANEL_BG);}
     text_center(cx,y+28,"Fri May 29 2026",DIM,PANEL_BG);
 }
 static void draw_stats(int x,int y){
@@ -710,7 +724,7 @@ static void draw_cursor(int mx,int my){
     for(int r=0;r<15;r++)for(int c=0;c<10;c++){u8 v=C[r][c];if(v==1)px(mx+c,my+r,0xFFFFFF);else if(v==2)px(mx+c,my+r,0x000000);}
 }
 
-/* === CONTEXT MENU ================================================ */
+/* === CONTEXT MENU === */
 static const char *ctx_desk[]={"Terminal","Files","About","Notepad","Settings","","Shutdown"};
 static const char *ctx_win[] ={"Minimize","Maximize","Close"};
 #define CTX_DESK_N 7
@@ -744,7 +758,7 @@ static void draw_rctx(void){
     }
 }
 
-/* === SETTINGS ==================================================== */
+/* === SETTINGS === */
 static const u32  sw_col[]={0x58A6FF,0x3FB950,0xBC8CFF,0xF78166,0xF85149,0xD29922};
 static const char*sw_lbl[]={"Blue","Green","Purple","Orange","Red","Gold"};
 #define N_SW 6
@@ -884,50 +898,7 @@ int main(void){
             if(e==5||e==6||e==7){int nh=resize_start_h-ddy,ny=resize_orig_y+ddy;if(nh>=w->min_h&&ny>=0){w->h=nh;w->y=ny;}}
         }
 
-        /* right-click: open context menu */
-        int rbtn_down=0;
-        if(rbtn_down&&drag_win<0){
-            rctx_x=mouse_x;rctx_y=mouse_y;rctx_hov=-1;
-            int rhit=wm_hit(mouse_x,mouse_y);
-            if(rhit>=0&&in_box(mouse_x,mouse_y,wins[rhit].x,wins[rhit].y,wins[rhit].w,TITLEBAR_H))
-                rctx_target=rhit;
-            else rctx_target=-1;
-            rctx_open=1;goto click_done;
-        }
-        /* left-click on open context menu */
-        if(btn_down&&rctx_open){
-            const char**ci;int cn;get_rctx(&ci,&cn);
-            int cmh=rctx_h(),cmx=rctx_x,cmy=rctx_y;
-            if(cmx+CTX_W>PANEL_X)cmx=PANEL_X-CTX_W;
-            if(cmy+cmh>768-TBAR_H)cmy=768-TBAR_H-cmh;
-            int ciy=cmy+1;
-            for(int ci2=0;ci2<cn;ci2++){
-                if(!ci[ci2][0]){ciy+=CTX_SEP_H;continue;}
-                if(in_box(mouse_x,mouse_y,cmx,ciy,CTX_W,CTX_ITEM_H)){
-                    if(rctx_target<0){
-                        if(ci2==0)open_terminal();
-                        else if(ci2==1)open_files();
-                        else if(ci2==2)open_about();
-                        else if(ci2==3)open_notepad(0);
-                        else if(ci2==4)open_settings();
-                        else if(ci2==6){tprint("Shutting down...");flush();sys_shutdown();}
-                    } else {
-                        Win*rw=&wins[rctx_target];
-                        if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
-                        else if(ci2==1){if(rw->w<700){rw->x=20;rw->y=20;rw->w=750;rw->h=700;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
-                        else if(ci2==2){
-                            rw->visible=0;
-                            if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
-                            if(wins[rctx_target].id==WIN_SETTINGS)settings_win_idx=-1;
-                            focused=-1;int cbz=-1;
-                            for(int ck=0;ck<win_count;ck++)if(wins[ck].visible&&wins[ck].z>cbz){cbz=wins[ck].z;focused=ck;}
-                        }
-                    }
-                }
-                ciy+=CTX_ITEM_H;
-            }
-            rctx_open=0;goto click_done;
-        }
+        int rbtn_down=0;(void)rbtn_down;
         /* click handling */
         if(btn_down&&drag_win<0&&resize_win<0){
             int hit=wm_hit(mouse_x,mouse_y);
@@ -1064,7 +1035,26 @@ int main(void){
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
                     int fy=w->y+TITLEBAR_H;
+                    if(fm_del_confirm&&fm_selected>=0){
+                        int dw=300,dh=88;
+                        int ddx=w->x+(w->w-dw)/2;
+                        int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22)){
+                            char dpath[56];
+                            dpath[0]='/';dpath[1]='d';dpath[2]='i';dpath[3]='s';dpath[4]='k';dpath[5]='/';
+                            int dk=6,dj=0;
+                            while(fm_entries[fm_selected].name[dj]&&dk<55){dpath[dk++]=fm_entries[fm_selected].name[dj++];}dpath[dk]=0;
+                            sys_unlink(dpath);fm_selected=-1;fm_del_confirm=0;fm_load();
+                        } else if(in_box(mouse_x,mouse_y,ddx+dw-110,ddy+60,80,22)){
+                            fm_del_confirm=0;
+                        }
+                        goto click_done;
+                    }
                     if(in_box(mouse_x,mouse_y,w->x+w->w-60,fy+4,52,20)){fm_load();goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+w->w-120,fy+4,52,20)){
+                        if(fm_selected>=0&&!fm_entries[fm_selected].is_dir){fm_del_confirm=1;}
+                        goto click_done;
+                    }
                     int max_vis2=(w->h-TITLEBAR_H-72-20)/22;if(max_vis2<1)max_vis2=1;
                     if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+50,14,14)&&fm_scroll>0){fm_scroll--;goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+66,14,14)&&fm_scroll+max_vis2<fm_count){fm_scroll++;goto click_done;}
@@ -1072,10 +1062,16 @@ int main(void){
                     for(int fi=fm_scroll;fi<fm_count&&fi<fm_scroll+max_vis2;fi++){
                         int ry=row_y+(fi-fm_scroll)*22;
                         if(in_box(mouse_x,mouse_y,w->x,ry,w->w,22)){
-                            if(!fm_entries[fi].is_dir){
-                                char*n=fm_entries[fi].name;int nl=slen(n);
-                                if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
-                                    open_notepad(n);
+                            if(fi==fm_last_fi&&(ticks-fm_last_tick)<30){
+                                fm_last_fi=-1;fm_last_tick=0;
+                                if(!fm_entries[fi].is_dir){
+                                    char*n=fm_entries[fi].name;int nl=slen(n);
+                                    if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
+                                        open_notepad(n);
+                                }
+                            } else {
+                                fm_selected=fi;fm_last_fi=fi;fm_last_tick=ticks;
+                                fm_del_confirm=0;
                             }
                             goto click_done;
                         }
@@ -1192,25 +1188,11 @@ int main(void){
             }
         }
 
-        /* rctx hover */
-        rctx_hov=-1;
-        if(rctx_open){
-            const char**hi;int hn;get_rctx(&hi,&hn);
-            int hmh=rctx_h(),hmx=rctx_x,hmy=rctx_y;
-            if(hmx+CTX_W>PANEL_X)hmx=PANEL_X-CTX_W;
-            if(hmy+hmh>768-TBAR_H)hmy=768-TBAR_H-hmh;
-            int hiy=hmy+1;
-            for(int i=0;i<hn;i++){
-                if(!hi[i][0]){hiy+=CTX_SEP_H;continue;}
-                if(in_box(mouse_x,mouse_y,hmx,hiy,CTX_W,CTX_ITEM_H))rctx_hov=i;
-                hiy+=CTX_ITEM_H;
-            }
-        }
         cursor_blink=(cursor_blink+1)%100;
         prev_btn=mouse_btn;
         if(!fm_loaded)fm_load();
 
-        if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0&&!rbtn_down&&!rctx_open)continue;
+        if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0)continue;
         last_ticks=ticks;
 
         wallpaper();draw_icons();draw_panel_bg();

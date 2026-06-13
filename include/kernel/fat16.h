@@ -66,6 +66,9 @@ int  fat16_create(const char* path);
 
 /* List root directory. Fills entries[], returns count (max max_entries). */
 int  fat16_list(fat16_entry_t* entries, int max_entries);
+int  fat16_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out);
+int  fat16_unlink(const char* path);
+int  fat16_mkdir(const char* path);
 
 #endif
 

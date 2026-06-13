@@ -84,3 +84,13 @@ static inline long sys_save_file(unsigned long long path,
                                   unsigned long long size){
     return (long)_sc(18,path,buf,size,0,0);
 }
+/* syscalls 19-21: stat / mkdir / unlink */
+#define SYS_STAT   19
+#define SYS_MKDIR  20
+#define SYS_UNLINK 21
+static inline int sys_stat(const char* path, unsigned int* sz, unsigned char* isd) {
+    return (int)_sc(SYS_STAT,(uint64_t)path,(uint64_t)sz,(uint64_t)isd,0,0); }
+static inline int sys_mkdir(const char* path) {
+    return (int)_sc(SYS_MKDIR,(uint64_t)path,0,0,0,0); }
+static inline int sys_unlink(const char* path) {
+    return (int)_sc(SYS_UNLINK,(uint64_t)path,0,0,0,0); }

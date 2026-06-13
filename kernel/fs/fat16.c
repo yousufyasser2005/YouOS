@@ -495,3 +495,69 @@ int fat16_list(fat16_entry_t* entries, int max_entries) {
 done:
     return count;
 }
+
+/* ── fat16_stat ───────────────────────────────────────────────── */
+int fat16_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
+    if (!initialized) return -1;
+    if (path[0] == '/') path++;
+    if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
+    char name83[11];
+    to_83(path, name83);
+    fat16_dirent_t entry; uint32_t elba, eoff;
+    if (!root_find(name83, &entry, &elba, &eoff)) return -1;
+    if (size_out)   *size_out   = entry.file_size;
+    if (is_dir_out) *is_dir_out = (entry.attributes & FAT16_ATTR_DIRECTORY) ? 1 : 0;
+    return 0;
+}
+/* ── fat16_unlink ─────────────────────────────────────────────── */
+int fat16_unlink(const char* path) {
+    if (!initialized) return -1;
+    if (path[0] == '/') path++;
+    if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
+    char name83[11];
+    to_83(path, name83);
+    fat16_dirent_t entry; uint32_t elba, eoff;
+    if (!root_find(name83, &entry, &elba, &eoff)) return -1;
+    if (entry.attributes & FAT16_ATTR_DIRECTORY) return -1;
+    uint16_t cluster = entry.first_cluster;
+    while (cluster >= 2 && cluster < 0xFFF8) {
+        uint16_t next = fat_get(cluster);
+        fat_set(cluster, 0);
+        cluster = next;
+    }
+    uint8_t buf[512];
+    read_sector(elba, buf);
+    buf[eoff] = 0xE5;
+    write_sector(elba, buf);
+    return 0;
+}
+/* ── fat16_mkdir ──────────────────────────────────────────────── */
+int fat16_mkdir(const char* path) {
+    if (!initialized) return -1;
+    if (path[0] == '/') path++;
+    if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
+    char name83[11];
+    to_83(path, name83);
+    fat16_dirent_t existing; uint32_t elba2, eoff2;
+    if (root_find(name83, &existing, &elba2, &eoff2)) return -1;
+    uint16_t cluster = fat_alloc_cluster();
+    if (cluster == 0) return -1;
+    uint8_t zero[512];
+    for (int i = 0; i < 512; i++) zero[i] = 0;
+    uint32_t dlba = data_start_lba + (uint32_t)(cluster - 2) * sectors_per_cluster;
+    for (uint32_t s = 0; s < sectors_per_cluster; s++) write_sector(dlba + s, zero);
+    uint32_t out_lba, out_off;
+    if (!root_alloc(&out_lba, &out_off)) { fat_set(cluster, 0); return -1; }
+    uint8_t buf[512];
+    read_sector(out_lba, buf);
+    fat16_dirent_t* d = (fat16_dirent_t*)(buf + out_off);
+    for (int i = 0; i < 8; i++) d->name[i] = name83[i];
+    for (int i = 0; i < 3; i++) d->ext[i]  = name83[8 + i];
+    d->attributes=FAT16_ATTR_DIRECTORY; d->reserved=0;
+    d->create_time_tenth=0; d->create_time=0; d->create_date=0;
+    d->access_date=0; d->first_cluster_high=0;
+    d->write_time=0; d->write_date=0;
+    d->first_cluster=cluster; d->file_size=0;
+    write_sector(out_lba, buf);
+    return 0;
+}

@@ -16,7 +16,10 @@
 #define SYS_READDIR    17
 #define SYS_SAVEFILE   18
 
-#define SYSCALL_COUNT  19
+#define SYS_STAT    19
+#define SYS_MKDIR   20
+#define SYS_UNLINK  21
+#define SYSCALL_COUNT  22
 
 void syscall_init(void);
 #endif
