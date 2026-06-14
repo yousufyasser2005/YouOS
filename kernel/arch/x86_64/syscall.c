@@ -1,4 +1,5 @@
 #include <kernel/syscall.h>
+#include <kernel/ipc.h>
 #include <kernel/process.h>
 #include <kernel/vga.h>
 #include <kernel/vfs.h>
@@ -215,6 +216,19 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
     return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
 }
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
+
+static uint64_t sys_msgpost(uint64_t name,uint64_t data,uint64_t len,uint64_t a4,uint64_t a5){
+    (void)a4;(void)a5;
+    return (uint64_t)(int64_t)ipc_post((const char*)name,(const void*)data,(uint32_t)len);
+}
+static uint64_t sys_msgrecv(uint64_t name,uint64_t data,uint64_t lenp,uint64_t fromp,uint64_t a5){
+    (void)a5;
+    return (uint64_t)(int64_t)ipc_recv((const char*)name,(void*)data,(uint32_t*)lenp,(uint32_t*)fromp);
+}
+static uint64_t sys_mqcreate(uint64_t name,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)(int64_t)ipc_create((const char*)name);
+}
 static uint64_t sys_stat(uint64_t p,uint64_t so,uint64_t io,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;uint32_t sz=0;uint8_t isd=0;
     if(fat16_stat((const char*)p,&sz,&isd)<0)return (uint64_t)-1ULL;
@@ -240,7 +254,10 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_savefile,
     sys_stat,
     sys_mkdir,
-    sys_unlink
+    sys_unlink,
+    sys_msgpost,
+    sys_msgrecv,
+    sys_mqcreate
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

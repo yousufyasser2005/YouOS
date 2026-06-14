@@ -94,3 +94,13 @@ static inline int sys_mkdir(const char* path) {
     return (int)_sc(SYS_MKDIR,(uint64_t)path,0,0,0,0); }
 static inline int sys_unlink(const char* path) {
     return (int)_sc(SYS_UNLINK,(uint64_t)path,0,0,0,0); }
+/* syscalls 22-24: IPC message queues */
+#define SYS_MSGPOST  22
+#define SYS_MSGRECV  23
+#define SYS_MQCREATE 24
+static inline int sys_mqcreate(const char* name){
+    return (int)_sc(SYS_MQCREATE,(uint64_t)name,0,0,0,0); }
+static inline int sys_msgpost(const char* name,const void* data,unsigned int len){
+    return (int)_sc(SYS_MSGPOST,(uint64_t)name,(uint64_t)data,(uint64_t)len,0,0); }
+static inline int sys_msgrecv(const char* name,void* data,unsigned int* len,unsigned int* from){
+    return (int)_sc(SYS_MSGRECV,(uint64_t)name,(uint64_t)data,(uint64_t)len,(uint64_t)from,0); }

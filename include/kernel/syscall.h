@@ -19,7 +19,10 @@
 #define SYS_STAT    19
 #define SYS_MKDIR   20
 #define SYS_UNLINK  21
-#define SYSCALL_COUNT  22
+#define SYS_MSGPOST  22
+#define SYS_MSGRECV  23
+#define SYS_MQCREATE 24
+#define SYSCALL_COUNT  25
 
 void syscall_init(void);
 #endif
