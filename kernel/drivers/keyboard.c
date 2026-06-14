@@ -92,5 +92,4 @@ char keyboard_getchar(void) {
         process_yield();
     }
 }
-void keyboard_inject(key_event_t*e){extern void kb_push_pub(key_event_t*);kb_push_pub(e);}
 void keyboard_inject(key_event_t* e) { kb_push(e); }

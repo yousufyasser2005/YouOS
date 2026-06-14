@@ -966,7 +966,50 @@ int main(void){
             if(e==5||e==6||e==7){int nh=resize_start_h-ddy,ny=resize_orig_y+ddy;if(nh>=w->min_h&&ny>=0){w->h=nh;w->y=ny;}}
         }
 
-        int rbtn_down=0;(void)rbtn_down;
+        int rbtn_down=(mouse_btn&2)&&!(prev_btn&2);
+        /* right-click: open context menu */
+        if(rbtn_down&&drag_win<0){
+            rctx_x=mouse_x;rctx_y=mouse_y;rctx_hov=-1;
+            int rhit=wm_hit(mouse_x,mouse_y);
+            if(rhit>=0&&in_box(mouse_x,mouse_y,wins[rhit].x,wins[rhit].y,wins[rhit].w,TITLEBAR_H))
+                rctx_target=rhit;
+            else rctx_target=-1;
+            rctx_open=1;goto click_done;
+        }
+        /* left-click closes context menu */
+        if(btn_down&&rctx_open){
+            const char**ci;int cn;get_rctx(&ci,&cn);
+            int cmh=rctx_h(),cmx=rctx_x,cmy=rctx_y;
+            if(cmx+CTX_W>PANEL_X)cmx=PANEL_X-CTX_W;
+            if(cmy+cmh>768-TBAR_H)cmy=768-TBAR_H-cmh;
+            int ciy=cmy+1;
+            for(int ci2=0;ci2<cn;ci2++){
+                if(!ci[ci2][0]){ciy+=CTX_SEP_H;continue;}
+                if(in_box(mouse_x,mouse_y,cmx,ciy,CTX_W,CTX_ITEM_H)){
+                    if(rctx_target<0){
+                        if(ci2==0)open_terminal();
+                        else if(ci2==1)open_files();
+                        else if(ci2==2)open_about();
+                        else if(ci2==3)open_notepad(0);
+                        else if(ci2==4)open_settings();
+                        else if(ci2==6){tprint("Shutting down...");flush();sys_shutdown();}
+                    } else {
+                        Win*rw=&wins[rctx_target];
+                        if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
+                        else if(ci2==1){if(rw->w<700){rw->x=20;rw->y=20;rw->w=750;rw->h=700;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
+                        else if(ci2==2){
+                            rw->visible=0;
+                            if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
+                            if(wins[rctx_target].id==WIN_SETTINGS)settings_win_idx=-1;
+                            focused=-1;int cbz=-1;
+                            for(int ck=0;ck<win_count;ck++)if(wins[ck].visible&&wins[ck].z>cbz){cbz=wins[ck].z;focused=ck;}
+                        }
+                    }
+                }
+                ciy+=CTX_ITEM_H;
+            }
+            rctx_open=0;goto click_done;
+        }
         /* click handling */
         if(btn_down&&drag_win<0&&resize_win<0){
             int hit=wm_hit(mouse_x,mouse_y);
@@ -1256,6 +1299,19 @@ int main(void){
             }
         }
 
+        rctx_hov=-1;
+        if(rctx_open){
+            const char**hi;int hn;get_rctx(&hi,&hn);
+            int hmh=rctx_h(),hmx=rctx_x,hmy=rctx_y;
+            if(hmx+CTX_W>PANEL_X)hmx=PANEL_X-CTX_W;
+            if(hmy+hmh>768-TBAR_H)hmy=768-TBAR_H-hmh;
+            int hiy=hmy+1;
+            for(int i=0;i<hn;i++){
+                if(!hi[i][0]){hiy+=CTX_SEP_H;continue;}
+                if(in_box(mouse_x,mouse_y,hmx,hiy,CTX_W,CTX_ITEM_H))rctx_hov=i;
+                hiy+=CTX_ITEM_H;
+            }
+        }
         cursor_blink=(cursor_blink+1)%100;
         prev_btn=mouse_btn;
         if(!fm_loaded)fm_load();

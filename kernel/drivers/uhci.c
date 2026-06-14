@@ -8,23 +8,23 @@
 #include <kernel/mouse.h>
 
 /* ── Port I/O ────────────────────────────────────────────────── */
-static inline void     outb(uint16_t p,uint8_t  v){__asm__("outb %0,%1"::"a"(v),"Nd"(p));}
-static inline void     outw(uint16_t p,uint16_t v){__asm__("outw %0,%1"::"a"(v),"Nd"(p));}
-static inline void     outl(uint16_t p,uint32_t v){__asm__("outl %0,%1"::"a"(v),"Nd"(p));}
-static inline uint8_t  inb (uint16_t p){uint8_t  v;__asm__("inb %1,%0":"=a"(v):"Nd"(p));return v;}
-static inline uint16_t inw (uint16_t p){uint16_t v;__asm__("inw %1,%0":"=a"(v):"Nd"(p));return v;}
+static inline void     outb(uint16_t p,uint8_t  v){__asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p));}
+static inline void     outw(uint16_t p,uint16_t v){__asm__ volatile("outw %0,%1"::"a"(v),"Nd"(p));}
+static inline void     outl(uint16_t p,uint32_t v){__asm__ volatile("outl %0,%1"::"a"(v),"Nd"(p));}
+static inline uint8_t  inb (uint16_t p){uint8_t  v;__asm__ volatile("inb %1,%0":"=a"(v):"Nd"(p));return v;}
+static inline uint16_t inw (uint16_t p){uint16_t v;__asm__ volatile("inw %1,%0":"=a"(v):"Nd"(p));return v;}
 static void udelay(int n){for(volatile int i=0;i<n*50;i++);}
 
 /* ── PCI config space ────────────────────────────────────────── */
 static uint32_t pci_r32(uint8_t b,uint8_t d,uint8_t f,uint8_t o){
     uint32_t a=0x80000000|((uint32_t)b<<16)|((uint32_t)d<<11)|((uint32_t)f<<8)|(o&0xFC);
-    __asm__("outl %0,$0xCF8"::"a"(a));
-    uint32_t v;__asm__("inl $0xCFC,%0":"=a"(v));return v;
+    __asm__ volatile("outl %0, %1"::"a"(a),"Nd"((uint16_t)0xCF8));
+    uint32_t v;__asm__ volatile("inl %1,%0":"=a"(v):"Nd"((uint16_t)0xCFC));return v;
 }
 static void pci_w32(uint8_t b,uint8_t d,uint8_t f,uint8_t o,uint32_t v){
     uint32_t a=0x80000000|((uint32_t)b<<16)|((uint32_t)d<<11)|((uint32_t)f<<8)|(o&0xFC);
-    __asm__("outl %0,$0xCF8"::"a"(a));
-    __asm__("outl %0,$0xCFC"::"a"(v));
+    __asm__ volatile("outl %0, %1"::"a"(a),"Nd"((uint16_t)0xCF8));
+    __asm__ volatile("outl %0, %1"::"a"(v),"Nd"((uint16_t)0xCFC));
 }
 
 /* ── UHCI register offsets ───────────────────────────────────── */
