@@ -36,7 +36,7 @@ static key_event_t       kb_buffer[KB_BUFFER_SIZE];
 static volatile uint32_t kb_head = 0;
 static volatile uint32_t kb_tail = 0;
 
-static void kb_push(key_event_t* e) {
+void kb_push(key_event_t* e) {
     uint32_t n = (kb_head+1)%KB_BUFFER_SIZE;
     if (n!=kb_tail) { kb_buffer[kb_head]=*e; kb_head=n; }
 }
@@ -92,3 +92,5 @@ char keyboard_getchar(void) {
         process_yield();
     }
 }
+void keyboard_inject(key_event_t*e){extern void kb_push_pub(key_event_t*);kb_push_pub(e);}
+void keyboard_inject(key_event_t* e) { kb_push(e); }

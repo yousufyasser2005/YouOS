@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <kernel/pic.h>
+#include <kernel/uhci.h>
 #include <kernel/idt.h>
 #include <kernel/process.h>
 
@@ -28,6 +29,7 @@ void irq_common_handler(registers_t* regs)
         ticks++;
         pic_eoi(irq);
         scheduler_tick();
+        if(ticks%10==0)uhci_poll();
         return;
     }
 

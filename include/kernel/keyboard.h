@@ -63,6 +63,7 @@ char keyboard_getchar(void);
 
 /* Check if a key is available in buffer */
 int keyboard_available(void);
+void keyboard_inject(key_event_t* e);
 
 /* Set a callback for key events */
 void keyboard_set_callback(void (*cb)(key_event_t*));
