@@ -302,18 +302,31 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls";
-    int mh=1,mc=1,ma=1,ms=1,ml=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc";
+    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
+    for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown");
+    if(mh)tprint("Commands: help clear about ls shutdown ipc");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
+    else if(mi){
+        char msg[32]="hello from desktop";
+        int pr=sys_msgpost("test",msg,18);
+        if(pr<0){tprint("IPC FAIL: post error");return;}
+        char buf[128];unsigned int len=0,from=0;
+        int rc=sys_msgrecv("test",buf,&len,&from);
+        if(rc<0){tprint("IPC FAIL: recv error");return;}
+        buf[len]=0;
+        char out[64];out[0]='I';out[1]='P';out[2]='C';out[3]=' ';out[4]='O';out[5]='K';out[6]=':';out[7]=' ';
+        int oi=8,bi=0;while(buf[bi]&&oi<62){out[oi++]=buf[bi++];}out[oi]=0;
+        tprint(out);
+    }
     else{char m[64];m[0]='?';m[1]=' ';int k=0;while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;}m[k+2]=0;tprint(m);}
 }
 static void draw_terminal_content(int i){
