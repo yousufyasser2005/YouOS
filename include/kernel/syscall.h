@@ -22,7 +22,8 @@
 #define SYS_MSGPOST  22
 #define SYS_MSGRECV  23
 #define SYS_MQCREATE 24
-#define SYSCALL_COUNT  25
+#define SYS_RENAME   25
+#define SYSCALL_COUNT  26
 
 void syscall_init(void);
 #endif

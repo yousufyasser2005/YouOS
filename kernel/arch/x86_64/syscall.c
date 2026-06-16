@@ -78,8 +78,8 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     address_space_t proc_as = vmm_create_user_as();
     if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) return (uint64_t)-2;
     extern uint64_t pmm_alloc_pages(uint64_t);
-    uint64_t stack_base = pmm_alloc_pages(4);
-    uint64_t stack_top  = stack_base + 4 * 4096;
+    uint64_t stack_base = pmm_alloc_pages(16);
+    uint64_t stack_top  = stack_base + 16 * 4096;
     for (uint64_t a = stack_base; a < stack_top; a += 4096)
         vmm_map(&proc_as, a, a, 0x7);
     extern uint64_t user_rsp_tmp;
@@ -217,6 +217,10 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
 }
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
+static uint64_t sys_rename(uint64_t op,uint64_t np,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a3;(void)a4;(void)a5;
+    return (uint64_t)(int64_t)fat16_rename((const char*)op,(const char*)np);
+}
 static uint64_t sys_msgpost(uint64_t name,uint64_t data,uint64_t len,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
     return (uint64_t)(int64_t)ipc_post((const char*)name,(const void*)data,(uint32_t)len);
@@ -257,7 +261,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_unlink,
     sys_msgpost,
     sys_msgrecv,
-    sys_mqcreate
+    sys_mqcreate,
+    sys_rename
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

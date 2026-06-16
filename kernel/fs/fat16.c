@@ -561,3 +561,25 @@ int fat16_mkdir(const char* path) {
     write_sector(out_lba, buf);
     return 0;
 }
+
+/* ── fat16_rename ─────────────────────────────────────────────── */
+int fat16_rename(const char* old_path, const char* new_path) {
+    if (!initialized) return -1;
+    const char* op=old_path; if(op[0]=='/')op++;
+    if(op[0]=='d'&&op[1]=='i'&&op[2]=='s'&&op[3]=='k'&&op[4]=='/')op+=5;
+    const char* np=new_path; if(np[0]=='/')np++;
+    if(np[0]=='d'&&np[1]=='i'&&np[2]=='s'&&np[3]=='k'&&np[4]=='/')np+=5;
+    char old83[11],new83[11];
+    to_83(op,old83); to_83(np,new83);
+    /* check new name doesn't exist */
+    fat16_dirent_t existing; uint32_t ex_lba,ex_off;
+    if(root_find(new83,&existing,&ex_lba,&ex_off)) return -1;
+    /* find old entry */
+    fat16_dirent_t entry; uint32_t elba,eoff;
+    if(!root_find(old83,&entry,&elba,&eoff)) return -1;
+    /* update name in place */
+    for(int i=0;i<8;i++) entry.name[i]=new83[i];
+    for(int i=0;i<3;i++) entry.ext[i]=new83[8+i];
+    root_write_entry(elba,eoff,&entry);
+    return 0;
+}

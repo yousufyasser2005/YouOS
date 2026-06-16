@@ -104,3 +104,7 @@ static inline int sys_msgpost(const char* name,const void* data,unsigned int len
     return (int)_sc(SYS_MSGPOST,(uint64_t)name,(uint64_t)data,(uint64_t)len,0,0); }
 static inline int sys_msgrecv(const char* name,void* data,unsigned int* len,unsigned int* from){
     return (int)_sc(SYS_MSGRECV,(uint64_t)name,(uint64_t)data,(uint64_t)len,(uint64_t)from,0); }
+/* syscall 25: rename */
+#define SYS_RENAME 25
+static inline int sys_rename(const char* old_path, const char* new_path){
+    return (int)_sc(SYS_RENAME,(uint64_t)old_path,(uint64_t)new_path,0,0,0); }
