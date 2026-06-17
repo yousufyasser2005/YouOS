@@ -583,3 +583,65 @@ int fat16_rename(const char* old_path, const char* new_path) {
     root_write_entry(elba,eoff,&entry);
     return 0;
 }
+
+/* ── fat16_list_dir: list a subdirectory by path ─────────────── */
+int fat16_list_dir(const char* path, fat16_entry_t* entries, int max_entries) {
+    if (!initialized) return -1;
+    /* strip leading /disk/ */
+    const char* p=path;
+    if(p[0]=='/')p++;
+    if(p[0]=='d'&&p[1]=='i'&&p[2]=='s'&&p[3]=='k'&&p[4]=='/')p+=5;
+    /* empty path = root */
+    if(!p[0]) return fat16_list(entries, max_entries);
+    /* find dir entry in root */
+    char name83[11]; to_83(p, name83);
+    fat16_dirent_t entry; uint32_t elba, eoff;
+    if (!root_find(name83, &entry, &elba, &eoff)) return -1;
+    if (!(entry.attributes & FAT16_ATTR_DIRECTORY)) return -1;
+    uint16_t cluster = entry.first_cluster;
+    if (cluster < 2) return 0;
+    int count = 0;
+    /* walk cluster chain */
+    while (cluster >= 2 && cluster < 0xFFF8 && count < max_entries) {
+        uint32_t lba = cluster_to_lba(cluster);
+        for (uint32_t sec = 0; sec < sectors_per_cluster && count < max_entries; sec++) {
+            uint8_t buf[512];
+            if (read_sector(lba + sec, buf) != 0) goto done;
+            fat16_dirent_t* dir = (fat16_dirent_t*)buf;
+            for (int e = 0; e < 16 && count < max_entries; e++) {
+                uint8_t first = (uint8_t)dir[e].name[0];
+                if (first == 0x00) goto done;
+                if (first == 0xE5) continue;
+                uint8_t attr = dir[e].attributes;
+                if (attr == FAT16_ATTR_LFN)    continue;
+                if (attr & FAT16_ATTR_VOLUME_ID) continue;
+                if (attr & FAT16_ATTR_HIDDEN)  continue;
+                if (attr & FAT16_ATTR_SYSTEM)  continue;
+                /* skip . and .. */
+                if (dir[e].name[0]=='.') continue;
+                fat16_entry_t* out = &entries[count];
+                int ni = 0, k;
+                for (k = 0; k < 8 && dir[e].name[k] != ' '; k++)
+                    out->name[ni++] = (dir[e].name[k]>='A'&&dir[e].name[k]<='Z')
+                                      ? dir[e].name[k]+32 : dir[e].name[k];
+                if (!(attr & FAT16_ATTR_DIRECTORY)) {
+                    int has_ext=0;
+                    for(k=0;k<3;k++) if(dir[e].ext[k]!=' '){has_ext=1;break;}
+                    if(has_ext){
+                        out->name[ni++]='.';
+                        for(k=0;k<3&&dir[e].ext[k]!=' ';k++)
+                            out->name[ni++]=(dir[e].ext[k]>='A'&&dir[e].ext[k]<='Z')
+                                            ?dir[e].ext[k]+32:dir[e].ext[k];
+                    }
+                }
+                out->name[ni]=0;
+                out->size  =dir[e].file_size;
+                out->is_dir=(attr&FAT16_ATTR_DIRECTORY)?1:0;
+                count++;
+            }
+        }
+        cluster = fat_get(cluster);
+    }
+done:
+    return count;
+}

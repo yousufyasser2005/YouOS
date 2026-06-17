@@ -210,6 +210,8 @@ static int  fm_dialog=0;
 static char fm_dlg_buf[40];static int fm_dlg_len=0;
 static char fm_dlg_err[48];static int fm_dlg_has_err=0;
 static char fm_cpbuf[4096];
+static char fm_path[64];  /* current directory: "" = root, "dirname" = subdir */
+static int  fm_path_len=0;
 static int  settings_win_idx=-1;
 /* Calculator state */
 typedef struct{
@@ -375,7 +377,17 @@ typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
 static Dirent fm_entries[MAX_FILES];
 static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
-static void fm_load(void){fm_count=(int)sys_readdir(fm_entries,MAX_FILES);fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;fm_ctx_open=0;fm_dialog=0;fm_dlg_has_err=0;fm_loaded=1;}
+static void fm_load(void){
+    if(fm_path_len>0){
+        char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
+        int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
+        fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
+    } else {
+        fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
+    }
+    fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;
+    fm_ctx_open=0;fm_dialog=0;fm_dlg_has_err=0;fm_loaded=1;
+}
 static void fmt_size(unsigned int sz,char*out){
     if(sz==0){out[0]='d';out[1]='i';out[2]='r';out[3]=0;return;}
     if(sz<1024){
@@ -396,10 +408,19 @@ static void draw_files_content(int wi){
     int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
     rect(x,y,cw,ch,0x0D1117);
     rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
-    text(x+8,y+6,"/disk",cfg_accent,0x161B22);
+    /* path bar */
+    char pathbar[72];pathbar[0]='/';pathbar[1]='d';pathbar[2]='i';pathbar[3]='s';pathbar[4]='k';
+    if(fm_path_len>0){pathbar[5]='/';int pk=6,pj=0;while(fm_path[pj]&&pk<70){pathbar[pk++]=fm_path[pj++];}pathbar[pk]=0;}
+    else pathbar[5]=0;
+    text(x+8,y+6,pathbar,cfg_accent,0x161B22);
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
     rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
+    if(fm_path_len>0){
+        int uhov=in_box(mouse_x,mouse_y,x+cw-128,y+4,52,20);
+        rect(x+cw-128,y+4,52,20,uhov?0x21262D:0x161B22);outline(x+cw-128,y+4,52,20,BORDER);
+        text(x+cw-124,y+6,"Up",uhov?TEXT:DIM,uhov?0x21262D:0x161B22);
+    }
     int hy=y+32;rect(x,hy,cw,18,0x13161B);hline(x,hy+18,cw,BORDER);
     text(x+28,hy+1,"Name",DIM,0x13161B);text(x+cw-90,hy+1,"Size",DIM,0x13161B);
     vline(x+cw-100,hy,18,BORDER);
@@ -1220,7 +1241,7 @@ static void calc_handle_key(s64 ch){
 static int find_win(int id){for(int i=0;i<win_count;i++)if(wins[i].id==id)return i;return -1;}
 static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",cfg_accent);}
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
-static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;}}
+static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;fm_path_len=0;fm_path[0]=0;}}
 static void open_notepad(const char*fn){
     int i=find_win(WIN_NOTEPAD);
     if(i<0){
@@ -1641,6 +1662,9 @@ int main(void){
                         goto click_done;
                     }
                     /* toolbar */
+                    if(fm_path_len>0&&in_box(mouse_x,mouse_y,w->x+cw2-128,fy+4,52,20)){
+                        fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
+                    }
                     if(in_box(mouse_x,mouse_y,w->x+cw2-60,fy+4,52,20)){fm_load();goto click_done;}
                     int max_vis2=(w->h-TITLEBAR_H-72-20)/22;if(max_vis2<1)max_vis2=1;
                     if(in_box(mouse_x,mouse_y,w->x+cw2-16,fy+50,14,14)&&fm_scroll>0){fm_scroll--;goto click_done;}
@@ -1651,7 +1675,11 @@ int main(void){
                         if(in_box(mouse_x,mouse_y,w->x,ry,w->w,22)){
                             if(fi==fm_last_fi&&(ticks-fm_last_tick)<30){
                                 fm_last_fi=-1;fm_last_tick=0;
-                                if(!fm_entries[fi].is_dir){
+                                if(fm_entries[fi].is_dir&&fm_path_len==0){
+                                    /* navigate into subdir (1 level deep) */
+                                    int ni=0;while(fm_entries[fi].name[ni]&&ni<62){fm_path[ni]=fm_entries[fi].name[ni];ni++;}
+                                    fm_path[ni]=0;fm_path_len=ni;fm_load();goto click_done;
+                                } else if(!fm_entries[fi].is_dir){
                                     char*n=fm_entries[fi].name;int nl=slen(n);
                                     if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
                                         open_notepad(n);

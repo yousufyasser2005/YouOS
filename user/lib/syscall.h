@@ -108,3 +108,7 @@ static inline int sys_msgrecv(const char* name,void* data,unsigned int* len,unsi
 #define SYS_RENAME 25
 static inline int sys_rename(const char* old_path, const char* new_path){
     return (int)_sc(SYS_RENAME,(uint64_t)old_path,(uint64_t)new_path,0,0,0); }
+/* syscall 26: readdir2 — list subdirectory by path */
+#define SYS_READDIR2 26
+static inline long sys_readdir2(const char* path, void* buf, long max){
+    return (long)_sc(SYS_READDIR2,(uint64_t)path,(uint64_t)buf,(uint64_t)max,0,0); }

@@ -23,7 +23,8 @@
 #define SYS_MSGRECV  23
 #define SYS_MQCREATE 24
 #define SYS_RENAME   25
-#define SYSCALL_COUNT  26
+#define SYS_READDIR2 26
+#define SYSCALL_COUNT  27
 
 void syscall_init(void);
 #endif

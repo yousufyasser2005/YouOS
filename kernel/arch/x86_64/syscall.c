@@ -217,6 +217,10 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
 }
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
+static uint64_t sys_readdir2(uint64_t path,uint64_t buf,uint64_t max,uint64_t a4,uint64_t a5){
+    (void)a4;(void)a5;
+    return (uint64_t)(int64_t)fat16_list_dir((const char*)path,(fat16_entry_t*)buf,(int)max);
+}
 static uint64_t sys_rename(uint64_t op,uint64_t np,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a3;(void)a4;(void)a5;
     return (uint64_t)(int64_t)fat16_rename((const char*)op,(const char*)np);
@@ -262,7 +266,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_msgpost,
     sys_msgrecv,
     sys_mqcreate,
-    sys_rename
+    sys_rename,
+    sys_readdir2
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){
