@@ -1,5 +1,7 @@
 #include <kernel/syscall.h>
 #include <kernel/ipc.h>
+#include <kernel/syslog.h>
+#include <kernel/crash.h>
 #include <kernel/process.h>
 #include <kernel/vga.h>
 #include <kernel/vfs.h>
@@ -71,6 +73,7 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
 static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2;(void)a3;(void)a4;(void)a5;
     const char* name = (const char*)path;
+    syslog_write("EXEC",name);
     uint64_t elf_size = 0;
     const void* elf_data = initrd_find(name, &elf_size);
     if (!elf_data) return (uint64_t)-1;
@@ -107,6 +110,7 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
 }
 static uint64_t sys_shutdown(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    syslog_write("SHUTDOWN","Clean shutdown");
     __asm__ volatile("outw %0, %1"::"a"((uint16_t)0x2000),"Nd"((uint16_t)0x604));
     __asm__ volatile("outw %0, %1"::"a"((uint16_t)0x2000),"Nd"((uint16_t)0xB004));
     __asm__ volatile("cli;hlt");
@@ -209,6 +213,7 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
     const char* name = path;
     for(const char* p = path; *p; p++) if(*p=='/') name=p+1;
     if(!name[0]) return (uint64_t)-1;
+    syslog_write("SAVEFILE",name);
     int fd = fat16_create(name);
     if(fd < 0) return (uint64_t)-1;
     int n = fat16_write(fd, (const void*)buf, (uint32_t)size);
@@ -217,6 +222,14 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
 }
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
+static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a3;(void)a4;(void)a5;
+    return (uint64_t)(int64_t)crash_read((void*)buf,(uint32_t)sz);
+}
+static uint64_t sys_readsyslog(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a3;(void)a4;(void)a5;
+    return (uint64_t)(int64_t)syslog_read((void*)buf,(uint32_t)sz);
+}
 static uint64_t sys_readdir2(uint64_t path,uint64_t buf,uint64_t max,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
     return (uint64_t)(int64_t)fat16_list_dir((const char*)path,(fat16_entry_t*)buf,(int)max);
@@ -267,7 +280,9 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_msgrecv,
     sys_mqcreate,
     sys_rename,
-    sys_readdir2
+    sys_readdir2,
+    sys_readcrash,
+    sys_readsyslog
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

@@ -20,6 +20,8 @@
 #include <kernel/fb.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
+#include <kernel/crash.h>
+#include <kernel/syslog.h>
 #include <kernel/mouse.h>
 
 #define MULTIBOOT2_MAGIC 0x36D76289
@@ -122,6 +124,8 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     heap_init();
     ata_init();
     fat16_init();
+    syslog_init();
+    crash_init();
     ipc_init();
     uhci_init();
     initrd_init();

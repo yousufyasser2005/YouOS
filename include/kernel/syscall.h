@@ -24,7 +24,9 @@
 #define SYS_MQCREATE 24
 #define SYS_RENAME   25
 #define SYS_READDIR2 26
-#define SYSCALL_COUNT  27
+#define SYS_READCRASH  27
+#define SYS_READSYSLOG 28
+#define SYSCALL_COUNT  29
 
 void syscall_init(void);
 #endif

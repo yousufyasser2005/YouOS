@@ -323,19 +323,55 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc";
-    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog";
+    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1,mcrl=1,msll=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
+    for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
+    for(int k=0;sll[k]||cmd[k];k++)if(sll[k]!=cmd[k]){msll=0;break;}
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown ipc");
+    if(mh)tprint("Commands: help clear about ls shutdown ipc crashlog syslog");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
+    else if(mcrl){
+        static char cbuf[2048];
+        int n=sys_readcrash(cbuf,2047);
+        if(n>0){
+            cbuf[n]=0;
+            int ci=0;
+            while(cbuf[ci]){
+                int li=ci;
+                while(cbuf[li]&&cbuf[li]!='\n')li++;
+                char line[128];int ll=0;
+                while(ci<li&&ll<127){line[ll++]=cbuf[ci++];}line[ll]=0;
+                if(cbuf[ci]=='\n')ci++;
+                if(ll>0)tprint(line);
+            }
+        } else tprint("No crash log found.");
+    }
+    else if(msll){
+        static char sbuf[2048];
+        int n=sys_readsyslog(sbuf,2047);
+        if(n>0){
+            sbuf[n]=0;
+            /* show last 20 lines */
+            int lines[20],lc=0;
+            lines[lc++]=0;
+            for(int i=0;sbuf[i];i++)if(sbuf[i]=='\n'&&lc<20)lines[lc++]=i+1;
+            int start=lc>10?lc-10:0;
+            for(int i=start;i<lc;i++){
+                int li=lines[i];
+                char line[128];int ll=0;
+                while(sbuf[li]&&sbuf[li]!='\n'&&ll<127){line[ll++]=sbuf[li++];}line[ll]=0;
+                if(ll>0)tprint(line);
+            }
+        } else tprint("Syslog empty.");
+    }
     else if(mi){
         char msg[32]="hello from desktop";
         int pr=sys_msgpost("test",msg,18);

@@ -112,3 +112,10 @@ static inline int sys_rename(const char* old_path, const char* new_path){
 #define SYS_READDIR2 26
 static inline long sys_readdir2(const char* path, void* buf, long max){
     return (long)_sc(SYS_READDIR2,(uint64_t)path,(uint64_t)buf,(uint64_t)max,0,0); }
+/* syscalls 27-28: crash log + syslog */
+#define SYS_READCRASH  27
+#define SYS_READSYSLOG 28
+static inline int sys_readcrash(void* buf, unsigned int sz){
+    return (int)_sc(SYS_READCRASH,(uint64_t)buf,(uint64_t)sz,0,0,0); }
+static inline int sys_readsyslog(void* buf, unsigned int sz){
+    return (int)_sc(SYS_READSYSLOG,(uint64_t)buf,(uint64_t)sz,0,0,0); }

@@ -5,6 +5,7 @@
 
 #include <kernel/idt.h>
 #include <kernel/vga.h>
+#include <kernel/crash.h>
 
 /* IDT with 256 entries (32 exceptions + 224 IRQ/syscall slots) */
 idt_entry_t idt[256];
@@ -84,66 +85,8 @@ void idt_common_handler(registers_t* regs)
         return;
     }
 
-    /* Default: kernel panic for unhandled exceptions */
-    if (regs->int_no < 20) {
-        vga_puts_color("\n  [PANIC] CPU Exception: ", VGA_LIGHT_RED, VGA_BLACK);
-        vga_puts_color(exception_names[regs->int_no], VGA_WHITE, VGA_BLACK);
-        /* Print RIP and error code for all exceptions */
-        char hx[17]; hx[16] = 0; uint64_t v;
-        vga_puts_color("\n  RIP: 0x", VGA_YELLOW, VGA_BLACK);
-        v = regs->rip; for(int i=15;i>=0;i--){hx[i]="0123456789ABCDEF"[v&0xF];v>>=4;}
-        vga_puts_color(hx, VGA_YELLOW, VGA_BLACK);
-        vga_puts_color("  ERR: 0x", VGA_YELLOW, VGA_BLACK);
-        v = regs->err_code; for(int i=15;i>=0;i--){hx[i]="0123456789ABCDEF"[v&0xF];v>>=4;}
-        vga_puts_color(hx, VGA_YELLOW, VGA_BLACK);
-
-        /* Show error code for exceptions that have one */
-        if (regs->int_no == 14) {
-            uint64_t cr2;
-            __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-            char hex[17]; hex[16] = 0;
-
-            vga_puts_color("\n  Fault address : 0x", VGA_YELLOW, VGA_BLACK);
-            uint64_t val = cr2;
-            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
-            vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
-
-            vga_puts_color("\n  Error code    : 0x", VGA_YELLOW, VGA_BLACK);
-            val = regs->err_code;
-            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
-            vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
-
-            vga_puts_color("\n  Bits: ", VGA_WHITE, VGA_BLACK);
-            vga_puts_color((regs->err_code & (1<<0)) ? "[PROTECTION] " : "[NOT-PRESENT] ", VGA_WHITE, VGA_BLACK);
-            vga_puts_color((regs->err_code & (1<<1)) ? "[WRITE] "       : "[READ] ",        VGA_WHITE, VGA_BLACK);
-            vga_puts_color((regs->err_code & (1<<2)) ? "[RING-3] "      : "[RING-0] ",      VGA_WHITE, VGA_BLACK);
-            vga_puts_color((regs->err_code & (1<<3)) ? "[RSVD-BIT] "   : "",               VGA_WHITE, VGA_BLACK);
-            vga_puts_color((regs->err_code & (1<<4)) ? "[NX-FETCH] "   : "",               VGA_WHITE, VGA_BLACK);
-
-            vga_puts_color("\n  RIP           : 0x", VGA_YELLOW, VGA_BLACK);
-            val = regs->rip;
-            for (int i = 15; i >= 0; i--) { hex[i] = "0123456789ABCDEF"[val & 0xF]; val >>= 4; }
-            vga_puts_color(hex, VGA_YELLOW, VGA_BLACK);
-            /* Full register dump */
-            #define PREG(name, v) do { uint64_t _v=(v); char _h[17]; _h[16]=0;               for(int _i=15;_i>=0;_i--){_h[_i]="0123456789ABCDEF"[_v&0xF];_v>>=4;}               vga_puts_color("\n  " name ": 0x", VGA_CYAN, VGA_BLACK);               vga_puts_color(_h, VGA_CYAN, VGA_BLACK); } while(0)
-            PREG("RSP", regs->rsp);
-            PREG("RBP", regs->rbp);
-            PREG("RAX", regs->rax);
-            PREG("RBX", regs->rbx);
-            PREG("RCX", regs->rcx);
-            PREG("RDX", regs->rdx);
-            PREG("RSI", regs->rsi);
-            PREG("RDI", regs->rdi);
-            PREG("R14", regs->r14);
-            PREG("R15", regs->r15);
-            #undef PREG
-        }
-
-        vga_puts_color("\n  System Halted.\n", VGA_LIGHT_RED, VGA_BLACK);
-    }
-
-    /* Halt */
-    __asm__ volatile ("cli; hlt");
+    /* Route to crash handler (logs, recovers ring-3, halts ring-0) */
+    crash_handle(regs);
 }
 
 /* ==========================================================================
