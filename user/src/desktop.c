@@ -1,3 +1,4 @@
+#include "start_icon.h"
 #include "../lib/syscall.h"
 
 typedef unsigned int   u32;
@@ -13,6 +14,54 @@ static void rect(int x,int y,int w,int h,u32 c){for(int r=y;r<y+h;r++)for(int co
 static void outline(int x,int y,int w,int h,u32 c){for(int i=x;i<x+w;i++){px(i,y,c);px(i,y+h-1,c);}for(int i=y;i<y+h;i++){px(x,i,c);px(x+w-1,i,c);}}
 static void hline(int x,int y,int w,u32 c){for(int i=0;i<w;i++)px(x+i,y,c);}
 static void vline(int x,int y,int h,u32 c){for(int i=0;i<h;i++)px(x,y+i,c);}
+static u32 ablend(u32 bg,u32 fg,int a){int br=(bg>>16)&0xFF,bgc=(bg>>8)&0xFF,bb=bg&0xFF;int fr=(fg>>16)&0xFF,fgc=(fg>>8)&0xFF,fbc=fg&0xFF;int r=(fr*a+br*(255-a))/255,g=(fgc*a+bgc*(255-a))/255,b=(fbc*a+bb*(255-a))/255;return (r<<16)|(g<<8)|b;}
+static void px_alpha(int x,int y,u32 c,int a){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*1024+x]=ablend(buf[y*1024+x],c,a);}
+static void rect_alpha(int x,int y,int w,int h,u32 c,int a){for(int r=y;r<y+h;r++)for(int col=x;col<x+w;col++)px_alpha(col,r,c,a);}
+static void blit_rgba(int x,int y,int w,int h,const unsigned char*rgba){
+    for(int row=0;row<h;row++)for(int col=0;col<w;col++){
+        const unsigned char*p=&rgba[(row*w+col)*4];
+        if(p[3])px_alpha(x+col,y+row,(p[0]<<16)|(p[1]<<8)|p[2],p[3]);
+    }
+}
+static void rect_round(int x,int y,int w,int h,int r,u32 c){
+    for(int row=0;row<h;row++)for(int col=0;col<w;col++){
+        int cx=-1,cy=-1;
+        if(col<r&&row<r){cx=r;cy=r;}
+        else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+        else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+        else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+        if(cx>=0){int dx=col-cx,dy=row-cy;if(dx*dx+dy*dy>r*r)continue;}
+        px(x+col,y+row,c);
+    }
+}
+static void rect_round_alpha(int x,int y,int w,int h,int r,u32 c,int a){
+    for(int row=0;row<h;row++)for(int col=0;col<w;col++){
+        int cx=-1,cy=-1;
+        if(col<r&&row<r){cx=r;cy=r;}
+        else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+        else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+        else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+        if(cx>=0){int dx=col-cx,dy=row-cy;if(dx*dx+dy*dy>r*r)continue;}
+        px_alpha(x+col,y+row,c,a);
+    }
+}
+static void outline_round(int x,int y,int w,int h,int r,u32 c){
+    for(int row=0;row<h;row++)for(int col=0;col<w;col++){
+        int edge=(row==0||row==h-1||col==0||col==w-1);
+        int cx=-1,cy=-1;
+        if(col<r&&row<r){cx=r;cy=r;}
+        else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+        else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+        else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+        if(cx>=0){
+            int dx=col-cx,dy=row-cy,d2=dx*dx+dy*dy;
+            if(d2>r*r)continue;
+            if(d2>=(r-1)*(r-1))px(x+col,y+row,c);
+            continue;
+        }
+        if(edge)px(x+col,y+row,c);
+    }
+}
 static void flush(void){sys_fbwrite(0,0,1024,768,buf);}
 
 static const u8 font[96][16]={
@@ -166,7 +215,33 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define PURPLE   0xBC8CFF
 #define ORANGE   0xF78166
 #define WHITE    0xFFFFFF
-#define TBAR_H     40
+#define TBAR_H     80
+#define TBAR_GAP   10
+#define TBAR_PILL_W 900
+#define TBAR_PILL_H (TBAR_H-TBAR_GAP)
+#define TBAR_PILL_X ((1024-TBAR_PILL_W)/2)
+#define TBAR_PILL_Y (768-TBAR_H)
+#define TBAR_SB_SZ  50
+#define TBAR_SB_X   (TBAR_PILL_X+8)
+#define TBAR_SB_Y   (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_SB_SZ)/2)
+#define TBAR_WINBTN_X0 (TBAR_SB_X+TBAR_SB_SZ+12)
+#define TBAR_WINBTN_W  100
+#define TBAR_WINBTN_GAP 8
+#define TBAR_CLOCK_X (TBAR_PILL_X+TBAR_PILL_W-80)
+#define TBAR_CLOCK_Y (TBAR_PILL_Y+27)
+#define TBAR_GAP   10
+#define TBAR_PILL_W 900
+#define TBAR_PILL_H (TBAR_H-TBAR_GAP)
+#define TBAR_PILL_X ((1024-TBAR_PILL_W)/2)
+#define TBAR_PILL_Y (768-TBAR_H)
+#define TBAR_SB_SZ  50
+#define TBAR_SB_X   (TBAR_PILL_X+8)
+#define TBAR_SB_Y   (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_SB_SZ)/2)
+#define TBAR_WINBTN_X0 (TBAR_SB_X+TBAR_SB_SZ+12)
+#define TBAR_WINBTN_W  100
+#define TBAR_WINBTN_GAP 8
+#define TBAR_CLOCK_X (TBAR_PILL_X+TBAR_PILL_W-80)
+#define TBAR_CLOCK_Y (TBAR_PILL_Y+27)
 #define PANEL_W    240
 #define PANEL_X    (1024-PANEL_W)
 #define TITLEBAR_H 28
@@ -813,15 +888,15 @@ static void draw_about_content(int i){
 
 /* ═══ WALLPAPER + PANEL ═════════════════════════════════════════ */
 static void wallpaper(void){
-    for(int y=0;y<768-TBAR_H;y++){
+    for(int y=0;y<768;y++){
         u32 r=0x0D,g=0x11+(y*8)/768,b=0x17+(y*20)/768;
         u32 c=(r<<16)|(g<<8)|b;
-        for(int x=0;x<PANEL_X;x++)px(x,y,c);
+        for(int x=0;x<1024;x++)px(x,y,c);
     }
-    for(int y=0;y<768-TBAR_H;y+=80)for(int x=0;x<PANEL_X;x++)px(x,y,0x161B22);
-    for(int x=0;x<PANEL_X;x+=80)for(int y=0;y<768-TBAR_H;y++)px(x,y,0x161B22);
+    for(int y=0;y<768;y+=80)for(int x=0;x<PANEL_X;x++)px(x,y,0x161B22);
+    for(int x=0;x<PANEL_X;x+=80)for(int y=0;y<768;y++)px(x,y,0x161B22);
 }
-static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,768,PANEL_BG);vline(PANEL_X,0,768,BORDER);}
+static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,768-TBAR_H,PANEL_BG);vline(PANEL_X,0,768-TBAR_H,BORDER);}
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
     for(int deg=0;deg<360;deg+=2){
@@ -877,6 +952,38 @@ typedef struct{int x,y;const char*name;u32 color;}Icon;
 static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW},{60,480,"Calc",0x58A6FF}};
 #define N_ICONS 5
 static int icon_hovered=-1;
+/* ── circle primitives (icon glyphs) ───────────────────────────── */
+static void circle(int cx,int cy,int r,u32 c){
+    for(int yy=-r;yy<=r;yy++)for(int xx=-r;xx<=r;xx++)if(xx*xx+yy*yy<=r*r)px(cx+xx,cy+yy,c);
+}
+static void circle_outline(int cx,int cy,int r,u32 c){
+    for(int yy=-r;yy<=r;yy++)for(int xx=-r;xx<=r;xx++){int d=xx*xx+yy*yy;if(d<=r*r&&d>=(r-2)*(r-2))px(cx+xx,cy+yy,c);}
+}
+
+/* ── icon pictographs, idx matches icons[] order ───────────────── */
+static void draw_icon_glyph(int idx,int cx,int cy,u32 fg,u32 bgcol){
+    if(idx==0){
+        text(cx-8,cy-8,">_",fg,bgcol);
+    }else if(idx==1){
+        rect(cx-14,cy-8,12,6,fg);
+        rect(cx-14,cy-2,28,16,fg);
+    }else if(idx==2){
+        circle_outline(cx,cy,10,fg);
+        circle(cx,cy-5,2,fg);
+        rect(cx-2,cy-1,4,9,fg);
+    }else if(idx==3){
+        rect(cx-12,cy-14,24,28,fg);
+        hline(cx-8,cy-7,16,bgcol);
+        hline(cx-8,cy-1,16,bgcol);
+        hline(cx-8,cy+5,10,bgcol);
+    }else if(idx==4){
+        outline(cx-14,cy-16,28,32,fg);
+        rect(cx-11,cy-13,22,8,bgcol);
+        for(int row=0;row<2;row++)for(int col=0;col<3;col++)
+            rect(cx-11+col*8,cy-2+row*8,5,5,fg);
+    }
+}
+
 static void draw_icons(void){
     for(int i=0;i<N_ICONS;i++){
         Icon*ic=&icons[i];u32 bg=(i==icon_hovered)?0x21262D:BG;
@@ -886,6 +993,7 @@ static void draw_icons(void){
             u32 col=buf[r*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
             buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
         }
+        draw_icon_glyph(i,ic->x+36,ic->y+30,TEXT,ic->color);
         int llen=0;const char*p=ic->name;while(*p++)llen++;
         text(ic->x+(64-llen*8)/2,ic->y+66,ic->name,TEXT,BG);
     }
@@ -897,7 +1005,7 @@ static const char*menu_items[]={"Terminal","Files","About","Notepad","Calc","Set
 #define N_MENU 7
 static void draw_menu(void){
     if(!menu_open)return;
-    int mx=4,my=768-TBAR_H-N_MENU*32-8;
+    int mx=TBAR_SB_X,my=768-TBAR_H-N_MENU*32-8;
     rect(mx,my,220,N_MENU*32+8,PANEL_BG);outline(mx,my,220,N_MENU*32+8,BORDER);
     text(mx+8,my+4,"Applications",DIM,PANEL_BG);
     u32 dots[]={cfg_accent,GREEN,PURPLE,YELLOW,0x58A6FF,0x58A6FF,RED};
@@ -909,24 +1017,28 @@ static void draw_menu(void){
 
 /* ═══ TASKBAR ═══════════════════════════════════════════════════ */
 static void draw_taskbar(u64 secs){
-    int ty=768-TBAR_H;rect(0,ty,1024,TBAR_H,TASKBAR);hline(0,ty,1024,BORDER);
-    int hs=in_box(mouse_x,mouse_y,4,ty+4,80,TBAR_H-8);
+    int hs=in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ);
+    rect_round_alpha(TBAR_PILL_X+3,TBAR_PILL_Y+3,TBAR_PILL_W,TBAR_PILL_H,16,0x000000,90);
+    rect_round_alpha(TBAR_PILL_X,TBAR_PILL_Y,TBAR_PILL_W,TBAR_PILL_H,16,TASKBAR,200);
+    outline_round(TBAR_PILL_X,TBAR_PILL_Y,TBAR_PILL_W,TBAR_PILL_H,16,BORDER);
     u32 sbg=menu_open?ACCENT:(hs?0x2D333B:0x21262D);
-    rect(4,ty+4,80,TBAR_H-8,sbg);outline(4,ty+4,80,TBAR_H-8,menu_open?0x79C0FF:BORDER);
-    text(12,ty+12,"  YouOS",menu_open?0x0D1117:ACCENT,sbg);
-    int bx=92;
+    rect_round(TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ,12,sbg);
+    outline_round(TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ,12,menu_open?0x79C0FF:BORDER);
+    blit_rgba(TBAR_SB_X+1,TBAR_SB_Y+1,START_ICON_W,START_ICON_H,start_icon_rgba);
+    int bx=TBAR_WINBTN_X0;
     for(int i=0;i<win_count;i++){
         if(!wins[i].visible)continue;
         int foc=(i==focused);u32 bbg=foc?0x21262D:0x13161B;
-        rect(bx,ty+4,112,TBAR_H-8,bbg);outline(bx,ty+4,112,TBAR_H-8,foc?wins[i].accent:BORDER);
-        if(foc)hline(bx,ty+TBAR_H-2,112,wins[i].accent);
-        char ts[14];int k=0;while(wins[i].title[k]&&k<12){ts[k]=wins[i].title[k];k++;}
-        if(slen(wins[i].title)>12){ts[11]='.';ts[12]='.';k=13;}ts[k]=0;
-        text(bx+8,ty+12,ts,foc?TEXT:DIM,bbg);bx+=120;
+        rect_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,bbg);
+        outline_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,foc?wins[i].accent:BORDER);
+        if(foc)hline(bx+8,TBAR_PILL_Y+TBAR_PILL_H-6,TBAR_WINBTN_W-16,wins[i].accent);
+        char ts[12];int k=0;while(wins[i].title[k]&&k<10){ts[k]=wins[i].title[k];k++;}
+        if(slen(wins[i].title)>10){ts[9]='.';ts[10]='.';k=11;}ts[k]=0;
+        text(bx+8,TBAR_PILL_Y+TBAR_PILL_H/2-8,ts,foc?TEXT:DIM,bbg);bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
     }
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
     char clk[9];clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
-    text(1024-PANEL_W-80,ty+12,clk,TEXT,TASKBAR);
+    text(TBAR_CLOCK_X,TBAR_CLOCK_Y,clk,TEXT,TASKBAR);
 }
 
 /* ═══ CURSOR ════════════════════════════════════════════════════ */
@@ -957,7 +1069,7 @@ static void draw_rctx(void){
     if(mx2+CTX_W>PANEL_X)mx2=PANEL_X-CTX_W;
     if(my2+mh>768-TBAR_H)my2=768-TBAR_H-mh;
     rect(mx2+3,my2+3,CTX_W,mh,0x050810);rect(mx2+2,my2+2,CTX_W,mh,0x0A0D14);
-    rect(mx2,my2,CTX_W,mh,0x1C2128);outline(mx2,my2,CTX_W,mh,BORDER);
+    rect_alpha(mx2,my2,CTX_W,mh,0x1C2128,190);outline(mx2,my2,CTX_W,mh,BORDER);
     hline(mx2+1,my2,CTX_W-2,cfg_accent);
     int iy2=my2+1;
     for(int i=0;i<n;i++){
@@ -1733,21 +1845,21 @@ int main(void){
             }
 
             /* taskbar buttons */
-            int ty2=768-TBAR_H,bx=92;
+            int bx=TBAR_WINBTN_X0;
             for(int i=0;i<win_count;i++){
                 if(!wins[i].visible)continue;
-                if(in_box(mouse_x,mouse_y,bx,ty2+4,112,TBAR_H-8)){
+                if(in_box(mouse_x,mouse_y,bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8)){
                     if(i==focused){wins[i].minimized=!wins[i].minimized;wins[i].anim=ANIM_TICKS;wins[i].anim_type=wins[i].minimized?3:1;}
                     else{wins[i].minimized=0;wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;wm_focus(i);}
                     goto click_done;
                 }
-                bx+=120;
+                bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
             }
             /* start button */
-            if(in_box(mouse_x,mouse_y,4,768-TBAR_H+4,80,TBAR_H-8)){menu_open=!menu_open;goto click_done;}
+            if(in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ)){menu_open=!menu_open;goto click_done;}
             /* menu items */
             if(menu_open){
-                int mx2=4,my2=768-TBAR_H-N_MENU*32-8;
+                int mx2=TBAR_SB_X,my2=768-TBAR_H-N_MENU*32-8;
                 for(int i=0;i<N_MENU;i++){
                     int iy=my2+20+i*32;
                     if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28)){
@@ -1850,7 +1962,7 @@ int main(void){
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
         menu_sel=-1;
-        if(menu_open){int mx2=4,my2=768-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
+        if(menu_open){int mx2=TBAR_SB_X,my2=768-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
         fm_hovered=-1;
         int fi2=find_win(WIN_FILES);
         if(fi2>=0&&wins[fi2].visible&&!wins[fi2].minimized){

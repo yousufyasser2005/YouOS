@@ -13,64 +13,135 @@ static void rect(int x,int y,int w,int h,u32 c){for(int r=y;r<y+h;r++)for(int co
 static void outline(int x,int y,int w,int h,u32 c){for(int i=x;i<x+w;i++){px(i,y,c);px(i,y+h-1,c);}for(int i=y;i<y+h;i++){px(x,i,c);px(x+w-1,i,c);}}
 static void hline(int x,int y,int w,u32 c){for(int i=0;i<w;i++)px(x+i,y,c);}
 static void vline(int x,int y,int h,u32 c){for(int i=0;i<h;i++)px(x,y+i,c);}
+static u32 ablend(u32 bg,u32 fg,int a){int br=(bg>>16)&0xFF,bgc=(bg>>8)&0xFF,bb=bg&0xFF;int fr=(fg>>16)&0xFF,fgc=(fg>>8)&0xFF,fbc=fg&0xFF;int r=(fr*a+br*(255-a))/255,g=(fgc*a+bgc*(255-a))/255,b=(fbc*a+bb*(255-a))/255;return (r<<16)|(g<<8)|b;}
+static void px_alpha(int x,int y,u32 c,int a){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*1024+x]=ablend(buf[y*1024+x],c,a);}
+static void rect_alpha(int x,int y,int w,int h,u32 c,int a){for(int r=y;r<y+h;r++)for(int col=x;col<x+w;col++)px_alpha(col,r,c,a);}
 static void flush(void){sys_fbwrite(0,0,1024,768,buf);}
 
 static const u8 font[96][16]={
-{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x18,0x18,0x18,0x18,0x18,0x18,0,0x18,0,0,0,0,0,0},
-{0,0,0x6C,0x6C,0x6C,0,0,0,0,0,0,0,0,0,0,0},{0,0,0x6C,0x6C,0xFE,0x6C,0xFE,0x6C,0x6C,0,0,0,0,0,0,0},
-{0,0x18,0x7E,0xD8,0xD8,0x7C,0x1E,0x1B,0x1B,0x7E,0x18,0,0,0,0,0},{0,0,0x60,0x66,0x0C,0x18,0x30,0x66,0x06,0,0,0,0,0,0,0},
-{0,0,0x38,0x6C,0x6C,0x38,0x76,0xDC,0xCC,0x76,0,0,0,0,0,0},{0,0,0x18,0x18,0x30,0,0,0,0,0,0,0,0,0,0,0},
-{0,0,0x0C,0x18,0x30,0x30,0x30,0x30,0x18,0x0C,0,0,0,0,0,0},{0,0,0x30,0x18,0x0C,0x0C,0x0C,0x0C,0x18,0x30,0,0,0,0,0,0},
-{0,0,0,0x66,0x3C,0xFF,0x3C,0x66,0,0,0,0,0,0,0,0},{0,0,0,0x18,0x18,0x7E,0x18,0x18,0,0,0,0,0,0,0,0},
-{0,0,0,0,0,0,0,0,0x18,0x18,0x30,0,0,0,0,0},{0,0,0,0,0,0x7E,0,0,0,0,0,0,0,0,0,0},
-{0,0,0,0,0,0,0,0,0x18,0x18,0,0,0,0,0,0},{0,0,0x06,0x06,0x0C,0x18,0x30,0x60,0x60,0,0,0,0,0,0,0},
-{0,0,0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0,0,0,0,0,0,0},{0,0,0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0,0,0,0,0,0,0},
-{0,0,0x3C,0x66,0x06,0x0C,0x18,0x30,0x7E,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x0C,0,0,0,0,0,0,0},{0,0,0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0,0,0,0,0,0,0},{0,0,0x7E,0x06,0x0C,0x18,0x30,0x30,0x30,0,0,0,0,0,0,0},
-{0,0,0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0,0,0,0,0,0,0},
-{0,0,0,0x18,0x18,0,0,0x18,0x18,0,0,0,0,0,0,0},{0,0,0,0x18,0x18,0,0,0x18,0x18,0x30,0,0,0,0,0,0},
-{0,0,0x0C,0x18,0x30,0x60,0x30,0x18,0x0C,0,0,0,0,0,0,0},{0,0,0,0,0x7E,0,0x7E,0,0,0,0,0,0,0,0,0},
-{0,0,0x30,0x18,0x0C,0x06,0x0C,0x18,0x30,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x06,0x0C,0x18,0,0x18,0,0,0,0,0,0,0},
-{0,0,0x3C,0x66,0x6E,0x6A,0x6E,0x60,0x3C,0,0,0,0,0,0,0},{0,0,0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0,0,0,0,0,0,0},
-{0,0,0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0,0,0,0,0,0,0},{0,0,0x7E,0x60,0x60,0x78,0x60,0x60,0x7E,0,0,0,0,0,0,0},
-{0,0,0x7E,0x60,0x60,0x78,0x60,0x60,0x60,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x60,0x6E,0x66,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0,0,0,0,0,0,0},{0,0,0x3C,0x18,0x18,0x18,0x18,0x18,0x3C,0,0,0,0,0,0,0},
-{0,0,0x1E,0x0C,0x0C,0x0C,0x0C,0x6C,0x38,0,0,0,0,0,0,0},{0,0,0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0,0,0,0,0,0,0},
-{0,0,0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0,0,0,0,0,0,0},{0,0,0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0,0,0,0,0,0,0},
-{0,0,0x66,0x76,0x7E,0x6E,0x66,0x66,0x66,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x66,0x66,0x6E,0x3C,0x06,0,0,0,0,0,0,0},
-{0,0,0x7C,0x66,0x66,0x7C,0x6C,0x66,0x66,0,0,0,0,0,0,0},{0,0,0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0,0,0,0,0,0,0},{0,0,0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0,0,0,0,0,0,0},{0,0,0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0,0,0,0,0,0,0},
-{0,0,0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0,0,0,0,0,0,0},{0,0,0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0,0,0,0,0,0,0},
-{0,0,0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0,0,0,0,0,0,0},{0,0,0x3C,0x30,0x30,0x30,0x30,0x30,0x3C,0,0,0,0,0,0,0},
-{0,0,0x60,0x60,0x30,0x18,0x0C,0x06,0x06,0,0,0,0,0,0,0},{0,0,0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0,0,0,0,0,0,0},
-{0,0,0x18,0x3C,0x66,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0xFF,0,0,0,0,0,0},
-{0,0,0x18,0x18,0x0C,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0x3C,0x06,0x3E,0x66,0x3E,0,0,0,0,0,0,0},
-{0,0,0x60,0x60,0x7C,0x66,0x66,0x66,0x7C,0,0,0,0,0,0,0},{0,0,0,0,0x3C,0x66,0x60,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0x06,0x06,0x3E,0x66,0x66,0x66,0x3E,0,0,0,0,0,0,0},{0,0,0,0,0x3C,0x66,0x7E,0x60,0x3C,0,0,0,0,0,0,0},
-{0,0,0x1C,0x30,0x7C,0x30,0x30,0x30,0x30,0,0,0,0,0,0,0},{0,0,0,0,0x3E,0x66,0x66,0x3E,0x06,0x7C,0,0,0,0,0,0},
-{0,0,0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0,0,0,0,0,0,0},{0,0,0x18,0,0x38,0x18,0x18,0x18,0x3C,0,0,0,0,0,0,0},
-{0,0,0x06,0,0x06,0x06,0x06,0x06,0x66,0x3C,0,0,0,0,0,0},{0,0,0x60,0x60,0x66,0x6C,0x78,0x6C,0x66,0,0,0,0,0,0,0},
-{0,0,0x38,0x18,0x18,0x18,0x18,0x18,0x3C,0,0,0,0,0,0,0},{0,0,0,0,0x66,0x7F,0x7F,0x6B,0x63,0,0,0,0,0,0,0},
-{0,0,0,0,0x7C,0x66,0x66,0x66,0x66,0,0,0,0,0,0,0},{0,0,0,0,0x3C,0x66,0x66,0x66,0x3C,0,0,0,0,0,0,0},
-{0,0,0,0,0x7C,0x66,0x66,0x7C,0x60,0x60,0,0,0,0,0,0},{0,0,0,0,0x3E,0x66,0x66,0x3E,0x06,0x06,0,0,0,0,0,0},
-{0,0,0,0,0x7C,0x66,0x60,0x60,0x60,0,0,0,0,0,0,0},{0,0,0,0,0x3C,0x60,0x3C,0x06,0x7C,0,0,0,0,0,0,0},
-{0,0,0x30,0x30,0x7C,0x30,0x30,0x30,0x1C,0,0,0,0,0,0,0},{0,0,0,0,0x66,0x66,0x66,0x66,0x3E,0,0,0,0,0,0,0},
-{0,0,0,0,0x66,0x66,0x66,0x3C,0x18,0,0,0,0,0,0,0},{0,0,0,0,0x63,0x6B,0x7F,0x7F,0x36,0,0,0,0,0,0,0},
-{0,0,0,0,0x66,0x3C,0x18,0x3C,0x66,0,0,0,0,0,0,0},{0,0,0,0,0x66,0x66,0x3E,0x06,0x7C,0,0,0,0,0,0,0},
-{0,0,0,0,0x7E,0x0C,0x18,0x30,0x7E,0,0,0,0,0,0,0},{0,0,0x0E,0x18,0x18,0x70,0x18,0x18,0x0E,0,0,0,0,0,0,0},
-{0,0,0x18,0x18,0x18,0,0x18,0x18,0x18,0,0,0,0,0,0,0},{0,0,0x70,0x18,0x18,0x0E,0x18,0x18,0x70,0,0,0,0,0,0,0},
-{0,0,0x76,0xDC,0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x18,0x00,0x00,0x00,0x00},
+{0x00,0x66,0x66,0x66,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x36,0x36,0x7F,0x36,0x36,0x36,0x7F,0x36,0x36,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x18,0x18,0x7E,0xC3,0xC1,0x60,0x3E,0x06,0x83,0xC3,0x7E,0x18,0x18,0x00,0x00},
+{0x00,0x00,0xC3,0xC3,0xC6,0x0C,0x18,0x30,0x66,0xC3,0xC3,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x1C,0x36,0x36,0x1C,0x3B,0x6E,0x66,0x66,0x3B,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x18,0x18,0x18,0x30,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x0C,0x18,0x18,0x30,0x30,0x30,0x30,0x30,0x18,0x18,0x0C,0x00,0x00,0x00,0x00},
+{0x00,0x30,0x18,0x18,0x0C,0x0C,0x0C,0x0C,0x0C,0x18,0x18,0x30,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x18,0x18,0x18,0x7E,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x30,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x01,0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x6E,0x76,0x66,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x18,0x38,0x18,0x18,0x18,0x18,0x18,0x18,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x06,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x06,0x06,0x1C,0x06,0x06,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x0C,0x1C,0x3C,0x6C,0xCC,0xFF,0x0C,0x0C,0x0C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x60,0x60,0x7C,0x06,0x06,0x06,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x1C,0x30,0x60,0x7C,0x66,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x06,0x06,0x0C,0x18,0x30,0x30,0x30,0x30,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x66,0x66,0x3C,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x66,0x66,0x3E,0x06,0x06,0x0C,0x38,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x18,0x18,0x30,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x7E,0x00,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x30,0x18,0x0C,0x06,0x0C,0x18,0x30,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x66,0x06,0x0C,0x18,0x18,0x00,0x18,0x18,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x6E,0x6A,0x6E,0x60,0x60,0x60,0x3E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7C,0x66,0x66,0x66,0x7C,0x66,0x66,0x66,0x7C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x60,0x60,0x60,0x60,0x60,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x78,0x6C,0x66,0x66,0x66,0x66,0x66,0x6C,0x78,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x60,0x60,0x60,0x7C,0x60,0x60,0x60,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x60,0x60,0x60,0x7C,0x60,0x60,0x60,0x60,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x60,0x60,0x6E,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x6C,0x6C,0x38,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x6C,0x6C,0x78,0x6C,0x6C,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x60,0x60,0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x63,0x63,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x76,0x7E,0x7E,0x6E,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7C,0x66,0x66,0x66,0x7C,0x60,0x60,0x60,0x60,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x66,0x66,0x66,0x66,0x76,0x3C,0x06,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7C,0x66,0x66,0x66,0x7C,0x6C,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x66,0x60,0x60,0x3C,0x06,0x06,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x63,0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x63,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x66,0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x7E,0x06,0x06,0x0C,0x18,0x30,0x60,0x60,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x30,0x30,0x30,0x30,0x30,0x30,0x30,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x60,0x60,0x30,0x30,0x18,0x0C,0x0C,0x06,0x06,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x10,0x38,0x6C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00},
+{0x00,0x30,0x18,0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3C,0x06,0x3E,0x66,0x66,0x3B,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x60,0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x7C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3C,0x66,0x60,0x60,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x06,0x06,0x06,0x3E,0x66,0x66,0x66,0x66,0x3B,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3C,0x66,0x7E,0x60,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x1C,0x30,0x30,0x7C,0x30,0x30,0x30,0x30,0x30,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3B,0x66,0x66,0x66,0x3E,0x06,0x06,0x3C,0x00,0x00,0x00},
+{0x00,0x00,0x60,0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x18,0x18,0x00,0x38,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x06,0x06,0x00,0x0E,0x06,0x06,0x06,0x06,0x06,0x66,0x3C,0x00,0x00,0x00},
+{0x00,0x00,0x60,0x60,0x66,0x66,0x6C,0x78,0x6C,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x38,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x66,0x7F,0x6B,0x63,0x63,0x63,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x7C,0x66,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3C,0x66,0x66,0x66,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x7C,0x66,0x66,0x66,0x7C,0x60,0x60,0x60,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3B,0x66,0x66,0x66,0x3E,0x06,0x06,0x06,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x6C,0x76,0x60,0x60,0x60,0x60,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x3C,0x66,0x30,0x0C,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x30,0x30,0x30,0x7C,0x30,0x30,0x30,0x30,0x1C,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x66,0x66,0x66,0x66,0x66,0x3B,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x66,0x66,0x66,0x66,0x3C,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x66,0x66,0x3C,0x3C,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x66,0x66,0x66,0x3E,0x06,0x06,0x3C,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x7E,0x0C,0x18,0x30,0x60,0x7E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x0E,0x18,0x18,0x18,0x70,0x18,0x18,0x18,0x0E,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x70,0x18,0x18,0x18,0x0E,0x18,0x18,0x18,0x70,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 static void glyph(int x,int y,char c,u32 fg,u32 bg){
     int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
     for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++)px(x+col,y+r,(b&(0x80>>col))?fg:bg);}
 }
-static void text(int x,int y,const char*s,u32 fg,u32 bg){while(*s){glyph(x,y,*s++,fg,bg);x+=8;}}
-static void text_center(int cx,int y,const char*s,u32 fg,u32 bg){int l=0;const char*p=s;while(*p++)l++;text(cx-l*4,y,s,fg,bg);}
+static void text(int x,int y,const char*str,u32 fg,u32 bg){while(*str){glyph(x,y,*str++,fg,bg);x+=8;}}
+static void text_center(int cx,int y,const char*str,u32 fg,u32 bg){int l=0;const char*p=str;while(*p++)l++;text(cx-l*4,y,str,fg,bg);}
+static void glyph2x(int x,int y,char c,u32 fg,u32 bg){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++){
+        u32 cl=(b&(0x80>>col))?fg:bg;
+        px(x+col*2,y+r*2,cl);px(x+col*2+1,y+r*2,cl);
+        px(x+col*2,y+r*2+1,cl);px(x+col*2+1,y+r*2+1,cl);
+    }}
+}
+static void text_big(int x,int y,const char*str,u32 fg,u32 bg){while(*str){glyph2x(x,y,*str++,fg,bg);x+=16;}}
+static void text_big_center(int cx,int y,const char*str,u32 fg,u32 bg){int l=0;const char*p=str;while(*p++)l++;text_big(cx-l*8,y,str,fg,bg);}
+static void glyph_bold(int x,int y,char c,u32 fg,u32 bg){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++){
+        if(b&(0x80>>col)){px(x+col,y+r,fg);if(col<7)px(x+col+1,y+r,fg);}
+        else px(x+col,y+r,bg);
+    }}
+}
+static void text_bold(int x,int y,const char*str,u32 fg,u32 bg){while(*str){glyph_bold(x,y,*str++,fg,bg);x+=8;}}
+static void text_bold_center(int cx,int y,const char*str,u32 fg,u32 bg){int l=0;const char*p=str;while(*p++)l++;text_bold(cx-l*4,y,str,fg,bg);}
+
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
 
 static s64 isin(int deg){
@@ -115,6 +186,8 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_ABOUT    1
 #define WIN_FILES    2
 #define WIN_NOTEPAD  3
+#define WIN_SETTINGS 4
+#define WIN_CALC     5
 
 typedef struct {
     int id,x,y,w,h,visible,minimized,z;
@@ -131,6 +204,32 @@ static int resize_start_x=0,resize_start_y=0;
 static int resize_start_w=0,resize_start_h=0;
 static int resize_orig_x=0,resize_orig_y=0;
 static int mouse_x=512,mouse_y=384,mouse_btn=0,prev_btn=0;
+static u32  cfg_accent=0x58A6FF;
+static int  cfg_24h=1,cfg_showsecs=1;
+static int  rctx_open=0,rctx_x=0,rctx_y=0,rctx_target=-1,rctx_hov=-1;
+static int  fm_ctx_open=0,fm_ctx_x=0,fm_ctx_y=0,fm_ctx_hov=-1;
+static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0;
+static int  fm_dialog=0;
+static char fm_dlg_buf[40];static int fm_dlg_len=0;
+static char fm_dlg_err[48];static int fm_dlg_has_err=0;
+static char fm_cpbuf[4096];
+static char fm_path[64];  /* current directory: "" = root, "dirname" = subdir */
+static int  fm_path_len=0;
+static int  settings_win_idx=-1;
+/* Calculator state */
+typedef struct{
+    char  expr[128];  /* current expression string */
+    int   expr_len;
+    char  result[32]; /* last result string */
+    int   has_result;
+    char  history[6][32]; /* last 6 results */
+    int   hist_count;
+    int   error;
+} Calc;
+static Calc calc;
+static int calc_win_idx=-1;
+static int  fm_selected=-1,fm_last_fi=-1,fm_del_confirm=0;
+static u64  fm_last_tick=0;
 
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
     if(win_count>=MAX_WINDOWS)return -1;
@@ -213,7 +312,7 @@ static int wm_draw_frame(int i){
     btn_icon(dx+15,dy+14,0,hcl?0x7A0000:0xC0392B);
     btn_icon(dx+31,dy+14,1,hmn?0x7A4000:0x9A6000);
     btn_icon(dx+47,dy+14,2,hmx?0x007A00:0x1A7A1A);
-    text_center(dx+dw/2,dy+6,w->title,foc?TEXT:DIM,tbar_bg);
+    text_bold_center(dx+dw/2,dy+6,w->title,foc?TEXT:DIM,tbar_bg);
     return !w->minimized;
 }
 
@@ -227,18 +326,67 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls";
-    int mh=1,mc=1,ma=1,ms=1,ml=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog";
+    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1,mcrl=1,msll=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
+    for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
+    for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
+    for(int k=0;sll[k]||cmd[k];k++)if(sll[k]!=cmd[k]){msll=0;break;}
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown");
+    if(mh)tprint("Commands: help clear about ls shutdown ipc crashlog syslog");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
+    else if(mcrl){
+        static char cbuf[2048];
+        int n=sys_readcrash(cbuf,2047);
+        if(n>0){
+            cbuf[n]=0;
+            int ci=0;
+            while(cbuf[ci]){
+                int li=ci;
+                while(cbuf[li]&&cbuf[li]!='\n')li++;
+                char line[128];int ll=0;
+                while(ci<li&&ll<127){line[ll++]=cbuf[ci++];}line[ll]=0;
+                if(cbuf[ci]=='\n')ci++;
+                if(ll>0)tprint(line);
+            }
+        } else tprint("No crash log found.");
+    }
+    else if(msll){
+        static char sbuf[2048];
+        int n=sys_readsyslog(sbuf,2047);
+        if(n>0){
+            sbuf[n]=0;
+            /* show last 20 lines */
+            int lines[20],lc=0;
+            lines[lc++]=0;
+            for(int i=0;sbuf[i];i++)if(sbuf[i]=='\n'&&lc<20)lines[lc++]=i+1;
+            int start=lc>10?lc-10:0;
+            for(int i=start;i<lc;i++){
+                int li=lines[i];
+                char line[128];int ll=0;
+                while(sbuf[li]&&sbuf[li]!='\n'&&ll<127){line[ll++]=sbuf[li++];}line[ll]=0;
+                if(ll>0)tprint(line);
+            }
+        } else tprint("Syslog empty.");
+    }
+    else if(mi){
+        char msg[32]="hello from desktop";
+        int pr=sys_msgpost("test",msg,18);
+        if(pr<0){tprint("IPC FAIL: post error");return;}
+        char buf[128];unsigned int len=0,from=0;
+        int rc=sys_msgrecv("test",buf,&len,&from);
+        if(rc<0){tprint("IPC FAIL: recv error");return;}
+        buf[len]=0;
+        char out[64];out[0]='I';out[1]='P';out[2]='C';out[3]=' ';out[4]='O';out[5]='K';out[6]=':';out[7]=' ';
+        int oi=8,bi=0;while(buf[bi]&&oi<62){out[oi++]=buf[bi++];}out[oi]=0;
+        tprint(out);
+    }
     else{char m[64];m[0]='?';m[1]=' ';int k=0;while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;}m[k+2]=0;tprint(m);}
 }
 static void draw_terminal_content(int i){
@@ -260,7 +408,7 @@ static void draw_terminal_content(int i){
     char iclip[128];int k=0;while(tinput[k]&&k<input_max&&k<127){iclip[k]=tinput[k];k++;}iclip[k]=0;
     text(w->x+pad+16,iy+3,iclip,TEXT,0x0A0D10);
     int cur_x=w->x+pad+16+tinput_len*8;
-    if(cursor_blink<50&&cur_x+8<w->x+w->w)rect(cur_x,iy+2,8,14,ACCENT);
+    if(cursor_blink<50&&cur_x+8<w->x+w->w)rect(cur_x,iy+2,8,14,cfg_accent);
 }
 
 /* ═══ FILE MANAGER ══════════════════════════════════════════════ */
@@ -268,7 +416,17 @@ typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
 static Dirent fm_entries[MAX_FILES];
 static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
-static void fm_load(void){fm_count=(int)sys_readdir(fm_entries,MAX_FILES);fm_scroll=0;fm_loaded=1;}
+static void fm_load(void){
+    if(fm_path_len>0){
+        char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
+        int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
+        fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
+    } else {
+        fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
+    }
+    fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;
+    fm_ctx_open=0;fm_dialog=0;fm_dlg_has_err=0;fm_loaded=1;
+}
 static void fmt_size(unsigned int sz,char*out){
     if(sz==0){out[0]='d';out[1]='i';out[2]='r';out[3]=0;return;}
     if(sz<1024){
@@ -289,10 +447,19 @@ static void draw_files_content(int wi){
     int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
     rect(x,y,cw,ch,0x0D1117);
     rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
-    text(x+8,y+6,"/disk",ACCENT,0x161B22);
+    /* path bar */
+    char pathbar[72];pathbar[0]='/';pathbar[1]='d';pathbar[2]='i';pathbar[3]='s';pathbar[4]='k';
+    if(fm_path_len>0){pathbar[5]='/';int pk=6,pj=0;while(fm_path[pj]&&pk<70){pathbar[pk++]=fm_path[pj++];}pathbar[pk]=0;}
+    else pathbar[5]=0;
+    text(x+8,y+6,pathbar,cfg_accent,0x161B22);
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
     rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
+    if(fm_path_len>0){
+        int uhov=in_box(mouse_x,mouse_y,x+cw-128,y+4,52,20);
+        rect(x+cw-128,y+4,52,20,uhov?0x21262D:0x161B22);outline(x+cw-128,y+4,52,20,BORDER);
+        text(x+cw-124,y+6,"Up",uhov?TEXT:DIM,uhov?0x21262D:0x161B22);
+    }
     int hy=y+32;rect(x,hy,cw,18,0x13161B);hline(x,hy+18,cw,BORDER);
     text(x+28,hy+1,"Name",DIM,0x13161B);text(x+cw-90,hy+1,"Size",DIM,0x13161B);
     vline(x+cw-100,hy,18,BORDER);
@@ -302,17 +469,19 @@ static void draw_files_content(int wi){
     int size_col_x=x+cw-96;
     for(int i=fm_scroll;i<end;i++){
         int ry=row_y+(i-fm_scroll)*row_h;
-        int hov=(i==fm_hovered);u32 rbg=hov?0x21262D:0x0D1117;
+        int hov=(i==fm_hovered);int sel=(i==fm_selected);
+        u32 rbg=sel?0x1A2A3A:(hov?0x21262D:0x0D1117);
         rect(x,ry,cw,row_h,rbg);
-        u32 icol=fm_entries[i].is_dir?YELLOW:ACCENT;
+        u32 icol=fm_entries[i].is_dir?YELLOW:cfg_accent;
         rect(x+8,ry+5,12,12,icol);
         for(int r2=ry+6;r2<ry+16;r2++)for(int c2=x+9;c2<x+19;c2++){
             u32 col=buf[r2*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
             buf[r2*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
         }
+        u32 tfg=(fm_has_clip&&fm_clip_cut&&fm_selected==i)?DIM:(fm_entries[i].is_dir?YELLOW:TEXT);
         int name_max=(size_col_x-x-30)/8;if(name_max<1)name_max=1;
         char nclip[32];int k=0;while(fm_entries[i].name[k]&&k<name_max&&k<31){nclip[k]=fm_entries[i].name[k];k++;}nclip[k]=0;
-        text(x+26,ry+3,nclip,fm_entries[i].is_dir?YELLOW:TEXT,rbg);
+        text(x+26,ry+3,nclip,tfg,rbg);
         char szstr[16];fmt_size(fm_entries[i].size,szstr);
         int sl=slen(szstr);text(size_col_x+(6-sl)*8,ry+3,szstr,DIM,rbg);
         hline(x,ry+row_h-1,cw,0x161B22);
@@ -325,10 +494,81 @@ static void draw_files_content(int wi){
         text(x+cw-14,y+67,"v",can_dn?TEXT:BORDER,can_dn?0x21262D:0x13161B);
     }
     int sb=w->y+w->h-status_h;rect(x,sb,cw,status_h,0x161B22);hline(x,sb,cw,BORDER);
-    char stat[32];int si=0;
+    char stat[48];int si=0;
     if(fm_count>=10)stat[si++]='0'+fm_count/10;stat[si++]='0'+fm_count%10;
-    const char*suf=" items on /disk";int sf=0;while(suf[sf])stat[si++]=suf[sf++];stat[si]=0;
-    text(x+8,sb+2,stat,DIM,0x161B22);
+    const char*suf=" items on /disk";int sf=0;while(suf[sf])stat[si++]=suf[sf++];
+    if(fm_has_clip){
+        const char*cs=fm_clip_cut?" | cut:":" | copied:";
+        while(*cs)stat[si++]=*cs++;
+        int ci=0;while(fm_clip[ci]&&si<46)stat[si++]=fm_clip[ci++];
+    }
+    stat[si]=0;text(x+8,sb+2,stat,DIM,0x161B22);
+    if(fm_dialog==1&&fm_selected>=0){
+        int dw=300,dh=88,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
+        rect(ddx+3,ddy+3,dw,dh,0x050810);
+        rect(ddx,ddy,dw,dh,0x1C2128);outline(ddx,ddy,dw,dh,RED);
+        rect(ddx,ddy,dw,24,0x2A1010);hline(ddx,ddy+24,dw,0x5A2020);
+        text_center(ddx+dw/2,ddy+4,"Delete?",RED,0x2A1010);
+        text_center(ddx+dw/2,ddy+34,fm_entries[fm_selected].name,TEXT,0x1C2128);
+        int yhov=in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22);
+        int nhov=in_box(mouse_x,mouse_y,ddx+dw-110,ddy+60,80,22);
+        rect(ddx+30,ddy+60,80,22,yhov?RED:0x6B1010);outline(ddx+30,ddy+60,80,22,RED);
+        text_center(ddx+70,ddy+62,"Delete",yhov?WHITE:TEXT,yhov?RED:0x6B1010);
+        rect(ddx+dw-110,ddy+60,80,22,nhov?0x21262D:0x13161B);outline(ddx+dw-110,ddy+60,80,22,BORDER);
+        text_center(ddx+dw-70,ddy+62,"Cancel",TEXT,nhov?0x21262D:0x13161B);
+    }
+    if(fm_dialog==2){
+        int dw=320,dh=106,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
+        rect(ddx,ddy,dw,dh,0x1C2128);outline(ddx,ddy,dw,dh,cfg_accent);
+        rect(ddx,ddy,dw,24,0x161B22);hline(ddx,ddy+24,dw,BORDER);
+        text_center(ddx+dw/2,ddy+4,"Rename",TEXT,0x161B22);
+        text(ddx+8,ddy+30,"New name:",DIM,0x1C2128);
+        rect(ddx+8,ddy+48,dw-16,20,0x0D1117);outline(ddx+8,ddy+48,dw-16,20,cfg_accent);
+        text(ddx+12,ddy+50,fm_dlg_buf,TEXT,0x0D1117);
+        if(cursor_blink<50)rect(ddx+12+fm_dlg_len*8,ddy+50,2,16,cfg_accent);
+        int ohov=in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20);
+        rect(ddx+dw/2-34,ddy+76,64,20,ohov?cfg_accent:0x21262D);
+        text_center(ddx+dw/2,ddy+78,"Rename",ohov?BG:TEXT,ohov?cfg_accent:0x21262D);
+        if(fm_dlg_has_err)text(ddx+8,ddy+dh-12,fm_dlg_err,RED,0x1C2128);
+    }
+    if(fm_dialog==3){
+        int dw=320,dh=106,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
+        rect(ddx,ddy,dw,dh,0x1C2128);outline(ddx,ddy,dw,dh,cfg_accent);
+        rect(ddx,ddy,dw,24,0x161B22);hline(ddx,ddy+24,dw,BORDER);
+        text_center(ddx+dw/2,ddy+4,"New Folder",TEXT,0x161B22);
+        text(ddx+8,ddy+30,"Folder name:",DIM,0x1C2128);
+        rect(ddx+8,ddy+48,dw-16,20,0x0D1117);outline(ddx+8,ddy+48,dw-16,20,cfg_accent);
+        text(ddx+12,ddy+50,fm_dlg_buf,TEXT,0x0D1117);
+        if(cursor_blink<50)rect(ddx+12+fm_dlg_len*8,ddy+50,2,16,cfg_accent);
+        int ohov=in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20);
+        rect(ddx+dw/2-34,ddy+76,64,20,ohov?cfg_accent:0x21262D);
+        text_center(ddx+dw/2,ddy+78,"Create",ohov?BG:TEXT,ohov?cfg_accent:0x21262D);
+        if(fm_dlg_has_err)text(ddx+8,ddy+dh-12,fm_dlg_err,RED,0x1C2128);
+    }
+    if(fm_ctx_open){
+        int has_sel=(fm_selected>=0);
+        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
+        int n=7,iw=160,ih=22,sep=6;
+        int mh=2;for(int i=0;i<n;i++)mh+=items[i][0]?ih:sep;
+        int mx2=fm_ctx_x,my2=fm_ctx_y;
+        if(mx2+iw>w->x+cw)mx2=w->x+cw-iw;
+        if(my2+mh>w->y+w->h)my2=w->y+w->h-mh;
+        rect(mx2+2,my2+2,iw,mh,0x050810);
+        rect(mx2,my2,iw,mh,0x1C2128);outline(mx2,my2,iw,mh,BORDER);
+        hline(mx2+1,my2,iw-2,cfg_accent);
+        int iy2=my2+1;
+        for(int i=0;i<n;i++){
+            if(!items[i][0]){hline(mx2+6,iy2+3,iw-12,BORDER);iy2+=sep;continue;}
+            int hov=(fm_ctx_hov==i);
+            int grey=0;
+            if(i==2||i==3||i==5||i==6)grey=!has_sel;
+            if(i==4)grey=!fm_has_clip;
+            u32 fg2=grey?0x444444:TEXT;
+            if(hov&&!grey)rect(mx2+1,iy2,iw-2,ih,cfg_accent);
+            text(mx2+10,iy2+(ih-16)/2,items[i],(hov&&!grey)?BG:fg2,(hov&&!grey)?cfg_accent:0x1C2128);
+            iy2+=ih;
+        }
+    }
 }
 
 /* ═══ NOTEPAD ═══════════════════════════════════════════════════ */
@@ -499,7 +739,7 @@ static void draw_notepad_content(int wi){
     /* cursor */
     if(wi==focused&&np.mode==0&&cursor_blink<50){
         if(cur_ln>=np.scroll&&cur_ln<np.scroll+max_rows&&cur_col<=max_cols)
-            rect(ta_x+cur_col*8,ta_y+(cur_ln-np.scroll)*16,2,16,ACCENT);
+            rect(ta_x+cur_col*8,ta_y+(cur_ln-np.scroll)*16,2,16,cfg_accent);
     }
     /* status bar */
     int sb=y+ch-18;rect(x,sb,cw,18,0x161B22);hline(x,sb,cw,BORDER);
@@ -610,7 +850,7 @@ static void draw_calendar(int x,int y,int month,int year,int today){
     char hdr[16];const char*mn=months[month-1];int k=0;
     hdr[k++]=mn[0];hdr[k++]=mn[1];hdr[k++]=mn[2];hdr[k++]=' ';
     hdr[k++]='0'+year/1000;hdr[k++]='0'+(year/100)%10;hdr[k++]='0'+(year/10)%10;hdr[k++]='0'+year%10;hdr[k]=0;
-    text_center(x+PANEL_W/2-4,y+4,hdr,TEXT,0x0D1117);hline(x,y+20,PANEL_W-8,BORDER);
+    text_bold_center(x+PANEL_W/2-4,y+4,hdr,TEXT,0x0D1117);hline(x,y+20,PANEL_W-8,BORDER);
     for(int d=0;d<7;d++)text(x+4+d*30,y+24,day_names[d],DIM,0x0D1117);
     hline(x,y+38,PANEL_W-8,0x21262D);
     int col=4,row=0,days=days_in_month[month-1];
@@ -630,15 +870,15 @@ static void draw_digital_clock(int x,int y,u64 secs){
 }
 static void draw_stats(int x,int y){
     rect(x,y,PANEL_W-8,60,0x0D1117);outline(x,y,PANEL_W-8,60,BORDER);
-    text(x+6,y+4,"System",DIM,0x0D1117);
+    text_bold(x+6,y+4,"System",DIM,0x0D1117);
     text(x+6,y+20,"CPU",DIM,0x0D1117);rect(x+36,y+22,150,8,0x21262D);rect(x+36,y+22,12,8,GREEN);text(x+190,y+20,"8%",DIM,0x0D1117);
     text(x+6,y+36,"MEM",DIM,0x0D1117);rect(x+36,y+38,150,8,0x21262D);rect(x+36,y+38,75,8,ACCENT);text(x+190,y+36,"50%",DIM,0x0D1117);
 }
 
 /* ═══ ICONS ═════════════════════════════════════════════════════ */
 typedef struct{int x,y;const char*name;u32 color;}Icon;
-static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW}};
-#define N_ICONS 4
+static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW},{60,480,"Calc",0x58A6FF}};
+#define N_ICONS 5
 static int icon_hovered=-1;
 static void draw_icons(void){
     for(int i=0;i<N_ICONS;i++){
@@ -656,14 +896,14 @@ static void draw_icons(void){
 
 /* ═══ MENU ══════════════════════════════════════════════════════ */
 static int menu_open=0,menu_sel=-1;
-static const char*menu_items[]={"Terminal","Files","About","Notepad","Shutdown"};
-#define N_MENU 5
+static const char*menu_items[]={"Terminal","Files","About","Notepad","Calc","Settings","Shutdown"};
+#define N_MENU 7
 static void draw_menu(void){
     if(!menu_open)return;
     int mx=4,my=768-TBAR_H-N_MENU*32-8;
     rect(mx,my,220,N_MENU*32+8,PANEL_BG);outline(mx,my,220,N_MENU*32+8,BORDER);
     text(mx+8,my+4,"Applications",DIM,PANEL_BG);
-    u32 dots[]={ACCENT,GREEN,PURPLE,YELLOW,RED};
+    u32 dots[]={cfg_accent,GREEN,PURPLE,YELLOW,0x58A6FF,0x58A6FF,RED};
     for(int i=0;i<N_MENU;i++){
         int iy=my+20+i*32;u32 bg=(i==menu_sel)?0x21262D:PANEL_BG;
         rect(mx+2,iy,216,28,bg);rect(mx+8,iy+8,12,12,dots[i]);text(mx+26,iy+6,menu_items[i],TEXT,bg);
@@ -698,11 +938,349 @@ static void draw_cursor(int mx,int my){
     for(int r=0;r<15;r++)for(int c=0;c<10;c++){u8 v=C[r][c];if(v==1)px(mx+c,my+r,0xFFFFFF);else if(v==2)px(mx+c,my+r,0x000000);}
 }
 
-/* ═══ OPEN HELPERS ══════════════════════════════════════════════ */
+/* === CONTEXT MENU === */
+static const char *ctx_desk[]={"Terminal","Files","About","Notepad","Calc","Settings","","Shutdown"};
+static const char *ctx_win[] ={"Minimize","Maximize","Close"};
+#define CTX_DESK_N 8
+#define CTX_WIN_N  3
+#define CTX_W      156
+#define CTX_ITEM_H  22
+#define CTX_SEP_H    6
+static void get_rctx(const char***it,int*n){
+    if(rctx_target<0){*it=ctx_desk;*n=CTX_DESK_N;}else{*it=ctx_win;*n=CTX_WIN_N;}
+}
+static int rctx_h(void){
+    const char**it;int n;get_rctx(&it,&n);
+    int h=2;for(int i=0;i<n;i++)h+=it[i][0]?CTX_ITEM_H:CTX_SEP_H;return h;
+}
+static void draw_rctx(void){
+    if(!rctx_open)return;
+    const char**items;int n;get_rctx(&items,&n);
+    int mh=rctx_h(),mx2=rctx_x,my2=rctx_y;
+    if(mx2+CTX_W>PANEL_X)mx2=PANEL_X-CTX_W;
+    if(my2+mh>768-TBAR_H)my2=768-TBAR_H-mh;
+    rect(mx2+3,my2+3,CTX_W,mh,0x050810);rect(mx2+2,my2+2,CTX_W,mh,0x0A0D14);
+    rect_alpha(mx2,my2,CTX_W,mh,0x1C2128,190);outline(mx2,my2,CTX_W,mh,BORDER);
+    hline(mx2+1,my2,CTX_W-2,cfg_accent);
+    int iy2=my2+1;
+    for(int i=0;i<n;i++){
+        if(!items[i][0]){hline(mx2+6,iy2+3,CTX_W-12,BORDER);iy2+=CTX_SEP_H;continue;}
+        int hov=(rctx_hov==i);
+        if(hov)rect(mx2+1,iy2,CTX_W-2,CTX_ITEM_H,cfg_accent);
+        text(mx2+10,iy2+(CTX_ITEM_H-14)/2,items[i],hov?BG:TEXT,hov?cfg_accent:0x1C2128);
+        iy2+=CTX_ITEM_H;
+    }
+}
+
+/* === SETTINGS === */
+static const u32  sw_col[]={0x58A6FF,0x3FB950,0xBC8CFF,0xF78166,0xF85149,0xD29922};
+static const char*sw_lbl[]={"Blue","Green","Purple","Orange","Red","Gold"};
+#define N_SW 6
+static void cfg_save(void);
+static void cfg_set_accent(u32 c){
+    cfg_accent=c;
+    for(int i=0;i<win_count;i++)if(wins[i].id==WIN_TERMINAL)wins[i].accent=c;
+    cfg_save();
+}
+static void draw_settings_content(int wi){
+    Win*w=&wins[wi];int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+    int cy=y+16;
+    text(x+16,cy,"Accent Color",TEXT,0x0D1117);cy+=22;
+    hline(x+12,cy,cw-24,0x21262D);cy+=8;
+    for(int i=0;i<N_SW;i++){
+        int sx=x+16+i*44,sy=cy;
+        int sel=(sw_col[i]==cfg_accent),hov=in_box(mouse_x,mouse_y,sx,sy,36,36);
+        if(sel){rect(sx-3,sy-3,42,42,0xFFFFFF);}
+        else if(hov){rect(sx-2,sy-2,40,40,DIM);}
+        rect(sx,sy,36,36,sw_col[i]);
+        text_center(sx+18,sy+40,sw_lbl[i],DIM,0x0D1117);
+    }
+    cy+=66;
+    hline(x+12,cy,cw-24,0x21262D);cy+=10;
+    text(x+16,cy,"Clock Format",TEXT,0x0D1117);cy+=22;
+    {int bw=64,bh=24,bx1=x+16,bx2=x+88,by2=cy;
+     u32 b1=cfg_24h?cfg_accent:(in_box(mouse_x,mouse_y,bx1,by2,bw,bh)?0x21262D:0x13161B);
+     u32 b2=!cfg_24h?cfg_accent:(in_box(mouse_x,mouse_y,bx2,by2,bw,bh)?0x21262D:0x13161B);
+     rect(bx1,by2,bw,bh,b1);outline(bx1,by2,bw,bh,BORDER);
+     text_center(bx1+bw/2,by2+4,"24h",cfg_24h?BG:TEXT,b1);
+     rect(bx2,by2,bw,bh,b2);outline(bx2,by2,bw,bh,BORDER);
+     text_center(bx2+bw/2,by2+4,"12h",!cfg_24h?BG:TEXT,b2);}
+    cy+=34;
+    hline(x+12,cy,cw-24,0x21262D);cy+=10;
+    text(x+16,cy,"Clock Seconds",TEXT,0x0D1117);cy+=22;
+    {int bw=64,bh=24,bx1=x+16,bx2=x+88,by2=cy;
+     u32 b1=cfg_showsecs?cfg_accent:(in_box(mouse_x,mouse_y,bx1,by2,bw,bh)?0x21262D:0x13161B);
+     u32 b2=!cfg_showsecs?cfg_accent:(in_box(mouse_x,mouse_y,bx2,by2,bw,bh)?0x21262D:0x13161B);
+     rect(bx1,by2,bw,bh,b1);outline(bx1,by2,bw,bh,BORDER);
+     text_center(bx1+bw/2,by2+4,"Show",cfg_showsecs?BG:TEXT,b1);
+     rect(bx2,by2,bw,bh,b2);outline(bx2,by2,bw,bh,BORDER);
+     text_center(bx2+bw/2,by2+4,"Hide",!cfg_showsecs?BG:TEXT,b2);}
+    cy+=44;
+    hline(x+12,cy,cw-24,0x21262D);
+    text_center(x+cw/2,cy+16,"YouOS v0.3.0",DIM,0x0D1117);
+}
+
+
+/* ═══ CALCULATOR ════════════════════════════════════════════════ */
+/* Fixed-point arithmetic: values stored as integer * 1000000 (6dp) */
+#define FP 1000000LL
+typedef long long fp_t;
+
+static fp_t fp_mul(fp_t a,fp_t b){return a/1000LL*b/1000LL;}
+static fp_t fp_div(fp_t a,fp_t b){if(b==0)return 0x7FFFFFFFFFFFFFFFLL;return a*1000LL/(b/1000LL);}
+static fp_t fp_sqrt(fp_t x){
+    if(x<0)return -1;if(x==0)return 0;
+    fp_t g=x/2,prev=0;
+    for(int i=0;i<60&&g!=prev;i++){prev=g;g=(g+fp_div(x,g))/2;}
+    return g;
+}
+static fp_t fp_pow_int(fp_t b,long long e){
+    if(e<0){fp_t r=fp_pow_int(b,-e);return r==0?0x7FFFFFFFFFFFFFFFLL:fp_div(FP*FP,r);}
+    fp_t r=FP;while(e-->0)r=fp_mul(r,b);return r;
+}
+static fp_t fp_abs(fp_t x){return x<0?-x:x;}
+static fp_t fp_mod(fp_t a,fp_t b){if(b==0)return 0x7FFFFFFFFFFFFFFFLL;fp_t q=a/b;return a-q*b;}
+#define FP_PI 3141592LL  /* pi * 1000000 */
+
+static const char* calc_src;
+static int calc_pos;
+static int calc_err;
+static fp_t calc_parse_expr(void);
+static fp_t calc_parse_term(void);
+static fp_t calc_parse_factor(void);
+static fp_t calc_parse_unary(void);
+static fp_t calc_parse_primary(void);
+
+static void calc_skip(void){while(calc_src[calc_pos]==' ')calc_pos++;}
+
+static fp_t calc_parse_number(void){
+    calc_skip();
+    fp_t v=0,frac=0,fdiv=1; int hasdot=0;
+    while((calc_src[calc_pos]>='0'&&calc_src[calc_pos]<='9')||calc_src[calc_pos]=='.'){
+        if(calc_src[calc_pos]=='.'){hasdot=1;calc_pos++;continue;}
+        if(hasdot){fdiv*=10;frac=frac*10+(calc_src[calc_pos]-'0');}
+        else v=v*10+(calc_src[calc_pos]-'0');
+        calc_pos++;
+    }
+    fp_t r=v*FP;
+    if(hasdot&&fdiv>0){fp_t f=frac*FP/fdiv;r+=f;}
+    return r;
+}
+
+static fp_t calc_parse_primary(void){
+    calc_skip();
+    if(calc_src[calc_pos]=='s'&&calc_src[calc_pos+1]=='q'&&
+       calc_src[calc_pos+2]=='r'&&calc_src[calc_pos+3]=='t'){
+        calc_pos+=4;calc_skip();
+        if(calc_src[calc_pos]!='('){calc_err=1;return 0;}
+        calc_pos++;fp_t v=calc_parse_expr();calc_skip();
+        if(calc_src[calc_pos]==')')calc_pos++;
+        fp_t r=fp_sqrt(v);if(r<0){calc_err=1;return 0;}return r;
+    }
+    if(calc_src[calc_pos]=='a'&&calc_src[calc_pos+1]=='b'&&
+       calc_src[calc_pos+2]=='s'){
+        calc_pos+=3;calc_skip();
+        if(calc_src[calc_pos]!='('){calc_err=1;return 0;}
+        calc_pos++;fp_t v=calc_parse_expr();calc_skip();
+        if(calc_src[calc_pos]==')')calc_pos++;
+        return fp_abs(v);
+    }
+    if(calc_src[calc_pos]=='p'&&calc_src[calc_pos+1]=='i'){
+        calc_pos+=2;return FP_PI;
+    }
+    if(calc_src[calc_pos]=='('){
+        calc_pos++;fp_t v=calc_parse_expr();calc_skip();
+        if(calc_src[calc_pos]==')')calc_pos++;return v;
+    }
+    return calc_parse_number();
+}
+static fp_t calc_parse_unary(void){
+    calc_skip();
+    if(calc_src[calc_pos]=='-'){calc_pos++;return -calc_parse_unary();}
+    if(calc_src[calc_pos]=='+'){calc_pos++;return  calc_parse_unary();}
+    return calc_parse_primary();
+}
+static fp_t calc_parse_factor(void){
+    fp_t base=calc_parse_unary();calc_skip();
+    while(calc_src[calc_pos]=='^'){
+        calc_pos++;
+        fp_t exp=calc_parse_unary();
+        long long ei=(long long)(exp/FP);
+        base=fp_pow_int(base,ei);calc_skip();
+    }
+    return base;
+}
+static fp_t calc_parse_term(void){
+    fp_t v=calc_parse_factor();calc_skip();
+    while(calc_src[calc_pos]=='*'||calc_src[calc_pos]=='/'||calc_src[calc_pos]=='%'){
+        char op=calc_src[calc_pos++];
+        fp_t r=calc_parse_factor();
+        if(op=='*')v=fp_mul(v,r);
+        else if(op=='/'){
+            if(r==0){calc_err=1;v=0;}
+            else v=fp_div(v,r);
+        }
+        else v=fp_mod(v,r);
+        calc_skip();
+    }
+    return v;
+}
+static fp_t calc_parse_expr(void){
+    fp_t v=calc_parse_term();calc_skip();
+    while(calc_src[calc_pos]=='+'||
+         (calc_src[calc_pos]=='-'&&calc_pos>0&&calc_src[calc_pos-1]!='(')){
+        char op=calc_src[calc_pos++];
+        fp_t r=calc_parse_term();
+        if(op=='+')v+=r;else v-=r;
+        calc_skip();
+    }
+    return v;
+}
+static fp_t calc_evaluate(const char*expr){
+    calc_src=expr;calc_pos=0;calc_err=0;
+    return calc_parse_expr();
+}
+
+/* Format fixed-point to string */
+static void calc_fmt(fp_t v,char*out,int maxl){
+    if(calc_err||(v==0x7FFFFFFFFFFFFFFFLL)){
+        out[0]='E';out[1]='r';out[2]='r';out[3]='o';out[4]='r';out[5]=0;return;
+    }
+    int oi=0;
+    if(v<0){out[oi++]='-';v=-v;}
+    long long iv=v/FP,fr=v%FP;
+    if(iv==0){out[oi++]='0';}
+    else{char tmp[24];int ti=0;long long t=iv;
+        while(t>0){tmp[ti++]='0'+(int)(t%10);t/=10;}
+        while(ti-->0&&oi<maxl-1)out[oi++]=tmp[ti];}
+    if(fr>0){
+        out[oi++]='.';
+        /* print up to 6 decimal places, trim trailing zeros */
+        char fdigs[7];int fi=0;
+        long long f2=fr;
+        while(fi<6){f2*=10;fdigs[fi++]='0'+(int)(f2/FP);f2%=FP;}
+        /* trim */
+        while(fi>0&&fdigs[fi-1]=='0')fi--;
+        for(int i=0;i<fi&&oi<maxl-1;i++)out[oi++]=fdigs[i];
+    }
+    out[oi]=0;
+}
+
+static void calc_do_equals(void){
+    if(calc.expr_len==0)return;
+    calc.expr[calc.expr_len]=0;
+    fp_t v=calc_evaluate(calc.expr);
+    calc_fmt(v,calc.result,30);
+    calc.has_result=1;calc.error=calc_err;
+    if(!calc_err){
+        if(calc.hist_count<6)calc.hist_count++;
+        for(int i=calc.hist_count-1;i>0;i--){
+            int j=0;while(calc.history[i-1][j]){calc.history[i][j]=calc.history[i-1][j];j++;}calc.history[i][j]=0;
+        }
+        int j=0;while(calc.result[j]&&j<31){calc.history[0][j]=calc.result[j];j++;}calc.history[0][j]=0;
+    }
+}
+
+#define CALC_COLS 5
+#define CALC_ROWS 7
+static const char* calc_btns[CALC_ROWS][CALC_COLS]={
+    {"C",    "(",   ")",  "%",   "^"  },
+    {"sqrt", "abs", "pi", "\xb1","<"  },
+    {"7",    "8",   "9",  "/",   "DEL"},
+    {"4",    "5",   "6",  "*",   ""   },
+    {"1",    "2",   "3",  "-",   ""   },
+    {"0",    ".",   "",   "+",   "="  },
+    {"",     "",    "",   "",    ""   },
+};
+
+static void calc_btn_press(const char*lbl){
+    if(lbl[0]==0)return;
+    if(lbl[0]=='C'&&lbl[1]==0){calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;calc.error=0;return;}
+    if((lbl[0]=='D'&&lbl[1]=='E')||(lbl[0]=='<'&&lbl[1]==0)){
+        if(calc.expr_len>0){calc.expr[--calc.expr_len]=0;calc.has_result=0;}return;}
+    if(lbl[0]=='='&&lbl[1]==0){calc_do_equals();return;}
+    if(lbl[0]=='\xb1'){
+        if(calc.expr_len>0&&calc.expr[0]=='-'){
+            for(int i=0;i<calc.expr_len;i++)calc.expr[i]=calc.expr[i+1];calc.expr_len--;
+        } else if(calc.expr_len<126){
+            for(int i=calc.expr_len;i>0;i--)calc.expr[i]=calc.expr[i-1];
+            calc.expr[0]='-';calc.expr_len++;calc.expr[calc.expr_len]=0;
+        }
+        calc.has_result=0;return;
+    }
+    if(calc.has_result&&((lbl[0]>='0'&&lbl[0]<='9')||lbl[0]=='s'||lbl[0]=='a'||lbl[0]=='p')){
+        calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;}
+    int li=0;while(lbl[li]&&calc.expr_len<126){calc.expr[calc.expr_len++]=lbl[li++];}
+    calc.expr[calc.expr_len]=0;calc.has_result=0;
+}
+
+static void draw_calc_content(int wi){
+    Win*w=&wins[wi];
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    (void)ch;
+    rect(x,y,cw,w->h-TITLEBAR_H,0x0D1117);
+    int disp_h=80;
+    rect(x,y,cw,disp_h,0x0A0D10);hline(x,y+disp_h,cw,BORDER);
+    int ex_max=(cw-16)/8;
+    char eclip[128];int ek=0,estart=0;
+    if(calc.expr_len>ex_max)estart=calc.expr_len-ex_max;
+    while(calc.expr[estart+ek]&&ek<ex_max&&ek<127){eclip[ek]=calc.expr[estart+ek];ek++;}eclip[ek]=0;
+    text(x+8,y+8,eclip,DIM,0x0A0D10);
+    if(calc.has_result){
+        u32 rc=calc.error?RED:GREEN;
+        int rlen=slen(calc.result);
+        if(rlen<=8)text_big(x+cw-8-rlen*16,y+30,calc.result,rc,0x0A0D10);
+        else text(x+cw-8-rlen*8,y+44,calc.result,rc,0x0A0D10);
+    } else if(calc.expr_len==0){text(x+8,y+44,"0",DIM,0x0A0D10);}
+    int hist_y=y+disp_h+4;
+    for(int i=0;i<calc.hist_count&&i<4;i++){
+        u32 hc=(i==0)?TEXT:DIM;
+        text(x+8,hist_y+i*14,calc.history[i],hc,0x0D1117);
+    }
+    int btn_top=y+disp_h+60;
+    int bw=(cw-12)/CALC_COLS,bh=36;
+    u32 btn_colors[CALC_ROWS][CALC_COLS]={
+        {RED,   0x2D333B,0x2D333B,PURPLE, PURPLE},
+        {ACCENT,ACCENT,  ACCENT,  0x2D333B,RED   },
+        {0x1C2128,0x1C2128,0x1C2128,YELLOW,RED   },
+        {0x1C2128,0x1C2128,0x1C2128,YELLOW,0x0D1117},
+        {0x1C2128,0x1C2128,0x1C2128,YELLOW,0x0D1117},
+        {0x1C2128,0x1C2128,0x1C2128,YELLOW,GREEN  },
+        {0x0D1117,0x0D1117,0x0D1117,0x0D1117,0x0D1117},
+    };
+    for(int r=0;r<CALC_ROWS;r++){
+        for(int c=0;c<CALC_COLS;c++){
+            const char*lbl=calc_btns[r][c];if(!lbl[0])continue;
+            int bx=x+6+c*bw,by=btn_top+r*bh;
+            int hov=in_box(mouse_x,mouse_y,bx,by,bw-4,bh-4);
+            u32 bc=btn_colors[r][c];
+            u32 bg=hov?(bc+0x181818):bc;
+            rect(bx,by,bw-4,bh-4,bg);outline(bx,by,bw-4,bh-4,hov?TEXT:BORDER);
+            int ll=slen(lbl);
+            text(bx+(bw-4-ll*8)/2,by+(bh-4-16)/2,lbl,TEXT,bg);
+        }
+    }
+}
+
+static void calc_handle_key(s64 ch){
+    if(ch=='\n'||ch=='\r'){calc_do_equals();return;}
+    if(ch=='\b'||ch==127){if(calc.expr_len>0){calc.expr[--calc.expr_len]=0;calc.has_result=0;}return;}
+    if(ch>=' '&&ch<127){
+        char c=(char)ch;
+        if(c=='C'){calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;calc.error=0;return;}
+        int ok=(c>='0'&&c<='9')||c=='+'||c=='-'||c=='*'||c=='/'||
+               c=='('||c==')'||c=='.'||c=='^'||c=='%'||
+               c=='s'||c=='q'||c=='r'||c=='t'||c=='a'||c=='b'||c=='p'||c=='i';
+        if(ok&&calc.expr_len<126){calc.expr[calc.expr_len++]=c;calc.expr[calc.expr_len]=0;calc.has_result=0;}
+    }
+}
+
+/* === OPEN HELPERS ══════════════════════════════════════════════ *//* === OPEN HELPERS ══════════════════════════════════════════════ */
 static int find_win(int id){for(int i=0;i<win_count;i++)if(wins[i].id==id)return i;return -1;}
-static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",ACCENT);}
+static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",cfg_accent);}
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
-static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;}}
+static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;fm_path_len=0;fm_path[0]=0;}}
 static void open_notepad(const char*fn){
     int i=find_win(WIN_NOTEPAD);
     if(i<0){
@@ -723,10 +1301,42 @@ static void open_notepad(const char*fn){
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
+typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;}CfgBlob;
+#define CFG_MAGIC 0xC0DE5E17U
+static void cfg_save(void){
+    CfgBlob b;b.magic=CFG_MAGIC;b.accent=cfg_accent;
+    b.h24=(u32)cfg_24h;b.secs=(u32)cfg_showsecs;
+    const char*p="/disk/yos.cfg";
+    sys_save_file((u64)p,(u64)&b,(u64)sizeof(b));
+}
+static void cfg_load(void){
+    CfgBlob b;
+    u64 fd=sys_open("/disk/yos.cfg",0);
+    if((s64)fd<0)return;
+    u64 n=sys_fread(fd,&b,sizeof(b));
+    sys_close(fd);
+    if(n!=(u64)sizeof(b)||b.magic!=CFG_MAGIC)return;
+    cfg_accent=b.accent;cfg_24h=(int)b.h24;cfg_showsecs=(int)b.secs;
+}
+static void open_calc(void){
+    int i=find_win(WIN_CALC);
+    if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);calc_win_idx=i;}
+    else{
+        calc_win_idx=wm_new(WIN_CALC,220,100,280,380,"Calculator",ACCENT);
+        calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;
+        calc.error=0;calc.hist_count=0;
+    }
+}
+static void open_settings(void){
+    int i=find_win(WIN_SETTINGS);
+    if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);settings_win_idx=i;}
+    else settings_win_idx=wm_new(WIN_SETTINGS,200,120,320,320,"Settings",0x58A6FF);
+}
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
+    cfg_load();
     open_terminal();
     tprint("YouOS Desktop v0.3");
     tprint("File manager + Notepad ready");
@@ -766,6 +1376,65 @@ int main(void){
             if(e==5||e==6||e==7){int nh=resize_start_h-ddy,ny=resize_orig_y+ddy;if(nh>=w->min_h&&ny>=0){w->h=nh;w->y=ny;}}
         }
 
+        int rbtn_down=(mouse_btn&2)&&!(prev_btn&2);
+        /* FM right-click */
+        if(rbtn_down&&drag_win<0){
+            int fmi=find_win(WIN_FILES);
+            if(fmi>=0&&wins[fmi].visible&&!wins[fmi].minimized&&
+               in_box(mouse_x,mouse_y,wins[fmi].x,wins[fmi].y+TITLEBAR_H,wins[fmi].w,wins[fmi].h-TITLEBAR_H)){
+                fm_ctx_x=mouse_x;fm_ctx_y=mouse_y;fm_ctx_hov=-1;fm_ctx_open=1;
+                wm_focus(fmi);goto click_done;
+            }
+        }
+        /* right-click: open context menu */
+        if(rbtn_down&&drag_win<0){
+            rctx_x=mouse_x;rctx_y=mouse_y;rctx_hov=-1;
+            int rhit=wm_hit(mouse_x,mouse_y);
+            if(rhit>=0&&in_box(mouse_x,mouse_y,wins[rhit].x,wins[rhit].y,wins[rhit].w,TITLEBAR_H))
+                rctx_target=rhit;
+            else rctx_target=-1;
+            rctx_open=1;goto click_done;
+        }
+        /* left-click closes context menu */
+        if(btn_down&&fm_ctx_open){
+            int fmi3=find_win(WIN_FILES);
+            if(fmi3<0||!in_box(mouse_x,mouse_y,wins[fmi3].x,wins[fmi3].y,wins[fmi3].w,wins[fmi3].h))
+                fm_ctx_open=0;
+        }
+        if(btn_down&&rctx_open){
+            const char**ci;int cn;get_rctx(&ci,&cn);
+            int cmh=rctx_h(),cmx=rctx_x,cmy=rctx_y;
+            if(cmx+CTX_W>PANEL_X)cmx=PANEL_X-CTX_W;
+            if(cmy+cmh>768-TBAR_H)cmy=768-TBAR_H-cmh;
+            int ciy=cmy+1;
+            for(int ci2=0;ci2<cn;ci2++){
+                if(!ci[ci2][0]){ciy+=CTX_SEP_H;continue;}
+                if(in_box(mouse_x,mouse_y,cmx,ciy,CTX_W,CTX_ITEM_H)){
+                    if(rctx_target<0){
+                        if(ci2==0)open_terminal();
+                        else if(ci2==1)open_files();
+                        else if(ci2==2)open_about();
+                        else if(ci2==3)open_notepad(0);
+                        else if(ci2==4)open_calc();
+                        else if(ci2==5)open_settings();
+                        else if(ci2==7){tprint("Shutting down...");flush();sys_shutdown();}
+                    } else {
+                        Win*rw=&wins[rctx_target];
+                        if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
+                        else if(ci2==1){if(rw->w<700){rw->x=20;rw->y=20;rw->w=750;rw->h=700;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
+                        else if(ci2==2){
+                            rw->visible=0;
+                            if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
+                            if(wins[rctx_target].id==WIN_SETTINGS)settings_win_idx=-1;
+                            focused=-1;int cbz=-1;
+                            for(int ck=0;ck<win_count;ck++)if(wins[ck].visible&&wins[ck].z>cbz){cbz=wins[ck].z;focused=ck;}
+                        }
+                    }
+                }
+                ciy+=CTX_ITEM_H;
+            }
+            rctx_open=0;goto click_done;
+        }
         /* click handling */
         if(btn_down&&drag_win<0&&resize_win<0){
             int hit=wm_hit(mouse_x,mouse_y);
@@ -777,6 +1446,8 @@ int main(void){
                 if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
                     w->visible=0;
                     if(wins[hit].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
+                    if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;
+                    if(wins[hit].id==WIN_CALC)calc_win_idx=-1;
                     focused=-1;int bz=-1;
                     for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
                     goto click_done;
@@ -885,25 +1556,181 @@ int main(void){
                         }
                     }
                 }
+                /* calculator window */
+                if(w->id==WIN_CALC&&!w->minimized){
+                    int btn_top=w->y+TITLEBAR_H+80+60;
+                    int bw=(w->w-12)/CALC_COLS;
+                    for(int r=0;r<CALC_ROWS;r++){
+                        for(int c=0;c<CALC_COLS;c++){
+                            const char*lbl=calc_btns[r][c];
+                            if(!lbl[0])continue;
+                            int bx=w->x+6+c*bw,by=btn_top+r*36;
+                            if(in_box(mouse_x,mouse_y,bx,by,bw-4,32)){
+                                calc_btn_press(lbl);goto click_done;
+                            }
+                        }
+                    }
+                    goto click_done;
+                }
+                /* settings window */
+                if(w->id==WIN_SETTINGS&&!w->minimized){
+                    int base=w->y+TITLEBAR_H;
+                    for(int si=0;si<N_SW;si++){
+                        if(in_box(mouse_x,mouse_y,w->x+16+si*44,base+46,36,36)){
+                            cfg_set_accent(sw_col[si]);goto click_done;
+                        }
+                    }
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+144,64,24)){cfg_24h=1;cfg_save();goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+88,base+144,64,24)){cfg_24h=0;cfg_save();goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+210,64,24)){cfg_showsecs=1;cfg_save();goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+88,base+210,64,24)){cfg_showsecs=0;cfg_save();goto click_done;}
+                }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
                     int fy=w->y+TITLEBAR_H;
-                    if(in_box(mouse_x,mouse_y,w->x+w->w-60,fy+4,52,20)){fm_load();goto click_done;}
+                    int cw2=w->w;
+                    /* dialog: delete confirm */
+                    if(fm_dialog==1&&fm_selected>=0){
+                        int dw=300,dh=88;
+                        int ddx=w->x+(cw2-dw)/2;
+                        int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22)){
+                            char dpath[56];
+                            int dk=0;
+                            dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';
+                            dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';
+                            int dj=0;
+                            while(fm_entries[fm_selected].name[dj]&&dk<55)
+                                dpath[dk++]=fm_entries[fm_selected].name[dj++];
+                            dpath[dk]=0;
+                            sys_unlink(dpath);fm_selected=-1;fm_dialog=0;fm_load();
+                        } else fm_dialog=0;
+                        goto click_done;
+                    }
+                    /* dialog: rename */
+                    if(fm_dialog==2){
+                        int dw=320,dh=106;
+                        int ddx=w->x+(cw2-dw)/2;
+                        int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
+                            if(fm_dlg_len>0&&fm_selected>=0){
+                                char op[56],np2[56];
+                                int k=0;
+                                op[k++]='/';op[k++]='d';op[k++]='i';op[k++]='s';op[k++]='k';op[k++]='/';
+                                int j=0;while(fm_entries[fm_selected].name[j]&&k<55)op[k++]=fm_entries[fm_selected].name[j++];op[k]=0;
+                                k=0;np2[k++]='/';np2[k++]='d';np2[k++]='i';np2[k++]='s';np2[k++]='k';np2[k++]='/';
+                                j=0;while(fm_dlg_buf[j]&&k<55)np2[k++]=fm_dlg_buf[j++];np2[k]=0;
+                                if(sys_rename(op,np2)<0){
+                                    fm_dlg_has_err=1;
+                                    const char*em="Name exists or invalid";
+                                    int ei=0;while(em[ei]&&ei<47){fm_dlg_err[ei]=em[ei];ei++;}fm_dlg_err[ei]=0;
+                                } else {fm_dialog=0;fm_dlg_has_err=0;fm_load();}
+                            }
+                        } else if(!in_box(mouse_x,mouse_y,ddx,ddy,dw,dh)){fm_dialog=0;fm_dlg_has_err=0;}
+                        goto click_done;
+                    }
+                    /* dialog: new folder */
+                    if(fm_dialog==3){
+                        int dw=320,dh=106;
+                        int ddx=w->x+(cw2-dw)/2;
+                        int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
+                        if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
+                            if(fm_dlg_len>0){
+                                char np2[56];
+                                int k=0;
+                                np2[k++]='/';np2[k++]='d';np2[k++]='i';np2[k++]='s';np2[k++]='k';np2[k++]='/';
+                                int j=0;while(fm_dlg_buf[j]&&k<55)np2[k++]=fm_dlg_buf[j++];np2[k]=0;
+                                if(sys_mkdir(np2)<0){
+                                    fm_dlg_has_err=1;
+                                    const char*em="Folder already exists";
+                                    int ei=0;while(em[ei]&&ei<47){fm_dlg_err[ei]=em[ei];ei++;}fm_dlg_err[ei]=0;
+                                } else {fm_dialog=0;fm_dlg_has_err=0;fm_load();}
+                            }
+                        } else if(!in_box(mouse_x,mouse_y,ddx,ddy,dw,dh)){fm_dialog=0;fm_dlg_has_err=0;}
+                        goto click_done;
+                    }
+                    /* FM context menu clicks */
+                    if(fm_ctx_open){
+                        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
+                        int n=7,iw=160,ih=22,sep=6;
+                        int mh=2;for(int i=0;i<n;i++)mh+=items[i][0]?ih:sep;
+                        int mx2=fm_ctx_x,my2=fm_ctx_y;
+                        if(mx2+iw>w->x+w->w)mx2=w->x+w->w-iw;
+                        if(my2+mh>w->y+w->h)my2=w->y+w->h-mh;
+                        int iy2=my2+1,clicked=-1;
+                        for(int i=0;i<n;i++){
+                            if(!items[i][0]){iy2+=sep;continue;}
+                            if(in_box(mouse_x,mouse_y,mx2,iy2,iw,ih)){clicked=i;break;}
+                            iy2+=ih;
+                        }
+                        fm_ctx_open=0;
+                        if(clicked==0){
+                            fm_dialog=3;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
+                        } else if(clicked==2&&fm_selected>=0){
+                            int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
+                            fm_has_clip=1;fm_clip_cut=0;
+                        } else if(clicked==3&&fm_selected>=0){
+                            int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
+                            fm_has_clip=1;fm_clip_cut=1;
+                        } else if(clicked==4&&fm_has_clip){
+                            char spath[56];
+                            int sk=0;
+                            spath[sk++]='/';spath[sk++]='d';spath[sk++]='i';spath[sk++]='s';spath[sk++]='k';spath[sk++]='/';
+                            int sj=0;while(fm_clip[sj]&&sk<55)spath[sk++]=fm_clip[sj++];spath[sk]=0;
+                            u64 fd=sys_open(spath,0);
+                            if((s64)fd>=0){
+                                char dname[40];int di=0;
+                                dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';
+                                sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
+                                char dpath[56];
+                                int dk=0;
+                                dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';
+                                int dj=0;while(dname[dj]&&dk<55)dpath[dk++]=dname[dj++];dpath[dk]=0;
+                                int total=0;s64 nr;
+                                while((nr=sys_fread(fd,fm_cpbuf+total,128))>0)total+=(int)nr;
+                                sys_close(fd);
+                                sys_save_file((u64)dpath,(u64)fm_cpbuf,(u64)total);
+                                if(fm_clip_cut){sys_unlink(spath);fm_has_clip=0;}
+                                fm_load();
+                            }
+                        } else if(clicked==5&&fm_selected>=0){
+                            fm_dialog=2;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
+                        } else if(clicked==6&&fm_selected>=0){
+                            fm_dialog=1;
+                        }
+                        goto click_done;
+                    }
+                    /* toolbar */
+                    if(fm_path_len>0&&in_box(mouse_x,mouse_y,w->x+cw2-128,fy+4,52,20)){
+                        fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
+                    }
+                    if(in_box(mouse_x,mouse_y,w->x+cw2-60,fy+4,52,20)){fm_load();goto click_done;}
                     int max_vis2=(w->h-TITLEBAR_H-72-20)/22;if(max_vis2<1)max_vis2=1;
-                    if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+50,14,14)&&fm_scroll>0){fm_scroll--;goto click_done;}
-                    if(in_box(mouse_x,mouse_y,w->x+w->w-16,fy+66,14,14)&&fm_scroll+max_vis2<fm_count){fm_scroll++;goto click_done;}
-                    int row_y=w->y+TITLEBAR_H+72;
+                    if(in_box(mouse_x,mouse_y,w->x+cw2-16,fy+50,14,14)&&fm_scroll>0){fm_scroll--;goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+cw2-16,fy+66,14,14)&&fm_scroll+max_vis2<fm_count){fm_scroll++;goto click_done;}
+                    int row_y2=w->y+TITLEBAR_H+72;
                     for(int fi=fm_scroll;fi<fm_count&&fi<fm_scroll+max_vis2;fi++){
-                        int ry=row_y+(fi-fm_scroll)*22;
+                        int ry=row_y2+(fi-fm_scroll)*22;
                         if(in_box(mouse_x,mouse_y,w->x,ry,w->w,22)){
-                            if(!fm_entries[fi].is_dir){
-                                char*n=fm_entries[fi].name;int nl=slen(n);
-                                if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
-                                    open_notepad(n);
+                            if(fi==fm_last_fi&&(ticks-fm_last_tick)<30){
+                                fm_last_fi=-1;fm_last_tick=0;
+                                if(fm_entries[fi].is_dir&&fm_path_len==0){
+                                    /* navigate into subdir (1 level deep) */
+                                    int ni=0;while(fm_entries[fi].name[ni]&&ni<62){fm_path[ni]=fm_entries[fi].name[ni];ni++;}
+                                    fm_path[ni]=0;fm_path_len=ni;fm_load();goto click_done;
+                                } else if(!fm_entries[fi].is_dir){
+                                    char*n=fm_entries[fi].name;int nl=slen(n);
+                                    if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
+                                        open_notepad(n);
+                                }
+                            } else {
+                                fm_selected=fi;fm_last_fi=fi;fm_last_tick=ticks;
+                                fm_dialog=0;fm_ctx_open=0;
                             }
                             goto click_done;
                         }
                     }
+                    goto click_done;
                 }
                 goto click_done;
             }
@@ -932,7 +1759,9 @@ int main(void){
                         else if(i==1)open_files();
                         else if(i==2)open_about();
                         else if(i==3)open_notepad(0);
-                        else if(i==4){tprint("Shutting down...");flush();sys_shutdown();}
+                        else if(i==4)open_calc();
+                        else if(i==5)open_settings();
+                        else if(i==6){tprint("Shutting down...");flush();sys_shutdown();}
                         goto click_done;
                     }
                 }
@@ -944,6 +1773,7 @@ int main(void){
                 if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)){
                     if(i==0)open_terminal();else if(i==1)open_files();
                     else if(i==2)open_about();else if(i==3)open_notepad(0);
+                    else if(i==4)open_calc();
                     goto click_done;
                 }
             }
@@ -958,6 +1788,35 @@ int main(void){
                 if(c=='\n'||c=='\r'){tinput[tinput_len]=0;if(tinput_len>0)tcmd(tinput);tinput_len=0;tinput[0]=0;}
                 else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
                 else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
+            }
+            if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_dialog==2||fm_dialog==3)){
+                if(ch>0&&ch<256){
+                    char fc=(char)ch;
+                    if(fc=='\b'||fc==127){if(fm_dlg_len>0){fm_dlg_buf[--fm_dlg_len]=0;fm_dlg_has_err=0;}}
+                    else if(fc=='\n'||fc=='\r'){
+                        if(fm_dlg_len>0){
+                            if(fm_dialog==2&&fm_selected>=0){
+                                char op2[56],np3[56];
+                                int k2=0;
+                                op2[k2++]='/';op2[k2++]='d';op2[k2++]='i';op2[k2++]='s';op2[k2++]='k';op2[k2++]='/';
+                                int j2=0;while(fm_entries[fm_selected].name[j2]&&k2<55)op2[k2++]=fm_entries[fm_selected].name[j2++];op2[k2]=0;
+                                k2=0;np3[k2++]='/';np3[k2++]='d';np3[k2++]='i';np3[k2++]='s';np3[k2++]='k';np3[k2++]='/';
+                                j2=0;while(fm_dlg_buf[j2]&&k2<55)np3[k2++]=fm_dlg_buf[j2++];np3[k2]=0;
+                                if(sys_rename(op2,np3)<0){fm_dlg_has_err=1;const char*em2="Name exists";int ei2=0;while(em2[ei2]&&ei2<47){fm_dlg_err[ei2]=em2[ei2];ei2++;}fm_dlg_err[ei2]=0;}
+                                else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
+                            } else if(fm_dialog==3){
+                                char np4[56];int k3=0;
+                                np4[k3++]='/';np4[k3++]='d';np4[k3++]='i';np4[k3++]='s';np4[k3++]='k';np4[k3++]='/';
+                                int j3=0;while(fm_dlg_buf[j3]&&k3<55)np4[k3++]=fm_dlg_buf[j3++];np4[k3]=0;
+                                if(sys_mkdir(np4)<0){fm_dlg_has_err=1;const char*em3="Already exists";int ei3=0;while(em3[ei3]&&ei3<47){fm_dlg_err[ei3]=em3[ei3];ei3++;}fm_dlg_err[ei3]=0;}
+                                else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
+                            }
+                        }
+                    } else if(fc>=32&&fc<127&&fm_dlg_len<38){fm_dlg_buf[fm_dlg_len++]=fc;fm_dlg_buf[fm_dlg_len]=0;fm_dlg_has_err=0;}
+                }
+            }
+            if(wins[focused].id==WIN_CALC&&wins[focused].visible&&!wins[focused].minimized){
+                calc_handle_key(ch);
             }
             if(wins[focused].id==WIN_NOTEPAD&&wins[focused].visible){
                 if(np.mode==2){
@@ -1015,6 +1874,38 @@ int main(void){
             }
         }
 
+        fm_ctx_hov=-1;
+        if(fm_ctx_open){
+            int fmi2=find_win(WIN_FILES);
+            if(fmi2>=0){
+                Win*wfm=&wins[fmi2];
+                const char*fitems[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
+                int fn=7,fiw=160,fih=22,fsep=6;
+                int fmh=2;for(int i=0;i<fn;i++)fmh+=fitems[i][0]?fih:fsep;
+                int fmx=fm_ctx_x,fmy=fm_ctx_y;
+                if(fmx+fiw>wfm->x+wfm->w)fmx=wfm->x+wfm->w-fiw;
+                if(fmy+fmh>wfm->y+wfm->h)fmy=wfm->y+wfm->h-fmh;
+                int fiy=fmy+1;
+                for(int i=0;i<fn;i++){
+                    if(!fitems[i][0]){fiy+=fsep;continue;}
+                    if(in_box(mouse_x,mouse_y,fmx,fiy,fiw,fih)){fm_ctx_hov=i;break;}
+                    fiy+=fih;
+                }
+            }
+        }
+        rctx_hov=-1;
+        if(rctx_open){
+            const char**hi;int hn;get_rctx(&hi,&hn);
+            int hmh=rctx_h(),hmx=rctx_x,hmy=rctx_y;
+            if(hmx+CTX_W>PANEL_X)hmx=PANEL_X-CTX_W;
+            if(hmy+hmh>768-TBAR_H)hmy=768-TBAR_H-hmh;
+            int hiy=hmy+1;
+            for(int i=0;i<hn;i++){
+                if(!hi[i][0]){hiy+=CTX_SEP_H;continue;}
+                if(in_box(mouse_x,mouse_y,hmx,hiy,CTX_W,CTX_ITEM_H))rctx_hov=i;
+                hiy+=CTX_ITEM_H;
+            }
+        }
         cursor_blink=(cursor_blink+1)%100;
         prev_btn=mouse_btn;
         if(!fm_loaded)fm_load();
@@ -1036,9 +1927,12 @@ int main(void){
             else if(wins[i].id==WIN_ABOUT)draw_about_content(i);
             else if(wins[i].id==WIN_FILES)draw_files_content(i);
             else if(wins[i].id==WIN_NOTEPAD)draw_notepad_content(i);
+            else if(wins[i].id==WIN_CALC)draw_calc_content(i);
+            else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
         }
-        draw_taskbar(secs);draw_menu();draw_cursor(mouse_x,mouse_y);
+        draw_taskbar(secs);draw_menu();draw_rctx();draw_cursor(mouse_x,mouse_y);
         flush();sys_yield();
     }
     return 0;
 }
+

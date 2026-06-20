@@ -263,3 +263,30 @@ void fb_map_into_as(void* as_ptr) {
 }
 
 fb_info_t* fb_get_info(void) { return &fb; }
+
+/* ── Alpha-blended pixel/rect ───────────────────────────────────── */
+static inline uint32_t fb_blend(uint32_t bg, uint32_t fg, uint8_t alpha)
+{
+    uint32_t br = (bg >> 16) & 0xFF, bgc = (bg >> 8) & 0xFF, bb = bg & 0xFF;
+    uint32_t fr = (fg >> 16) & 0xFF, fgc = (fg >> 8) & 0xFF, fbb = fg & 0xFF;
+    uint32_t r = (fr * alpha + br * (255 - alpha)) / 255;
+    uint32_t g = (fgc * alpha + bgc * (255 - alpha)) / 255;
+    uint32_t b = (fbb * alpha + bb * (255 - alpha)) / 255;
+    return (r << 16) | (g << 8) | b;
+}
+
+void fb_put_pixel_alpha(int x, int y, uint32_t color, uint8_t alpha)
+{
+    if (!fb_ready || x < 0 || y < 0 ||
+        (uint32_t)x >= fb.width || (uint32_t)y >= fb.height) return;
+    uint32_t* p = (uint32_t*)(fb.addr + (uint32_t)y * fb.pitch
+                              + (uint32_t)x * (fb.bpp / 8));
+    *p = fb_blend(*p, color, alpha);
+}
+
+void fb_fill_rect_alpha(int x, int y, int w, int h, uint32_t color, uint8_t alpha)
+{
+    for (int row = y; row < y + h; row++)
+        for (int col = x; col < x + w; col++)
+            fb_put_pixel_alpha(col, row, color, alpha);
+}
