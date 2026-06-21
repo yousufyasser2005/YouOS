@@ -225,7 +225,7 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_SB_X   (TBAR_PILL_X+8)
 #define TBAR_SB_Y   (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_SB_SZ)/2)
 #define TBAR_WINBTN_X0 (TBAR_SB_X+TBAR_SB_SZ+12)
-#define TBAR_WINBTN_W  100
+#define TBAR_WINBTN_W  (TBAR_PILL_H-8)
 #define TBAR_WINBTN_GAP 8
 #define TBAR_CLOCK_X (TBAR_PILL_X+TBAR_PILL_W-80)
 #define TBAR_CLOCK_Y (TBAR_PILL_Y+27)
@@ -247,6 +247,8 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_NOTEPAD  3
 #define WIN_SETTINGS 4
 #define WIN_CALC     5
+static const int win_glyph_map[6]={0,2,1,3,5,4};
+static int win_glyph_idx(int wid){if(wid<0||wid>5)return 0;return win_glyph_map[wid];}
 
 typedef struct {
     int id,x,y,w,h,visible,minimized,z;
@@ -346,8 +348,10 @@ static int wm_draw_frame(int i){
         w->anim--;
     }
     if(!w->minimized){
-        rect(dx+4,dy+4,dw,dh,0x000000);
-        rect(dx+2,dy+2,dw,dh,0x080808);
+        int sh1=dh;if(dy+4+sh1>768-TBAR_H)sh1=(768-TBAR_H)-(dy+4);if(sh1<0)sh1=0;
+        int sh2=dh;if(dy+2+sh2>768-TBAR_H)sh2=(768-TBAR_H)-(dy+2);if(sh2<0)sh2=0;
+        rect(dx+4,dy+4,dw,sh1,0x000000);
+        rect(dx+2,dy+2,dw,sh2,0x080808);
         rect(dx,dy,dw,dh,0x0D1117);
     }
     u32 tbar_bg=foc?0x1C2128:0x13161B;
@@ -1106,9 +1110,10 @@ static void draw_taskbar(u64 secs){
         rect_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,bbg);
         outline_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,foc?wins[i].accent:BORDER);
         if(foc)hline(bx+8,TBAR_PILL_Y+TBAR_PILL_H-6,TBAR_WINBTN_W-16,wins[i].accent);
-        char ts[12];int k=0;while(wins[i].title[k]&&k<10){ts[k]=wins[i].title[k];k++;}
-        if(slen(wins[i].title)>10){ts[9]='.';ts[10]='.';k=11;}ts[k]=0;
-        text(bx+8,TBAR_PILL_Y+TBAR_PILL_H/2-8,ts,foc?TEXT:DIM,bbg);bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
+        char ts[8];int k=0;while(wins[i].title[k]&&k<6){ts[k]=wins[i].title[k];k++;}
+        if(slen(wins[i].title)>6){ts[5]='.';ts[6]='.';k=7;}ts[k]=0;
+        draw_icon_glyph(win_glyph_idx(wins[i].id),bx+TBAR_WINBTN_W/2,TBAR_PILL_Y+TBAR_PILL_H/2,foc?TEXT:DIM,bbg);
+        bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
     }
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
     char clk[9];clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
@@ -1623,7 +1628,7 @@ int main(void){
                     } else {
                         Win*rw=&wins[rctx_target];
                         if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
-                        else if(ci2==1){if(rw->w<700){rw->x=20;rw->y=20;rw->w=750;rw->h=700;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
+                        else if(ci2==1){if(rw->w<700){rw->x=0;rw->y=0;rw->w=1024;rw->h=768-TBAR_H;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
                         else if(ci2==2){
                             rw->visible=0;
                             if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
@@ -1639,6 +1644,30 @@ int main(void){
         }
         /* click handling */
         if(btn_down&&drag_win<0&&resize_win<0){
+            if(menu_open){
+                int inside_panel=in_box(mouse_x,mouse_y,SM_X,SM_Y,SM_W,SM_H);
+                for(int gi=0;gi<sm_filtered_n;gi++){
+                    int idx=sm_filtered[gi];
+                    int col=gi%SM_COLS,row=gi/SM_COLS;
+                    int gx=SM_GRID_X(col),gy=SM_GRID_Y(row);
+                    if(in_box(mouse_x,mouse_y,gx,gy,SM_CELL-16,SM_CELL-16)){
+                        menu_open=0;
+                        if(idx==0)open_terminal();
+                        else if(idx==1)open_files();
+                        else if(idx==2)open_about();
+                        else if(idx==3)open_notepad(0);
+                        else if(idx==4)open_calc();
+                        else if(idx==5)open_settings();
+                        goto click_done;
+                    }
+                }
+                int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-16)/3;
+                int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8;
+                if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
+                if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;tprint("Shutting down...");flush();sys_shutdown();goto click_done;}
+                if(inside_panel)goto click_done;
+                menu_open=0;goto click_done;
+            }
             int hit=wm_hit(mouse_x,mouse_y);
             if(hit>=0&&hit!=focused)wm_focus(hit);
 
@@ -1661,7 +1690,7 @@ int main(void){
                 }
                 /* maximize */
                 if(in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14)){
-                    if(w->w<700){w->x=20;w->y=20;w->w=750;w->h=700;}
+                    if(w->w<700){w->x=0;w->y=0;w->w=1024;w->h=768-TBAR_H;}
                     else{w->x=100;w->y=60;w->w=560;w->h=420;}
                     goto click_done;
                 }
@@ -1955,30 +1984,6 @@ int main(void){
                 goto click_done;
             }
             /* menu items */
-            if(menu_open){
-                int inside_panel=in_box(mouse_x,mouse_y,SM_X,SM_Y,SM_W,SM_H);
-                for(int gi=0;gi<sm_filtered_n;gi++){
-                    int idx=sm_filtered[gi];
-                    int col=gi%SM_COLS,row=gi/SM_COLS;
-                    int gx=SM_GRID_X(col),gy=SM_GRID_Y(row);
-                    if(in_box(mouse_x,mouse_y,gx,gy,SM_CELL-16,SM_CELL-16)){
-                        menu_open=0;
-                        if(idx==0)open_terminal();
-                        else if(idx==1)open_files();
-                        else if(idx==2)open_about();
-                        else if(idx==3)open_notepad(0);
-                        else if(idx==4)open_calc();
-                        else if(idx==5)open_settings();
-                        goto click_done;
-                    }
-                }
-                int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-16)/3;
-                int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8;
-                if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
-                if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;tprint("Shutting down...");flush();sys_shutdown();goto click_done;}
-                if(inside_panel)goto click_done;
-                menu_open=0;goto click_done;
-            }
             /* desktop icons */
             for(int i=0;i<N_ICONS;i++){
                 Icon*ic=&icons[i];
