@@ -999,6 +999,17 @@ static void draw_icon_glyph(int idx,int cx,int cy,u32 fg,u32 bgcol){
         rect(cx-11,cy-13,22,8,bgcol);
         for(int row=0;row<2;row++)for(int col=0;col<3;col++)
             rect(cx-11+col*8,cy-2+row*8,5,5,fg);
+    }else if(idx==5){
+        circle_outline(cx,cy,8,fg);
+        circle(cx,cy,3,fg);
+        rect(cx-2,cy-13,4,5,fg);
+        rect(cx-2,cy+8,4,5,fg);
+        rect(cx-13,cy-2,5,4,fg);
+        rect(cx+8,cy-2,5,4,fg);
+        rect(cx-10,cy-10,4,4,fg);
+        rect(cx+6,cy-10,4,4,fg);
+        rect(cx-10,cy+6,4,4,fg);
+        rect(cx+6,cy+6,4,4,fg);
     }
 }
 
@@ -1021,16 +1032,74 @@ static void draw_icons(void){
 static int menu_open=0,menu_sel=-1;
 static const char*menu_items[]={"Terminal","Files","About","Notepad","Calc","Settings","Shutdown"};
 #define N_MENU 7
+#define N_MENU_APPS 6
+static const u32 sm_colors[N_MENU_APPS]={ACCENT,GREEN,PURPLE,YELLOW,0x58A6FF,0x58A6FF};
+#define SM_W 480
+#define SM_H 560
+#define SM_X TBAR_SB_X
+#define SM_Y (TBAR_PILL_Y-SM_H-12)
+#define SM_COLS 3
+#define SM_CELL 140
+#define SM_GRID_X(c) (SM_X+24+(c)*SM_CELL)
+#define SM_GRID_Y(r) (SM_Y+108+(r)*SM_CELL)
+static char sm_search[32];static int sm_search_len=0;
+static int sm_filtered[N_MENU_APPS];static int sm_filtered_n=0;
+static int sm_hov=-1;
+static void sm_apply_filter(void){
+    sm_filtered_n=0;
+    for(int i=0;i<N_MENU_APPS;i++){
+        if(sm_search_len==0){sm_filtered[sm_filtered_n++]=i;continue;}
+        const char*name=menu_items[i];int match=0;
+        for(int s=0;name[s];s++){
+            int eq=1;
+            for(int k=0;k<sm_search_len;k++){
+                char a=name[s+k];if(a>='A'&&a<='Z')a+=32;
+                char b=sm_search[k];if(b>='A'&&b<='Z')b+=32;
+                if(a!=b||a==0){eq=0;break;}
+            }
+            if(eq){match=1;break;}
+        }
+        if(match)sm_filtered[sm_filtered_n++]=i;
+    }
+}
 static void draw_menu(void){
     if(!menu_open)return;
-    int mx=TBAR_SB_X,my=768-TBAR_H-N_MENU*32-8;
-    rect(mx,my,220,N_MENU*32+8,PANEL_BG);outline(mx,my,220,N_MENU*32+8,BORDER);
-    text(mx+8,my+4,"Applications",DIM,PANEL_BG);
-    u32 dots[]={cfg_accent,GREEN,PURPLE,YELLOW,0x58A6FF,0x58A6FF,RED};
-    for(int i=0;i<N_MENU;i++){
-        int iy=my+20+i*32;u32 bg=(i==menu_sel)?0x21262D:PANEL_BG;
-        rect(mx+2,iy,216,28,bg);rect(mx+8,iy+8,12,12,dots[i]);text(mx+26,iy+6,menu_items[i],TEXT,bg);
+    int sx=SM_X,sy=SM_Y;
+    rect_round_alpha(sx+3,sy+3,SM_W,SM_H,18,0x000000,90);
+    rect_round_alpha(sx,sy,SM_W,SM_H,18,PANEL_BG,210);
+    outline_round(sx,sy,SM_W,SM_H,18,BORDER);
+    text_bold(sx+20,sy+16,"YouOS",cfg_accent,PANEL_BG);
+    text(sx+SM_W-104,sy+18,"Applications",DIM,PANEL_BG);
+    hline(sx+20,sy+44,SM_W-40,0x21262D);
+    int sbx=sx+20,sby=sy+56,sbw=SM_W-40,sbh=36;
+    rect_round(sbx,sby,sbw,sbh,10,0x0D1117);outline_round(sbx,sby,sbw,sbh,10,BORDER);
+    if(sm_search_len==0)text(sbx+12,sby+11,"Search programs...",DIM,0x0D1117);
+    else text(sbx+12,sby+11,sm_search,TEXT,0x0D1117);
+    for(int gi=0;gi<sm_filtered_n;gi++){
+        int idx=sm_filtered[gi];
+        int col=gi%SM_COLS,row=gi/SM_COLS;
+        int gx=SM_GRID_X(col),gy=SM_GRID_Y(row);
+        int hov=(sm_hov==gi);
+        u32 bg=hov?0x21262D:PANEL_BG;
+        rect_round(gx,gy,SM_CELL-16,SM_CELL-16,12,bg);
+        if(hov)outline_round(gx,gy,SM_CELL-16,SM_CELL-16,12,cfg_accent);
+        rect_round(gx+(SM_CELL-16-56)/2,gy+12,56,56,12,sm_colors[idx]);
+        draw_icon_glyph(idx,gx+(SM_CELL-16)/2,gy+12+28,TEXT,sm_colors[idx]);
+        int nlen=slen(menu_items[idx]);
+        text(gx+((SM_CELL-16)-nlen*8)/2,gy+76,menu_items[idx],TEXT,bg);
     }
+    if(sm_filtered_n==0)text_center(sx+SM_W/2,sy+200,"No results",DIM,PANEL_BG);
+    int pry=sy+SM_H-56,pbw=(SM_W-40-16)/3;
+    int rb_x=sx+20,sd_x=rb_x+pbw+8,lo_x=sd_x+pbw+8;
+    hline(sx+20,pry-8,SM_W-40,0x21262D);
+    int hov_r=in_box(mouse_x,mouse_y,rb_x,pry,pbw,40);
+    int hov_s=in_box(mouse_x,mouse_y,sd_x,pry,pbw,40);
+    rect_round(rb_x,pry,pbw,40,10,hov_r?0x21262D:0x161B22);outline_round(rb_x,pry,pbw,40,10,BORDER);
+    text_center(rb_x+pbw/2,pry+13,"Restart",TEXT,hov_r?0x21262D:0x161B22);
+    rect_round(sd_x,pry,pbw,40,10,hov_s?0x3A1212:0x161B22);outline_round(sd_x,pry,pbw,40,10,hov_s?RED:BORDER);
+    text_center(sd_x+pbw/2,pry+13,"Shutdown",hov_s?RED:TEXT,hov_s?0x3A1212:0x161B22);
+    rect_round(lo_x,pry,pbw,40,10,0x161B22);outline_round(lo_x,pry,pbw,40,10,BORDER);
+    text_center(lo_x+pbw/2,pry+13,"Logout",DIM,0x161B22);
 }
 
 /* ═══ TASKBAR ═══════════════════════════════════════════════════ */
@@ -1893,24 +1962,34 @@ int main(void){
                 bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
             }
             /* start button */
-            if(in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ)){menu_open=!menu_open;goto click_done;}
+            if(in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ)){
+                menu_open=!menu_open;
+                if(menu_open){sm_search_len=0;sm_search[0]=0;sm_apply_filter();sm_hov=-1;}
+                goto click_done;
+            }
             /* menu items */
             if(menu_open){
-                int mx2=TBAR_SB_X,my2=768-TBAR_H-N_MENU*32-8;
-                for(int i=0;i<N_MENU;i++){
-                    int iy=my2+20+i*32;
-                    if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28)){
+                int inside_panel=in_box(mouse_x,mouse_y,SM_X,SM_Y,SM_W,SM_H);
+                for(int gi=0;gi<sm_filtered_n;gi++){
+                    int idx=sm_filtered[gi];
+                    int col=gi%SM_COLS,row=gi/SM_COLS;
+                    int gx=SM_GRID_X(col),gy=SM_GRID_Y(row);
+                    if(in_box(mouse_x,mouse_y,gx,gy,SM_CELL-16,SM_CELL-16)){
                         menu_open=0;
-                        if(i==0)open_terminal();
-                        else if(i==1)open_files();
-                        else if(i==2)open_about();
-                        else if(i==3)open_notepad(0);
-                        else if(i==4)open_calc();
-                        else if(i==5)open_settings();
-                        else if(i==6){tprint("Shutting down...");flush();sys_shutdown();}
+                        if(idx==0)open_terminal();
+                        else if(idx==1)open_files();
+                        else if(idx==2)open_about();
+                        else if(idx==3)open_notepad(0);
+                        else if(idx==4)open_calc();
+                        else if(idx==5)open_settings();
                         goto click_done;
                     }
                 }
+                int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-16)/3;
+                int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8;
+                if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
+                if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;tprint("Shutting down...");flush();sys_shutdown();goto click_done;}
+                if(inside_panel)goto click_done;
                 menu_open=0;goto click_done;
             }
             /* desktop icons */
@@ -1927,7 +2006,14 @@ int main(void){
 
         /* keyboard */
         s64 ch=sys_keypoll();
-        if(ch!=0&&focused>=0){
+        if(ch!=0&&menu_open){
+            if(ch>0&&ch<256){
+                char sc=(char)ch;
+                if((sc=='\b'||sc==127)&&sm_search_len>0){sm_search[--sm_search_len]=0;sm_apply_filter();sm_hov=-1;}
+                else if(sc>=32&&sc<127&&sm_search_len<28){sm_search[sm_search_len++]=sc;sm_search[sm_search_len]=0;sm_apply_filter();sm_hov=-1;}
+                else if(sc==27)menu_open=0;
+            }
+        }else if(ch!=0&&focused>=0){
             if(wins[focused].id==WIN_TERMINAL&&ch>0&&ch<256){
                 char c=(char)ch;
                 if(c=='\n'||c=='\r'){tinput[tinput_len]=0;if(tinput_len>0)tcmd(tinput);tinput_len=0;tinput[0]=0;}
@@ -1995,6 +2081,14 @@ int main(void){
         }
 
         /* hover updates */
+        sm_hov=-1;
+        if(menu_open){
+            for(int gi=0;gi<sm_filtered_n;gi++){
+                int col=gi%SM_COLS,row=gi/SM_COLS;
+                int gx=SM_GRID_X(col),gy=SM_GRID_Y(row);
+                if(in_box(mouse_x,mouse_y,gx,gy,SM_CELL-16,SM_CELL-16))sm_hov=gi;
+            }
+        }
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
         menu_sel=-1;
