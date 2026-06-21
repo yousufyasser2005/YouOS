@@ -271,6 +271,7 @@ typedef struct {
 static Win wins[MAX_WINDOWS];
 static int win_count=0,focused=-1;
 static int drag_win=-1,drag_ox=0,drag_oy=0;
+static int drag_icon=-1,drag_icon_ox=0,drag_icon_oy=0,drag_icon_sx=0,drag_icon_sy=0;
 static int resize_win=-1,resize_edge=0;
 static int resize_start_x=0,resize_start_y=0;
 static int resize_start_w=0,resize_start_h=0;
@@ -951,6 +952,23 @@ static void draw_stats(int x,int y){
 typedef struct{int x,y;const char*name;u32 color;}Icon;
 static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW},{60,480,"Calc",0x58A6FF}};
 #define N_ICONS 5
+static void resolve_icon_pos(int idx,int ax,int ay,int*oax,int*oay){
+    int pad=8;
+    for(int attempt=0;attempt<20;attempt++){
+        int collided=0;
+        for(int j=0;j<N_ICONS;j++){
+            if(j==idx)continue;
+            int sx=icons[j].x,sy=icons[j].y;
+            if(ax<sx+72+pad&&ax+72+pad>sx&&ay<sy+72+pad&&ay+72+pad>sy){ax=sx+72+pad;collided=1;break;}
+        }
+        if(!collided)break;
+    }
+    if(ax<4)ax=4;
+    if(ax>PANEL_X-68)ax=PANEL_X-68;
+    if(ay<4)ay=4;
+    if(ay>768-TBAR_H-68)ay=768-TBAR_H-68;
+    *oax=ax;*oay=ay;
+}
 static int icon_hovered=-1;
 /* ── circle primitives (icon glyphs) ───────────────────────────── */
 static void circle(int cx,int cy,int r,u32 c){
@@ -1410,11 +1428,12 @@ static void open_notepad(const char*fn){
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
-typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;}CfgBlob;
+typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;int icon_x[N_ICONS];int icon_y[N_ICONS];}CfgBlob;
 #define CFG_MAGIC 0xC0DE5E17U
 static void cfg_save(void){
     CfgBlob b;b.magic=CFG_MAGIC;b.accent=cfg_accent;
     b.h24=(u32)cfg_24h;b.secs=(u32)cfg_showsecs;
+    for(int i=0;i<N_ICONS;i++){b.icon_x[i]=icons[i].x;b.icon_y[i]=icons[i].y;}
     const char*p="/disk/yos.cfg";
     sys_save_file((u64)p,(u64)&b,(u64)sizeof(b));
 }
@@ -1426,6 +1445,7 @@ static void cfg_load(void){
     sys_close(fd);
     if(n!=(u64)sizeof(b)||b.magic!=CFG_MAGIC)return;
     cfg_accent=b.accent;cfg_24h=(int)b.h24;cfg_showsecs=(int)b.secs;
+    for(int i=0;i<N_ICONS;i++){icons[i].x=b.icon_x[i];icons[i].y=b.icon_y[i];}
 }
 static void open_calc(void){
     int i=find_win(WIN_CALC);
@@ -1463,7 +1483,18 @@ int main(void){
         int btn_down=(mouse_btn&1)&&!(prev_btn&1);
         int btn_up  =!(mouse_btn&1)&&(prev_btn&1);
 
-        if(btn_up){drag_win=-1;resize_win=-1;}
+        if(btn_up){
+            if(drag_icon>=0){
+                int ddx2=mouse_x-drag_icon_sx,ddy2=mouse_y-drag_icon_sy;
+                if(ddx2*ddx2+ddy2*ddy2<25){
+                    int di=drag_icon;
+                    if(di==0)open_terminal();else if(di==1)open_files();
+                    else if(di==2)open_about();else if(di==3)open_notepad(0);
+                    else if(di==4)open_calc();
+                }else cfg_save();
+            }
+            drag_icon=-1;drag_win=-1;resize_win=-1;
+        }
 
         /* drag update */
         if(drag_win>=0){
@@ -1475,6 +1506,12 @@ int main(void){
             if(w->y>768-TBAR_H-TITLEBAR_H)w->y=768-TBAR_H-TITLEBAR_H;
         }
 
+        /* icon drag update */
+        if(drag_icon>=0){
+            int nx=mouse_x-drag_icon_ox,ny=mouse_y-drag_icon_oy;
+            int rx,ry;resolve_icon_pos(drag_icon,nx,ny,&rx,&ry);
+            icons[drag_icon].x=rx;icons[drag_icon].y=ry;
+        }
         /* resize update */
         if(resize_win>=0){
             Win*w=&wins[resize_win];
@@ -1880,9 +1917,8 @@ int main(void){
             for(int i=0;i<N_ICONS;i++){
                 Icon*ic=&icons[i];
                 if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)){
-                    if(i==0)open_terminal();else if(i==1)open_files();
-                    else if(i==2)open_about();else if(i==3)open_notepad(0);
-                    else if(i==4)open_calc();
+                    drag_icon=i;drag_icon_ox=mouse_x-ic->x;drag_icon_oy=mouse_y-ic->y;
+                    drag_icon_sx=mouse_x;drag_icon_sy=mouse_y;
                     goto click_done;
                 }
             }
