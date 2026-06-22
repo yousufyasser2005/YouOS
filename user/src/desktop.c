@@ -229,6 +229,19 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_WINBTN_GAP 8
 #define TBAR_CLOCK_X (TBAR_PILL_X+TBAR_PILL_W-80)
 #define TBAR_CLOCK_Y (TBAR_PILL_Y+27)
+#define TBAR_BELL_SZ 36
+#define TBAR_BELL_X (TBAR_CLOCK_X-TBAR_BELL_SZ-16)
+#define TBAR_BELL_Y (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_BELL_SZ)/2)
+#define NOTIF_POPUP_W 320
+#define NOTIF_POPUP_H 80
+#define NOTIF_POPUP_X (1024-NOTIF_POPUP_W-20)
+#define NOTIF_POPUP_Y 20
+#define NC_W 380
+#define NC_H 420
+#define NC_ROW_H 64
+#define NC_MAX_VISIBLE 5
+#define NC_X (TBAR_BELL_X+TBAR_BELL_SZ-NC_W)
+#define NC_Y (TBAR_PILL_Y-NC_H-12)
 #define PANEL_W    240
 #define PANEL_X    (1024-PANEL_W)
 #define TITLEBAR_H 28
@@ -249,6 +262,42 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_CALC     5
 static const int win_glyph_map[6]={0,2,1,3,5,4};
 static int win_glyph_idx(int wid){if(wid<0||wid>5)return 0;return win_glyph_map[wid];}
+#define NOTIF_MAX 20
+#define NOTIF_POPUP_TICKS 500
+static char notif_title[NOTIF_MAX][32];
+static char notif_msg[NOTIF_MAX][64];
+static int notif_count=0;
+static int notif_popup_active=0;
+static u64 notif_popup_expire=0;
+static u64 g_now_ticks=0;
+static int notif_center_open=0;
+static void notif_add(const char*title,const char*msg){
+    if(notif_count>=NOTIF_MAX){
+        for(int i=0;i<NOTIF_MAX-1;i++){
+            int j=0;while(notif_title[i+1][j]){notif_title[i][j]=notif_title[i+1][j];j++;}notif_title[i][j]=0;
+            j=0;while(notif_msg[i+1][j]){notif_msg[i][j]=notif_msg[i+1][j];j++;}notif_msg[i][j]=0;
+        }
+        notif_count=NOTIF_MAX-1;
+    }
+    int j=0;while(title[j]&&j<30){notif_title[notif_count][j]=title[j];j++;}notif_title[notif_count][j]=0;
+    j=0;while(msg[j]&&j<62){notif_msg[notif_count][j]=msg[j];j++;}notif_msg[notif_count][j]=0;
+    notif_count++;
+    notif_popup_active=1;
+    notif_popup_expire=g_now_ticks+NOTIF_POPUP_TICKS;
+}
+static void notif_remove(int idx){
+    if(idx<0||idx>=notif_count)return;
+    for(int i=idx;i<notif_count-1;i++){
+        int j=0;while(notif_title[i+1][j]){notif_title[i][j]=notif_title[i+1][j];j++;}notif_title[i][j]=0;
+        j=0;while(notif_msg[i+1][j]){notif_msg[i][j]=notif_msg[i+1][j];j++;}notif_msg[i][j]=0;
+    }
+    notif_count--;
+}
+static void draw_bell_glyph(int cx,int cy,u32 fg){
+    rect(cx-7,cy-8,14,12,fg);
+    rect(cx-9,cy+4,18,3,fg);
+    rect(cx-2,cy+9,4,3,fg);
+}
 
 typedef struct {
     int id,x,y,w,h,visible,minimized,z;
@@ -1094,6 +1143,53 @@ static void draw_menu(void){
 }
 
 /* ═══ TASKBAR ═══════════════════════════════════════════════════ */
+static void draw_notif_popup(void){
+    if(!notif_popup_active||notif_count==0)return;
+    int idx=notif_count-1;
+    int x=NOTIF_POPUP_X,y=NOTIF_POPUP_Y;
+    rect_round_alpha(x+3,y+3,NOTIF_POPUP_W,NOTIF_POPUP_H,14,0x000000,90);
+    rect_round_alpha(x,y,NOTIF_POPUP_W,NOTIF_POPUP_H,14,PANEL_BG,215);
+    outline_round(x,y,NOTIF_POPUP_W,NOTIF_POPUP_H,14,cfg_accent);
+    draw_bell_glyph(x+26,y+28,cfg_accent);
+    text_bold(x+50,y+14,notif_title[idx],TEXT,PANEL_BG);
+    text(x+50,y+34,notif_msg[idx],DIM,PANEL_BG);
+    int cbx=x+NOTIF_POPUP_W-24,cby=y+8;
+    int hovc=in_box(mouse_x,mouse_y,cbx,cby,16,16);
+    rect_round(cbx,cby,16,16,6,hovc?0x21262D:PANEL_BG);
+    text(cbx+5,cby+2,"x",hovc?TEXT:DIM,hovc?0x21262D:PANEL_BG);
+}
+static void draw_notif_center(void){
+    if(!notif_center_open)return;
+    int x=NC_X,y=NC_Y;
+    rect_round_alpha(x+3,y+3,NC_W,NC_H,16,0x000000,90);
+    rect_round_alpha(x,y,NC_W,NC_H,16,PANEL_BG,215);
+    outline_round(x,y,NC_W,NC_H,16,BORDER);
+    text_bold(x+20,y+16,"Notifications",TEXT,PANEL_BG);
+    int hovclear=in_box(mouse_x,mouse_y,x+NC_W-92,y+14,72,26);
+    rect_round(x+NC_W-92,y+14,72,26,8,hovclear?0x3A1212:0x161B22);
+    outline_round(x+NC_W-92,y+14,72,26,8,hovclear?RED:BORDER);
+    text_center(x+NC_W-56,y+21,"Clear",hovclear?RED:TEXT,hovclear?0x3A1212:0x161B22);
+    hline(x+20,y+48,NC_W-40,0x21262D);
+    if(notif_count==0){
+        text_center(x+NC_W/2,y+NC_H/2,"No notifications",DIM,PANEL_BG);
+        return;
+    }
+    int visible=notif_count<NC_MAX_VISIBLE?notif_count:NC_MAX_VISIBLE;
+    for(int row=0;row<visible;row++){
+        int idx=notif_count-1-row;
+        int ry=y+56+row*NC_ROW_H;
+        int hovrow=in_box(mouse_x,mouse_y,x+12,ry,NC_W-24,NC_ROW_H-8);
+        rect_round(x+12,ry,NC_W-24,NC_ROW_H-8,10,hovrow?0x21262D:0x161B22);
+        outline_round(x+12,ry,NC_W-24,NC_ROW_H-8,10,BORDER);
+        draw_bell_glyph(x+34,ry+28,cfg_accent);
+        text_bold(x+56,ry+10,notif_title[idx],TEXT,hovrow?0x21262D:0x161B22);
+        text(x+56,ry+30,notif_msg[idx],DIM,hovrow?0x21262D:0x161B22);
+        int rbx=x+NC_W-44,rby=ry+(NC_ROW_H-8)/2-8;
+        int hovr=in_box(mouse_x,mouse_y,rbx,rby,16,16);
+        rect_round(rbx,rby,16,16,6,hovr?0x3A1212:(hovrow?0x21262D:0x161B22));
+        text(rbx+5,rby+2,"x",hovr?RED:DIM,hovr?0x3A1212:(hovrow?0x21262D:0x161B22));
+    }
+}
 static void draw_taskbar(u64 secs){
     int hs=in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ);
     rect_round_alpha(TBAR_PILL_X+3,TBAR_PILL_Y+3,TBAR_PILL_W,TBAR_PILL_H,16,0x000000,90);
@@ -1114,6 +1210,15 @@ static void draw_taskbar(u64 secs){
         if(slen(wins[i].title)>6){ts[5]='.';ts[6]='.';k=7;}ts[k]=0;
         draw_icon_glyph(win_glyph_idx(wins[i].id),bx+TBAR_WINBTN_W/2,TBAR_PILL_Y+TBAR_PILL_H/2,foc?TEXT:DIM,bbg);
         bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
+    }
+    int hovbell=in_box(mouse_x,mouse_y,TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ);
+    rect_round(TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ,10,notif_center_open?ACCENT:(hovbell?0x2D333B:0x21262D));
+    outline_round(TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ,10,notif_center_open?0x79C0FF:BORDER);
+    draw_bell_glyph(TBAR_BELL_X+TBAR_BELL_SZ/2,TBAR_BELL_Y+TBAR_BELL_SZ/2,notif_center_open?BG:TEXT);
+    if(notif_count>0){
+        rect_round(TBAR_BELL_X+TBAR_BELL_SZ-12,TBAR_BELL_Y-4,16,16,8,RED);
+        char nc2[3];nc2[0]=notif_count<10?('0'+notif_count):'9';nc2[1]=notif_count<10?0:'+';nc2[2]=0;
+        text(TBAR_BELL_X+TBAR_BELL_SZ-9,TBAR_BELL_Y-3,nc2,TEXT,RED);
     }
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
     char clk[9];clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
@@ -1169,6 +1274,7 @@ static void cfg_set_accent(u32 c){
     cfg_accent=c;
     for(int i=0;i<win_count;i++)if(wins[i].id==WIN_TERMINAL)wins[i].accent=c;
     cfg_save();
+    notif_add("Settings","Accent color updated");
 }
 static void draw_settings_content(int wi){
     Win*w=&wins[wi];int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
@@ -1535,6 +1641,7 @@ int main(void){
 
     while(1){
         u64 ticks=sys_ticks();
+        g_now_ticks=ticks;
         u64 secs=ticks/100;
 
         /* mouse */
@@ -1644,6 +1751,29 @@ int main(void){
         }
         /* click handling */
         if(btn_down&&drag_win<0&&resize_win<0){
+            if(notif_popup_active&&notif_count>0){
+                int px3=NOTIF_POPUP_X,py3=NOTIF_POPUP_Y;
+                int cbx2=px3+NOTIF_POPUP_W-24,cby2=py3+8;
+                if(in_box(mouse_x,mouse_y,cbx2,cby2,16,16)){notif_popup_active=0;goto click_done;}
+            }
+            if(in_box(mouse_x,mouse_y,TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ)){
+                notif_center_open=!notif_center_open;
+                goto click_done;
+            }
+            if(notif_center_open){
+                int ncx=NC_X,ncy=NC_Y;
+                int inside_nc=in_box(mouse_x,mouse_y,ncx,ncy,NC_W,NC_H);
+                if(in_box(mouse_x,mouse_y,ncx+NC_W-92,ncy+14,72,26)){notif_count=0;goto click_done;}
+                int visible2=notif_count<NC_MAX_VISIBLE?notif_count:NC_MAX_VISIBLE;
+                for(int row=0;row<visible2;row++){
+                    int idx2=notif_count-1-row;
+                    int ry2=ncy+56+row*NC_ROW_H;
+                    int rbx2=ncx+NC_W-44,rby2=ry2+(NC_ROW_H-8)/2-8;
+                    if(in_box(mouse_x,mouse_y,rbx2,rby2,16,16)){notif_remove(idx2);goto click_done;}
+                }
+                if(inside_nc)goto click_done;
+                notif_center_open=0;
+            }
             if(menu_open){
                 int inside_panel=in_box(mouse_x,mouse_y,SM_X,SM_Y,SM_W,SM_H);
                 for(int gi=0;gi<sm_filtered_n;gi++){
@@ -2073,6 +2203,7 @@ int main(void){
         }
 
         /* hover updates */
+        if(notif_popup_active&&g_now_ticks>=notif_popup_expire)notif_popup_active=0;
         sm_hov=-1;
         if(menu_open){
             for(int gi=0;gi<sm_filtered_n;gi++){
@@ -2161,7 +2292,7 @@ int main(void){
             else if(wins[i].id==WIN_CALC)draw_calc_content(i);
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
         }
-        draw_taskbar(secs);draw_menu();draw_rctx();draw_cursor(mouse_x,mouse_y);
+        draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();draw_cursor(mouse_x,mouse_y);
         flush();sys_yield();
     }
     return 0;
