@@ -1701,11 +1701,86 @@ static void sha256_self_test(void){
         }
     }
 }
+/* ═══ HMAC-SHA256 / PBKDF2-HMAC-SHA256 ═════════════════════════ */
+static void hmac_sha256(const u8*key,u64 keylen,const u8*msg,u64 msglen,u8 out[32]){
+    u8 k[64];
+    if(keylen>64){
+        u8 kh[32];sha256(key,keylen,kh);
+        for(int i=0;i<32;i++)k[i]=kh[i];
+        for(int i=32;i<64;i++)k[i]=0;
+    } else {
+        for(u64 i=0;i<keylen;i++)k[i]=key[i];
+        for(u64 i=keylen;i<64;i++)k[i]=0;
+    }
+    u8 ipad[64],opad[64];
+    for(int i=0;i<64;i++){ipad[i]=(u8)(k[i]^0x36);opad[i]=(u8)(k[i]^0x5c);}
+    Sha256Ctx c;
+    sha256_init(&c);sha256_update(&c,ipad,64);sha256_update(&c,msg,msglen);
+    u8 inner[32];sha256_final(&c,inner);
+    sha256_init(&c);sha256_update(&c,opad,64);sha256_update(&c,inner,32);
+    sha256_final(&c,out);
+}
+static void pbkdf2_hmac_sha256(const u8*pass,u64 passlen,const u8*salt,u64 saltlen,u32 iterations,u8 out[32]){
+    u8 buf[68];
+    if(saltlen>64)saltlen=64;
+    for(u64 i=0;i<saltlen;i++)buf[i]=salt[i];
+    buf[saltlen]=0;buf[saltlen+1]=0;buf[saltlen+2]=0;buf[saltlen+3]=1;
+    u8 u[32],t[32];
+    hmac_sha256(pass,passlen,buf,saltlen+4,u);
+    for(int i=0;i<32;i++)t[i]=u[i];
+    for(u32 iter=1;iter<iterations;iter++){
+        u8 unext[32];
+        hmac_sha256(pass,passlen,u,32,unext);
+        for(int i=0;i<32;i++){t[i]^=unext[i];u[i]=unext[i];}
+    }
+    for(int i=0;i<32;i++)out[i]=t[i];
+}
+static void hmac_sha256_self_test(void){
+    u8 key[20];for(int i=0;i<20;i++)key[i]=0x0b;
+    const u8 data[8]={'H','i',' ','T','h','e','r','e'};
+    u8 out[32];
+    hmac_sha256(key,20,data,8,out);
+    static const u8 expect[32]={
+        0xb0,0x34,0x4c,0x61,0xd8,0xdb,0x38,0x53,0x5c,0xa8,0xaf,0xce,0xaf,0x0b,0xf1,0x2b,
+        0x88,0x1d,0xc2,0x00,0xc9,0x83,0x3d,0xa7,0x26,0xe9,0x37,0x6c,0x2e,0x32,0xcf,0xf7};
+    for(int i=0;i<32;i++){
+        if(out[i]!=expect[i]){
+            rect(0,0,1024,768,0x800000);
+            text(40,40,"HMAC-SHA256 SELF-TEST FAILED",0xFFFFFF,0x800000);
+            text(40,60,"Refusing to start - crypto is broken.",0xFFFFFF,0x800000);
+            flush();
+            while(1);
+        }
+    }
+}
+static void pbkdf2_self_test(void){
+    const u8 pass[8]={'p','a','s','s','w','o','r','d'};
+    const u8 salt[4]={'s','a','l','t'};
+    u8 saltint[8];for(int i=0;i<4;i++)saltint[i]=salt[i];
+    saltint[4]=0;saltint[5]=0;saltint[6]=0;saltint[7]=1;
+    u8 u1[32],u2[32],expect2[32];
+    hmac_sha256(pass,8,saltint,8,u1);
+    hmac_sha256(pass,8,u1,32,u2);
+    for(int i=0;i<32;i++)expect2[i]=(u8)(u1[i]^u2[i]);
+    u8 out1[32],out2[32];
+    pbkdf2_hmac_sha256(pass,8,salt,4,1,out1);
+    pbkdf2_hmac_sha256(pass,8,salt,4,2,out2);
+    int ok=1;
+    for(int i=0;i<32;i++){if(out1[i]!=u1[i])ok=0;if(out2[i]!=expect2[i])ok=0;}
+    if(!ok){
+        rect(0,0,1024,768,0x800000);
+        text(40,40,"PBKDF2 SELF-TEST FAILED",0xFFFFFF,0x800000);
+        text(40,60,"Refusing to start - crypto is broken.",0xFFFFFF,0x800000);
+        flush();
+        while(1);
+    }
+}
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
     sha256_self_test();
+    hmac_sha256_self_test();pbkdf2_self_test();
     cfg_load();
     open_terminal();
     tprint("YouOS Desktop v0.3");
