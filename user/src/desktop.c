@@ -1775,12 +1775,143 @@ static void pbkdf2_self_test(void){
         while(1);
     }
 }
+/* ═══ Auth: entropy, recovery codes, AuthBlob storage ══════════ */
+#define AUTH_MAGIC 0xA0741CADU
+#define AUTH_PBKDF2_ITERS 10000
+#define AUTH_PATH "/disk/auth.dat"
+static u32 auth_entropy_counter=0;
+static void auth_random_bytes(u8*out,int len){
+    int filled=0;
+    while(filled<len){
+        unsigned long long mstate[3];sys_mouseread(mstate);
+        u64 t=sys_ticks();
+        auth_entropy_counter++;
+        u8 seed[24];
+        for(int i=0;i<8;i++)seed[i]=(u8)(t>>(56-8*i));
+        seed[8]=(u8)(mstate[0]>>8);seed[9]=(u8)mstate[0];
+        seed[10]=(u8)(mstate[1]>>8);seed[11]=(u8)mstate[1];
+        seed[12]=(u8)mstate[2];
+        seed[13]=(u8)(auth_entropy_counter>>24);seed[14]=(u8)(auth_entropy_counter>>16);
+        seed[15]=(u8)(auth_entropy_counter>>8);seed[16]=(u8)auth_entropy_counter;
+        seed[17]=(u8)filled;
+        seed[18]=0;seed[19]=0;seed[20]=0;seed[21]=0;seed[22]=0;seed[23]=0;
+        u8 h[32];sha256(seed,24,h);
+        int n=len-filled;if(n>32)n=32;
+        for(int i=0;i<n;i++)out[filled+i]=h[i];
+        filled+=n;
+    }
+}
+static const char auth_hexd[]="0123456789ABCDEF";
+static void auth_make_recovery_code(char out[20]){
+    u8 r[8];auth_random_bytes(r,8);
+    int p=0;
+    for(int i=0;i<8;i++){
+        out[p++]=auth_hexd[(r[i]>>4)&0xF];
+        out[p++]=auth_hexd[r[i]&0xF];
+        if(i%2==1&&i!=7)out[p++]='-';
+    }
+    out[p]=0;
+}
+static void auth_normalize_code(const char*in,char*out,int outsize){
+    int j=0;
+    for(int i=0;in[i]&&j<outsize-1;i++){
+        char c=in[i];
+        if(c>='a'&&c<='z')c=(char)(c-'a'+'A');
+        if((c>='0'&&c<='9')||(c>='A'&&c<='F'))out[j++]=c;
+    }
+    out[j]=0;
+}
+static void auth_copy_str(char*dst,int dstsize,const char*src){
+    int i=0;while(src[i]&&i<dstsize-1){dst[i]=src[i];i++;}dst[i]=0;
+}
+typedef struct{
+    u32 magic;
+    char username[32];
+    u8 pass_salt[16];
+    u8 pass_hash[32];
+    u8 rec_salt[16];
+    u8 rec_hash[32];
+}AuthBlob;
+static int auth_load(const char*path,AuthBlob*b){
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0)return 0;
+    u64 n=sys_fread(fd,b,sizeof(AuthBlob));
+    sys_close(fd);
+    if(n!=(u64)sizeof(AuthBlob)||b->magic!=AUTH_MAGIC)return 0;
+    return 1;
+}
+static void auth_save(const char*path,AuthBlob*b){
+    b->magic=AUTH_MAGIC;
+    sys_save_file((u64)path,(u64)b,(u64)sizeof(AuthBlob));
+}
+static int auth_exists(const char*path){
+    AuthBlob b;return auth_load(path,&b);
+}
+static int auth_create_account(const char*path,const char*username,const char*password,char recovery_out[20]){
+    AuthBlob b;
+    auth_copy_str(b.username,32,username);
+    auth_random_bytes(b.pass_salt,16);
+    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+    auth_make_recovery_code(recovery_out);
+    char norm[20];auth_normalize_code(recovery_out,norm,20);
+    auth_random_bytes(b.rec_salt,16);
+    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+    auth_save(path,&b);
+    return 1;
+}
+static int auth_verify_password(const char*path,const char*password){
+    AuthBlob b;
+    if(!auth_load(path,&b))return 0;
+    u8 h[32];
+    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
+    for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])return 0;
+    return 1;
+}
+static int auth_reset_password(const char*path,const char*old_recovery_code,const char*new_password,char new_recovery_out[20]){
+    AuthBlob b;
+    if(!auth_load(path,&b))return 0;
+    char norm[20];auth_normalize_code(old_recovery_code,norm,20);
+    u8 h[32];
+    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
+    int match=1;
+    for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
+    if(!match)return 0;
+    auth_random_bytes(b.pass_salt,16);
+    pbkdf2_hmac_sha256((const u8*)new_password,(u64)slen(new_password),b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+    auth_make_recovery_code(new_recovery_out);
+    char norm2[20];auth_normalize_code(new_recovery_out,norm2,20);
+    auth_random_bytes(b.rec_salt,16);
+    pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+    auth_save(path,&b);
+    return 1;
+}
+static void auth_self_test(void){
+    const char*tp="/disk/atest.tmp";
+    sys_unlink(tp);
+    char rec1[20],rec2[20];
+    int fail=0;
+    if(!auth_create_account(tp,"tester","correct_password",rec1))fail=1;
+    if(!fail&&!auth_verify_password(tp,"correct_password"))fail=1;
+    if(!fail&&auth_verify_password(tp,"wrong_password"))fail=1;
+    if(!fail&&!auth_reset_password(tp,rec1,"new_password",rec2))fail=1;
+    if(!fail&&!auth_verify_password(tp,"new_password"))fail=1;
+    if(!fail&&auth_verify_password(tp,"correct_password"))fail=1;
+    if(!fail&&auth_reset_password(tp,rec1,"another_password",rec2))fail=1;
+    sys_unlink(tp);
+    if(fail){
+        rect(0,0,1024,768,0x800000);
+        text(40,40,"AUTH LOGIC SELF-TEST FAILED",0xFFFFFF,0x800000);
+        text(40,60,"Refusing to start - account system is broken.",0xFFFFFF,0x800000);
+        flush();
+        while(1);
+    }
+}
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
     sha256_self_test();
-    hmac_sha256_self_test();pbkdf2_self_test();
+    hmac_sha256_self_test();pbkdf2_self_test();auth_self_test();
     cfg_load();
     open_terminal();
     tprint("YouOS Desktop v0.3");
