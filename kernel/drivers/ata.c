@@ -72,7 +72,12 @@ int ata_init(void) {
     ata_delay();
 
     /* Check if drive exists */
-    uint8_t status = inb(ATA_PRIMARY_STATUS);
+    uint8_t status = 0;
+    for (int i = 0; i < 1000; i++) {
+        status = inb(ATA_PRIMARY_STATUS);
+        if (status != 0) break;
+        ata_delay();
+    }
     if (status == 0) {
         vga_puts_color("  [!!] ATA: no drive detected\n", VGA_LIGHT_RED, VGA_BLACK);
         return 0;

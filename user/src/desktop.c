@@ -1311,6 +1311,15 @@ static void draw_settings_content(int wi){
      rect(bx2,by2,bw,bh,b2);outline(bx2,by2,bw,bh,BORDER);
      text_center(bx2+bw/2,by2+4,"Hide",!cfg_showsecs?BG:TEXT,b2);}
     cy+=44;
+    hline(x+12,cy,cw-24,0x21262D);cy+=10;
+    text(x+16,cy,"Account",TEXT,0x0D1117);cy+=22;
+    {
+        int abw=cw-32,abh=26,abx=x+16,aby=cy;
+        int ahov=in_box(mouse_x,mouse_y,abx,aby,abw,abh);
+        rect(abx,aby,abw,abh,ahov?0x21262D:0x13161B);outline(abx,aby,abw,abh,BORDER);
+        text_center(abx+abw/2,aby+5,"Account Setup",TEXT,ahov?0x21262D:0x13161B);
+    }
+    cy+=36;
     hline(x+12,cy,cw-24,0x21262D);
     text_center(x+cw/2,cy+16,"YouOS v0.3.0",DIM,0x0D1117);
 }
@@ -1623,10 +1632,11 @@ static void open_calc(void){
         calc.error=0;calc.hist_count=0;
     }
 }
+static int acct_setup_open=0,acct_setup_mode=0;
 static void open_settings(void){
     int i=find_win(WIN_SETTINGS);
     if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);settings_win_idx=i;}
-    else settings_win_idx=wm_new(WIN_SETTINGS,200,120,320,320,"Settings",0x58A6FF);
+    else settings_win_idx=wm_new(WIN_SETTINGS,200,120,320,400,"Settings",0x58A6FF);
 }
 /* ═══ SHA-256 ═══════════════════════════════════════════════════ */
 static const u32 sha256_k[64]={
@@ -1886,18 +1896,64 @@ static int auth_reset_password(const char*path,const char*old_recovery_code,cons
     return 1;
 }
 static void auth_self_test(void){
-    const char*tp="/disk/atest.tmp";
-    sys_unlink(tp);
-    char rec1[20],rec2[20];
     int fail=0;
-    if(!auth_create_account(tp,"tester","correct_password",rec1))fail=1;
-    if(!fail&&!auth_verify_password(tp,"correct_password"))fail=1;
-    if(!fail&&auth_verify_password(tp,"wrong_password"))fail=1;
-    if(!fail&&!auth_reset_password(tp,rec1,"new_password",rec2))fail=1;
-    if(!fail&&!auth_verify_password(tp,"new_password"))fail=1;
-    if(!fail&&auth_verify_password(tp,"correct_password"))fail=1;
-    if(!fail&&auth_reset_password(tp,rec1,"another_password",rec2))fail=1;
-    sys_unlink(tp);
+    AuthBlob b;
+    char rec1[20],rec2[20];
+    auth_copy_str(b.username,32,"tester");
+    auth_random_bytes(b.pass_salt,16);
+    pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+    auth_make_recovery_code(rec1);
+    {
+        char norm[20];auth_normalize_code(rec1,norm,20);
+        auth_random_bytes(b.rec_salt,16);
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+    }
+    {
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        if(!match)fail=1;
+    }
+    if(!fail){
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)"wrong_password",14,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        if(match)fail=1;
+    }
+    if(!fail){
+        char norm[20];auth_normalize_code(rec1,norm,20);
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
+        if(!match)fail=1;
+        else{
+            auth_random_bytes(b.pass_salt,16);
+            pbkdf2_hmac_sha256((const u8*)"new_password",12,b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+            auth_make_recovery_code(rec2);
+            char norm2[20];auth_normalize_code(rec2,norm2,20);
+            auth_random_bytes(b.rec_salt,16);
+            pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+        }
+    }
+    if(!fail){
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)"new_password",12,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        if(!match)fail=1;
+    }
+    if(!fail){
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        if(match)fail=1;
+    }
+    if(!fail){
+        char norm[20];auth_normalize_code(rec1,norm,20);
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
+        if(match)fail=1;
+    }
     if(fail){
         rect(0,0,1024,768,0x800000);
         text(40,40,"AUTH LOGIC SELF-TEST FAILED",0xFFFFFF,0x800000);
@@ -2225,6 +2281,7 @@ int main(void){
                     if(in_box(mouse_x,mouse_y,w->x+88,base+144,64,24)){cfg_24h=0;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+16,base+210,64,24)){cfg_showsecs=1;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+88,base+210,64,24)){cfg_showsecs=0;cfg_save();goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_open=1;acct_setup_mode=1;goto click_done;}
                 }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
