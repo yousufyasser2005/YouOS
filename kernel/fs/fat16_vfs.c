@@ -39,6 +39,15 @@ static uint64_t fat16_vfs_write(vfs_node_t* node, uint64_t offset,
     return (n < 0) ? 0 : (uint64_t)n;
 }
 
+static void fat16_vfs_close(vfs_node_t* node)
+{
+    fat16_file_data_t* d = (fat16_file_data_t*)node->fs_data;
+    if (!d) return;
+    fat16_close(d->fat_fd);
+    kfree(d);
+    node->fs_data = 0;
+}
+
 /* ── VFS operations for the /disk directory node ────────────── */
 static vfs_node_t* fat16_vfs_finddir(vfs_node_t* dir, const char* name)
 {
@@ -66,6 +75,7 @@ static vfs_node_t* fat16_vfs_finddir(vfs_node_t* dir, const char* name)
     node->read    = fat16_vfs_read;
     node->write   = fat16_vfs_write;
     node->finddir = 0;
+    node->close   = fat16_vfs_close;
 
     fat16_file_data_t* d = (fat16_file_data_t*)kzalloc(sizeof(fat16_file_data_t));
     if (!d) { kfree(node); fat16_close(fd); return 0; }
@@ -91,6 +101,7 @@ vfs_node_t* fat16_vfs_mount(void)
     disk_node.read    = 0;
     disk_node.write   = 0;
     disk_node.finddir = fat16_vfs_finddir;
+    disk_node.close   = 0;
     disk_node.fs_data = 0;
     disk_node.next    = 0;
     return &disk_node;

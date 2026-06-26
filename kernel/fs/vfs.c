@@ -1,5 +1,6 @@
 #include <kernel/vfs.h>
 #include <kernel/vga.h>
+#include <kernel/heap.h>
 
 static vfs_node_t* vfs_root = 0;
 static vfs_fd_t    fd_table[MAX_OPEN_FILES];
@@ -60,7 +61,12 @@ int vfs_open(const char* path, int flags) {
 
 int vfs_close(int fd) {
     if (fd < 0 || fd >= MAX_OPEN_FILES || !fd_table[fd].used) return -1;
+    vfs_node_t* node = fd_table[fd].node;
     fd_table[fd].used = 0;
+    if (node && node->close) {
+        node->close(node);
+        kfree(node);
+    }
     return 0;
 }
 

@@ -31,6 +31,7 @@ struct vfs_node {
     uint64_t (*read) (vfs_node_t* node, uint64_t offset, uint64_t size, uint8_t* buf);
     uint64_t (*write)(vfs_node_t* node, uint64_t offset, uint64_t size, const uint8_t* buf);
     vfs_node_t* (*finddir)(vfs_node_t* node, const char* name);
+    void (*close)(vfs_node_t* node);
 
     /* Filesystem-private data */
     void*       fs_data;

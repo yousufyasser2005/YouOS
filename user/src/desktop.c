@@ -1129,17 +1129,21 @@ static void draw_menu(void){
         text(gx+((SM_CELL-16)-nlen*8)/2,gy+76,menu_items[idx],TEXT,bg);
     }
     if(sm_filtered_n==0)text_center(sx+SM_W/2,sy+200,"No results",DIM,PANEL_BG);
-    int pry=sy+SM_H-56,pbw=(SM_W-40-16)/3;
-    int rb_x=sx+20,sd_x=rb_x+pbw+8,lo_x=sd_x+pbw+8;
+    int pry=sy+SM_H-56,pbw=(SM_W-40-24)/4;
+    int rb_x=sx+20,sd_x=rb_x+pbw+8,lk_x=sd_x+pbw+8,lo_x=lk_x+pbw+8;
     hline(sx+20,pry-8,SM_W-40,0x21262D);
     int hov_r=in_box(mouse_x,mouse_y,rb_x,pry,pbw,40);
     int hov_s=in_box(mouse_x,mouse_y,sd_x,pry,pbw,40);
+    int hov_lk=in_box(mouse_x,mouse_y,lk_x,pry,pbw,40);
+    int hov_lo=in_box(mouse_x,mouse_y,lo_x,pry,pbw,40);
     rect_round(rb_x,pry,pbw,40,10,hov_r?0x21262D:0x161B22);outline_round(rb_x,pry,pbw,40,10,BORDER);
     text_center(rb_x+pbw/2,pry+13,"Restart",TEXT,hov_r?0x21262D:0x161B22);
     rect_round(sd_x,pry,pbw,40,10,hov_s?0x3A1212:0x161B22);outline_round(sd_x,pry,pbw,40,10,hov_s?RED:BORDER);
     text_center(sd_x+pbw/2,pry+13,"Shutdown",hov_s?RED:TEXT,hov_s?0x3A1212:0x161B22);
-    rect_round(lo_x,pry,pbw,40,10,0x161B22);outline_round(lo_x,pry,pbw,40,10,BORDER);
-    text_center(lo_x+pbw/2,pry+13,"Logout",DIM,0x161B22);
+    rect_round(lk_x,pry,pbw,40,10,hov_lk?0x21262D:0x161B22);outline_round(lk_x,pry,pbw,40,10,BORDER);
+    text_center(lk_x+pbw/2,pry+13,"Lock",TEXT,hov_lk?0x21262D:0x161B22);
+    rect_round(lo_x,pry,pbw,40,10,hov_lo?0x21262D:0x161B22);outline_round(lo_x,pry,pbw,40,10,BORDER);
+    text_center(lo_x+pbw/2,pry+13,"Logout",TEXT,hov_lo?0x21262D:0x161B22);
 }
 
 /* ═══ TASKBAR ═══════════════════════════════════════════════════ */
@@ -1962,6 +1966,216 @@ static void auth_self_test(void){
         while(1);
     }
 }
+/* ═══ Account setup UI ═════════════════════════════════════════ */
+#define ACCT_W 420
+#define ACCT_H 420
+#define ACCT_X ((1024-ACCT_W)/2)
+#define ACCT_Y ((768-ACCT_H)/2)
+static void text_input_key(char*buf,int*len,int maxlen,s64 ch){
+    if(ch<=0||ch>=256)return;
+    char c=(char)ch;
+    if((c=='\b'||c==127)&&*len>0){buf[--(*len)]=0;}
+    else if(c>=32&&c<127&&*len<maxlen-1){buf[(*len)++]=c;buf[*len]=0;}
+}
+static void draw_masked(int x,int y,int len,u32 fg,u32 bg){
+    char mask[48];int n=len;if(n>46)n=46;
+    for(int i=0;i<n;i++)mask[i]='*';mask[n]=0;
+    text(x,y,mask,fg,bg);
+}
+static int auth_str_eq(const char*a,const char*b){
+    int i=0;while(a[i]&&b[i]){if(a[i]!=b[i])return 0;i++;}
+    return a[i]==b[i];
+}
+static int acct_focus=0,acct_screen=0,acct_ack_checked=0;
+static char acct_user_buf[32];static int acct_user_len=0;
+static char acct_pass_buf[48];static int acct_pass_len=0;
+static char acct_pass2_buf[48];static int acct_pass2_len=0;
+static char acct_err_buf[64];
+static char acct_recovery_code[20];
+static void acct_reset_state(void){
+    acct_user_len=0;acct_user_buf[0]=0;
+    acct_pass_len=0;acct_pass_buf[0]=0;
+    acct_pass2_len=0;acct_pass2_buf[0]=0;
+    acct_err_buf[0]=0;
+    acct_screen=0;acct_ack_checked=0;acct_focus=0;
+}
+static int acct_setup_run(int is_first_boot){
+    acct_reset_state();
+    int done=0,success=0;
+    while(!done){
+        unsigned long long mstate[3];sys_mouseread(mstate);
+        int mx=(int)mstate[0],my=(int)mstate[1],mb=(int)mstate[2];
+        static int prev_mb=0;
+        int click=(mb&1)&&!(prev_mb&1);
+        s64 ch=sys_keypoll();
+
+        if(acct_screen==0){
+            int fldx=ACCT_X+24,fldw=ACCT_W-48,fldh=30;
+            int fld0y=ACCT_Y+90,fld1y=ACCT_Y+154,fld2y=ACCT_Y+218;
+            if(click){
+                if(in_box(mx,my,fldx,fld0y,fldw,fldh))acct_focus=0;
+                else if(in_box(mx,my,fldx,fld1y,fldw,fldh))acct_focus=1;
+                else if(in_box(mx,my,fldx,fld2y,fldw,fldh))acct_focus=2;
+            }
+            if(ch==9||ch==1002){acct_focus=(acct_focus+1)%3;}
+            else if(ch==1001){acct_focus=(acct_focus+2)%3;}
+            else if(acct_focus==0)text_input_key(acct_user_buf,&acct_user_len,32,ch);
+            else if(acct_focus==1)text_input_key(acct_pass_buf,&acct_pass_len,48,ch);
+            else if(acct_focus==2)text_input_key(acct_pass2_buf,&acct_pass2_len,48,ch);
+            if(ch=='\n'||ch=='\r'){
+                if(acct_user_len==0){auth_copy_str(acct_err_buf,64,"Username required");acct_focus=0;}
+                else if(acct_pass_len<4){auth_copy_str(acct_err_buf,64,"Password must be at least 4 characters");acct_focus=1;}
+                else if(!auth_str_eq(acct_pass_buf,acct_pass2_buf)){auth_copy_str(acct_err_buf,64,"Passwords do not match");acct_focus=2;}
+                else{
+                    auth_create_account(AUTH_PATH,acct_user_buf,acct_pass_buf,acct_recovery_code);
+                    acct_err_buf[0]=0;acct_screen=1;
+                }
+            }
+        }else if(acct_screen==1){
+            if(click){
+                int cbx=ACCT_X+24,cby=ACCT_Y+ACCT_H-96;
+                if(in_box(mx,my,cbx,cby,18,18))acct_ack_checked=!acct_ack_checked;
+                int bbx=ACCT_X+24,bby=ACCT_Y+ACCT_H-56,bbw=ACCT_W-48,bbh=32;
+                if(acct_ack_checked&&in_box(mx,my,bbx,bby,bbw,bbh)){acct_screen=2;}
+            }
+        }else if(acct_screen==2){
+            if(click){
+                int bbx=ACCT_X+ACCT_W/2-60,bby=ACCT_Y+ACCT_H-56,bbw=120,bbh=32;
+                if(in_box(mx,my,bbx,bby,bbw,bbh)){done=1;success=1;}
+            }
+        }
+
+        if(!is_first_boot&&click){
+            int cx=ACCT_X+ACCT_W-26,cy=ACCT_Y+10;
+            if(in_box(mx,my,cx,cy,16,16)){done=1;success=0;}
+        }
+
+        prev_mb=mb;
+
+        rect(0,0,1024,768,BG);
+        rect_round_alpha(ACCT_X+3,ACCT_Y+3,ACCT_W,ACCT_H,16,0x000000,90);
+        rect_round_alpha(ACCT_X,ACCT_Y,ACCT_W,ACCT_H,16,PANEL_BG,225);
+        outline_round(ACCT_X,ACCT_Y,ACCT_W,ACCT_H,16,BORDER);
+        text_bold(ACCT_X+24,ACCT_Y+20,"Account Setup",TEXT,PANEL_BG);
+        if(!is_first_boot){
+            int cx=ACCT_X+ACCT_W-26,cy=ACCT_Y+10;
+            int chov=in_box(mx,my,cx,cy,16,16);
+            rect_round(cx,cy,16,16,6,chov?0x21262D:PANEL_BG);
+            text(cx+5,cy+2,"x",chov?TEXT:DIM,chov?0x21262D:PANEL_BG);
+        }
+        hline(ACCT_X+24,ACCT_Y+48,ACCT_W-48,0x21262D);
+
+        if(acct_screen==0){
+            int fy=ACCT_Y+72;
+            text(ACCT_X+24,fy,"Username",DIM,PANEL_BG);fy+=18;
+            {int fbx=ACCT_X+24,fby=fy,fbw=ACCT_W-48,fbh=30;
+             rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,acct_focus==0?cfg_accent:BORDER);
+             text(fbx+10,fby+8,acct_user_buf,TEXT,0x0D1117);}
+            fy+=46;
+            text(ACCT_X+24,fy,"Password",DIM,PANEL_BG);fy+=18;
+            {int fbx=ACCT_X+24,fby=fy,fbw=ACCT_W-48,fbh=30;
+             rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,acct_focus==1?cfg_accent:BORDER);
+             draw_masked(fbx+10,fby+8,acct_pass_len,TEXT,0x0D1117);}
+            fy+=46;
+            text(ACCT_X+24,fy,"Confirm Password",DIM,PANEL_BG);fy+=18;
+            {int fbx=ACCT_X+24,fby=fy,fbw=ACCT_W-48,fbh=30;
+             rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,acct_focus==2?cfg_accent:BORDER);
+             draw_masked(fbx+10,fby+8,acct_pass2_len,TEXT,0x0D1117);}
+            fy+=44;
+            if(acct_err_buf[0])text(ACCT_X+24,fy,acct_err_buf,RED,PANEL_BG);
+            fy+=30;
+            text(ACCT_X+24,fy,"Tab to switch fields, Enter to continue",DIM,PANEL_BG);
+        }else if(acct_screen==1){
+            int fy=ACCT_Y+68;
+            text(ACCT_X+24,fy,"Your recovery code - save it now.",TEXT,PANEL_BG);fy+=24;
+            text(ACCT_X+24,fy,"You will not be able to see it again.",DIM,PANEL_BG);fy+=36;
+            {int bx2=ACCT_X+24,by2=fy,bw2=ACCT_W-48,bh2=44;
+             rect(bx2,by2,bw2,bh2,0x0D1117);outline(bx2,by2,bw2,bh2,cfg_accent);
+             text_center(bx2+bw2/2,by2+15,acct_recovery_code,cfg_accent,0x0D1117);}
+            fy+=66;
+            text(ACCT_X+24,fy,"This code can reset your password if you",DIM,PANEL_BG);fy+=16;
+            text(ACCT_X+24,fy,"forget it. It can only be used once.",DIM,PANEL_BG);
+            int cbx=ACCT_X+24,cby=ACCT_Y+ACCT_H-96;
+            rect(cbx,cby,18,18,0x0D1117);outline(cbx,cby,18,18,BORDER);
+            if(acct_ack_checked)text(cbx+3,cby,"x",cfg_accent,0x0D1117);
+            text(cbx+26,cby+1,"I have saved this code",TEXT,PANEL_BG);
+            {int bbx=ACCT_X+24,bby=ACCT_Y+ACCT_H-56,bbw=ACCT_W-48,bbh=32;
+             u32 bg=acct_ack_checked?cfg_accent:0x161B22;
+             rect(bbx,bby,bbw,bbh,bg);outline(bbx,bby,bbw,bbh,acct_ack_checked?cfg_accent:BORDER);
+             text_center(bbx+bbw/2,bby+9,"Continue",acct_ack_checked?BG:DIM,bg);}
+        }else if(acct_screen==2){
+            text_center(ACCT_X+ACCT_W/2,ACCT_Y+140,"Account ready",TEXT,PANEL_BG);
+            text_center(ACCT_X+ACCT_W/2,ACCT_Y+166,"You can sign in now.",DIM,PANEL_BG);
+            {int bbx=ACCT_X+ACCT_W/2-60,bby=ACCT_Y+ACCT_H-56,bbw=120,bbh=32;
+             rect(bbx,bby,bbw,bbh,cfg_accent);outline(bbx,bby,bbw,bbh,cfg_accent);
+             text_center(bbx+bbw/2,bby+9,"Continue",BG,cfg_accent);}
+        }
+
+        draw_cursor(mx,my);
+        flush();sys_yield();
+    }
+    return success;
+}
+#define LOCK_W 380
+#define LOCK_H 260
+#define LOCK_X ((1024-LOCK_W)/2)
+#define LOCK_Y ((768-LOCK_H)/2)
+static int lock_screen_run(int is_logout){
+    AuthBlob ab;int have_user=auth_load(AUTH_PATH,&ab);
+    char lk_buf[48];int lk_len=0;
+    char lk_err[48];lk_err[0]=0;
+    static int prev_mb2=0;
+    int success=0;
+    int mb=0;
+    while(!success){
+        unsigned long long mstate[3];sys_mouseread(mstate);
+        int mx=(int)mstate[0],my=(int)mstate[1];mb=(int)mstate[2];
+        int click=(mb&1)&&!(prev_mb2&1);
+        s64 ch=sys_keypoll();
+        int bbx=LOCK_X+24,bby=LOCK_Y+LOCK_H-56,bbw=LOCK_W-48,bbh=32;
+        text_input_key(lk_buf,&lk_len,48,ch);
+        int submit=(ch=='\n'||ch=='\r')||(click&&in_box(mx,my,bbx,bby,bbw,bbh));
+        if(submit){
+            if(have_user&&auth_verify_password(AUTH_PATH,lk_buf)){success=1;}
+            else{
+                auth_copy_str(lk_err,48,"Incorrect password");
+                lk_len=0;lk_buf[0]=0;
+            }
+        }
+        prev_mb2=mb;
+
+        rect(0,0,1024,768,BG);
+        rect_round_alpha(LOCK_X+3,LOCK_Y+3,LOCK_W,LOCK_H,16,0x000000,90);
+        rect_round_alpha(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,PANEL_BG,225);
+        outline_round(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,BORDER);
+        text_bold(LOCK_X+24,LOCK_Y+20,is_logout?"Signed Out":"Locked",TEXT,PANEL_BG);
+        hline(LOCK_X+24,LOCK_Y+48,LOCK_W-48,0x21262D);
+        if(have_user)text_center(LOCK_X+LOCK_W/2,LOCK_Y+64,ab.username,DIM,PANEL_BG);
+        {int fbx=LOCK_X+24,fby=LOCK_Y+96,fbw=LOCK_W-48,fbh=30;
+         rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,cfg_accent);
+         draw_masked(fbx+10,fby+8,lk_len,TEXT,0x0D1117);}
+        if(lk_err[0])text(LOCK_X+24,LOCK_Y+134,lk_err,RED,PANEL_BG);
+        {int hov=in_box(mx,my,bbx,bby,bbw,bbh);
+         rect(bbx,bby,bbw,bbh,hov?cfg_accent:0x161B22);outline(bbx,bby,bbw,bbh,cfg_accent);
+         text_center(bbx+bbw/2,bby+9,"Unlock",hov?BG:TEXT,hov?cfg_accent:0x161B22);}
+        draw_cursor(mx,my);
+        flush();sys_yield();
+    }
+    prev_btn=mb;
+    return 1;
+}
+static void auth_do_logout(void){
+    for(int i=0;i<win_count;i++){wins[i].visible=0;wins[i].minimized=0;}
+    win_count=0;focused=-1;
+    np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;np.modified=0;np.filename[0]=0;np.mode=0;
+    np_win_idx=-1;settings_win_idx=-1;calc_win_idx=-1;
+    calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;calc.error=0;calc.hist_count=0;
+    notif_count=0;notif_center_open=0;notif_popup_active=0;
+    menu_open=0;rctx_open=0;fm_ctx_open=0;fm_dialog=0;fm_selected=-1;fm_has_clip=0;
+    drag_win=-1;resize_win=-1;drag_icon=-1;
+    for(int i=0;i<32;i++)tlines[i][0]=0;
+    trow=0;tinput[0]=0;tinput_len=0;
+}
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
@@ -1969,6 +2183,8 @@ int main(void){
     sha256_self_test();
     hmac_sha256_self_test();pbkdf2_self_test();auth_self_test();
     cfg_load();
+    if(!auth_exists(AUTH_PATH)){acct_setup_run(1);}
+    if(auth_exists(AUTH_PATH)){lock_screen_run(0);}
     open_terminal();
     tprint("YouOS Desktop v0.3");
     tprint("File manager + Notepad ready");
@@ -2127,10 +2343,19 @@ int main(void){
                         goto click_done;
                     }
                 }
-                int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-16)/3;
-                int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8;
+                int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-24)/4;
+                int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8,lk_x2=sd_x2+pbw2+8,lo_x2=lk_x2+pbw2+8;
                 if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
                 if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;tprint("Shutting down...");flush();sys_shutdown();goto click_done;}
+                if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(0);goto click_done;}
+                if(in_box(mouse_x,mouse_y,lo_x2,pry2,pbw2,40)){
+                    menu_open=0;auth_do_logout();lock_screen_run(1);
+                    open_terminal();
+                    tprint("YouOS Desktop v0.3");
+                    tprint("File manager + Notepad ready");
+                    tprint("Type 'help' for commands");
+                    goto click_done;
+                }
                 if(inside_panel)goto click_done;
                 menu_open=0;goto click_done;
             }
@@ -2281,7 +2506,7 @@ int main(void){
                     if(in_box(mouse_x,mouse_y,w->x+88,base+144,64,24)){cfg_24h=0;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+16,base+210,64,24)){cfg_showsecs=1;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+88,base+210,64,24)){cfg_showsecs=0;cfg_save();goto click_done;}
-                    if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_open=1;acct_setup_mode=1;goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_run(0);goto click_done;}
                 }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
