@@ -226,6 +226,20 @@ static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,u
     (void)a3;(void)a4;(void)a5;
     return (uint64_t)(int64_t)crash_read((void*)buf,(uint32_t)sz);
 }
+static uint64_t sys_mousewheel(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)(int64_t)mouse_get_wheel_delta();
+}
+static uint64_t sys_mousedbg(uint64_t buf,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    uint64_t* out=(uint64_t*)buf;
+    if(!out)return (uint64_t)-1;
+    out[0]=(uint64_t)mouse_get_debug_len();
+    out[1]=(uint64_t)mouse_get_debug_byte3();
+    out[2]=(uint64_t)mouse_has_wheel_support();
+    out[3]=(uint64_t)(int64_t)mouse_get_wheel_delta();
+    return 0;
+}
 static uint64_t sys_readsyslog(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a3;(void)a4;(void)a5;
     return (uint64_t)(int64_t)syslog_read((void*)buf,(uint32_t)sz);
@@ -282,7 +296,9 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_rename,
     sys_readdir2,
     sys_readcrash,
-    sys_readsyslog
+    sys_readsyslog,
+    sys_mousedbg,
+    sys_mousewheel
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

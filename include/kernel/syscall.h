@@ -26,7 +26,9 @@
 #define SYS_READDIR2 26
 #define SYS_READCRASH  27
 #define SYS_READSYSLOG 28
-#define SYSCALL_COUNT  29
+#define SYS_MOUSEDBG    29
+#define SYS_MOUSEWHEEL  30
+#define SYSCALL_COUNT  31
 
 void syscall_init(void);
 #endif

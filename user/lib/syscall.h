@@ -70,6 +70,12 @@ static inline uint64_t sys_ticks(void)
 static inline long sys_mouseread(unsigned long long *out) {
     return _sc(16, (long)out, 0, 0, 0, 0);
 }
+static inline long sys_mousedbg(unsigned long long *out) {
+    return _sc(29, (long)out, 0, 0, 0, 0);
+}
+static inline long sys_mousewheel(void) {
+    return _sc(30, 0, 0, 0, 0, 0);
+}
 
 /* syscall 17 — readdir: fills entries[], returns count
  * entry layout: name[32], size(u32), is_dir(u8) = 37 bytes each */

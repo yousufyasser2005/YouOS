@@ -279,6 +279,7 @@ static void proc_kbd(HDEV*h,uint8_t*r,int n){
 }
 static void proc_mouse(uint8_t*r,int n){
     if(n<3)return;
+    mouse_set_debug_report(n, n>=4 ? r[3] : 0xFF);
     mouse_update_usb_delta((int)(int8_t)r[1],(int)(int8_t)r[2],r[0]&0x07);
 }
 

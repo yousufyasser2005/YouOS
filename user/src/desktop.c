@@ -271,6 +271,7 @@ static int notif_popup_active=0;
 static u64 notif_popup_expire=0;
 static u64 g_now_ticks=0;
 static int notif_center_open=0;
+static int notif_scroll=0;
 static void notif_add(const char*title,const char*msg){
     if(notif_count>=NOTIF_MAX){
         for(int i=0;i<NOTIF_MAX-1;i++){
@@ -439,17 +440,18 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog";
-    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1,mcrl=1,msll=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
+    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
     for(int k=0;sll[k]||cmd[k];k++)if(sll[k]!=cmd[k]){msll=0;break;}
+    for(int k=0;mdb[k]||cmd[k];k++)if(mdb[k]!=cmd[k]){mmdb=0;break;}
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown ipc crashlog syslog");
+    if(mh)tprint("Commands: help clear about ls shutdown ipc crashlog syslog mousedbg");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
@@ -487,6 +489,20 @@ static void tcmd(const char*cmd){
                 if(ll>0)tprint(line);
             }
         } else tprint("Syslog empty.");
+    }
+    else if(mmdb){
+        unsigned long long dbg[4];
+        sys_mousedbg(dbg);
+        char out2[64];int oi2=0;
+        const char*pfx2="wheel_support=";int pj2=0;while(pfx2[pj2])out2[oi2++]=pfx2[pj2++];
+        out2[oi2++]='0'+((int)dbg[2]?1:0);
+        const char*pfx3=" delta=";pj2=0;while(pfx3[pj2])out2[oi2++]=pfx3[pj2++];
+        int dlt=(int)(long long)dbg[3];
+        if(dlt<0){out2[oi2++]='-';dlt=-dlt;}
+        if(dlt>=10)out2[oi2++]='0'+(dlt/10)%10;
+        out2[oi2++]='0'+(dlt%10);
+        out2[oi2]=0;
+        tprint(out2);
     }
     else if(mi){
         char msg[32]="hello from desktop";
@@ -928,7 +944,53 @@ static void draw_about_content(int i){
 }
 
 /* ═══ WALLPAPER + PANEL ═════════════════════════════════════════ */
+/* ═══ Wallpaper: BMP loader ═════════════════════════════════════ */
+static u32 wallpaper_pixels[1024*768];
+static int wallpaper_loaded=0;
+static int load_wallpaper_bmp(const char*path){
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0)return 0;
+    u8 hdr[54];
+    u64 n=sys_fread(fd,hdr,54);
+    if(n!=54||hdr[0]!='B'||hdr[1]!='M'){sys_close(fd);return 0;}
+    u32 pix_off  =(u32)hdr[10]|((u32)hdr[11]<<8)|((u32)hdr[12]<<16)|((u32)hdr[13]<<24);
+    int width    =(int)((u32)hdr[18]|((u32)hdr[19]<<8)|((u32)hdr[20]<<16)|((u32)hdr[21]<<24));
+    int height   =(int)((u32)hdr[22]|((u32)hdr[23]<<8)|((u32)hdr[24]<<16)|((u32)hdr[25]<<24));
+    u16 bpp      =(u16)hdr[28]|((u16)hdr[29]<<8);
+    if(width!=1024||height!=768||bpp!=24){sys_close(fd);return 0;}
+    u64 skip=pix_off-54;
+    u8 skipbuf[64];
+    while(skip>0){
+        u64 chunk=skip>64?64:skip;
+        if(sys_fread(fd,skipbuf,chunk)!=(s64)chunk){sys_close(fd);return 0;}
+        skip-=chunk;
+    }
+    int row_bytes=width*3;
+    int pad=(4-(row_bytes%4))%4;
+    static u8 rowbuf[1024*3];
+    for(int row=0;row<height;row++){
+        u64 got=0;
+        while(got<(u64)row_bytes){
+            s64 r=sys_fread(fd,rowbuf+got,row_bytes-got);
+            if(r<=0){sys_close(fd);return 0;}
+            got+=(u64)r;
+        }
+        if(pad){u8 padbuf[4];sys_fread(fd,padbuf,pad);}
+        int screen_y=height-1-row;
+        for(int x=0;x<width;x++){
+            u8 b=rowbuf[x*3+0],g=rowbuf[x*3+1],r=rowbuf[x*3+2];
+            wallpaper_pixels[screen_y*1024+x]=((u32)r<<16)|((u32)g<<8)|b;
+        }
+    }
+    sys_close(fd);
+    return 1;
+}
+
 static void wallpaper(void){
+    if(wallpaper_loaded){
+        for(int y=0;y<768;y++)for(int x=0;x<1024;x++)px(x,y,wallpaper_pixels[y*1024+x]);
+        return;
+    }
     for(int y=0;y<768;y++){
         u32 r=0x0D,g=0x11+(y*8)/768,b=0x17+(y*20)/768;
         u32 c=(r<<16)|(g<<8)|b;
@@ -1178,13 +1240,22 @@ static void draw_notif_center(void){
         text_center(x+NC_W/2,y+NC_H/2,"No notifications",DIM,PANEL_BG);
         return;
     }
-    int visible=notif_count<NC_MAX_VISIBLE?notif_count:NC_MAX_VISIBLE;
+    if(notif_scroll>notif_count-NC_MAX_VISIBLE)notif_scroll=notif_count-NC_MAX_VISIBLE;
+    if(notif_scroll<0)notif_scroll=0;
+    int visible=notif_count-notif_scroll;
+    if(visible>NC_MAX_VISIBLE)visible=NC_MAX_VISIBLE;
     for(int row=0;row<visible;row++){
-        int idx=notif_count-1-row;
-        int ry=y+56+row*NC_ROW_H;
+        int idx=notif_count-1-notif_scroll-row;
+        int ry=y+90+row*NC_ROW_H;
         int hovrow=in_box(mouse_x,mouse_y,x+12,ry,NC_W-24,NC_ROW_H-8);
         rect_round(x+12,ry,NC_W-24,NC_ROW_H-8,10,hovrow?0x21262D:0x161B22);
         outline_round(x+12,ry,NC_W-24,NC_ROW_H-8,10,BORDER);
+        {
+            char numbuf[4];int npos=0;int dispnum=idx+1;
+            if(dispnum>=10)numbuf[npos++]='0'+(dispnum/10)%10;
+            numbuf[npos++]='0'+(dispnum%10);numbuf[npos]=0;
+            text(x+16,ry+4,numbuf,DIM,hovrow?0x21262D:0x161B22);
+        }
         draw_bell_glyph(x+34,ry+28,cfg_accent);
         text_bold(x+56,ry+10,notif_title[idx],TEXT,hovrow?0x21262D:0x161B22);
         text(x+56,ry+30,notif_msg[idx],DIM,hovrow?0x21262D:0x161B22);
@@ -1192,6 +1263,12 @@ static void draw_notif_center(void){
         int hovr=in_box(mouse_x,mouse_y,rbx,rby,16,16);
         rect_round(rbx,rby,16,16,6,hovr?0x3A1212:(hovrow?0x21262D:0x161B22));
         text(rbx+5,rby+2,"x",hovr?RED:DIM,hovr?0x3A1212:(hovrow?0x21262D:0x161B22));
+    }
+    if(notif_count>NC_MAX_VISIBLE){
+        rect(x+NC_W-16,y+56,14,14,notif_scroll>0?0x21262D:0x13161B);
+        text(x+NC_W-14,y+57,"^",notif_scroll>0?TEXT:BORDER,notif_scroll>0?0x21262D:0x13161B);
+        rect(x+NC_W-16,y+72,14,14,(notif_scroll+NC_MAX_VISIBLE<notif_count)?0x21262D:0x13161B);
+        text(x+NC_W-14,y+73,"v",(notif_scroll+NC_MAX_VISIBLE<notif_count)?TEXT:BORDER,(notif_scroll+NC_MAX_VISIBLE<notif_count)?0x21262D:0x13161B);
     }
 }
 static void draw_taskbar(u64 secs){
@@ -1322,6 +1399,15 @@ static void draw_settings_content(int wi){
         int ahov=in_box(mouse_x,mouse_y,abx,aby,abw,abh);
         rect(abx,aby,abw,abh,ahov?0x21262D:0x13161B);outline(abx,aby,abw,abh,BORDER);
         text_center(abx+abw/2,aby+5,"Account Setup",TEXT,ahov?0x21262D:0x13161B);
+    }
+    cy+=36;
+    {
+        int wbw=cw-32,wbh=26,wbx=x+16,wby=cy;
+        int whov=in_box(mouse_x,mouse_y,wbx,wby,wbw,wbh);
+        u32 wbg=wallpaper_loaded?cfg_accent:(whov?0x21262D:0x13161B);
+        rect(wbx,wby,wbw,wbh,wbg);outline(wbx,wby,wbw,wbh,BORDER);
+        text_center(wbx+wbw/2,wby+5,wallpaper_loaded?"Wallpaper: On":"Wallpaper: Off",
+                    wallpaper_loaded?BG:TEXT,wbg);
     }
     cy+=36;
     hline(x+12,cy,cw-24,0x21262D);
@@ -1608,12 +1694,13 @@ static void open_notepad(const char*fn){
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
-typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;int icon_x[N_ICONS];int icon_y[N_ICONS];}CfgBlob;
+typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;int icon_x[N_ICONS];int icon_y[N_ICONS];u32 wallpaper_on;}CfgBlob;
 #define CFG_MAGIC 0xC0DE5E17U
 static void cfg_save(void){
     CfgBlob b;b.magic=CFG_MAGIC;b.accent=cfg_accent;
     b.h24=(u32)cfg_24h;b.secs=(u32)cfg_showsecs;
     for(int i=0;i<N_ICONS;i++){b.icon_x[i]=icons[i].x;b.icon_y[i]=icons[i].y;}
+    b.wallpaper_on=(u32)wallpaper_loaded;
     const char*p="/disk/yos.cfg";
     sys_save_file((u64)p,(u64)&b,(u64)sizeof(b));
 }
@@ -1626,6 +1713,7 @@ static void cfg_load(void){
     if(n!=(u64)sizeof(b)||b.magic!=CFG_MAGIC)return;
     cfg_accent=b.accent;cfg_24h=(int)b.h24;cfg_showsecs=(int)b.secs;
     for(int i=0;i<N_ICONS;i++){icons[i].x=b.icon_x[i];icons[i].y=b.icon_y[i];}
+    wallpaper_loaded=(int)b.wallpaper_on&&load_wallpaper_bmp("/disk/wall.bmp");
 }
 static void open_calc(void){
     int i=find_win(WIN_CALC);
@@ -1640,7 +1728,7 @@ static int acct_setup_open=0,acct_setup_mode=0;
 static void open_settings(void){
     int i=find_win(WIN_SETTINGS);
     if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);settings_win_idx=i;}
-    else settings_win_idx=wm_new(WIN_SETTINGS,200,120,320,400,"Settings",0x58A6FF);
+    else settings_win_idx=wm_new(WIN_SETTINGS,200,120,320,440,"Settings",0x58A6FF);
 }
 /* ═══ SHA-256 ═══════════════════════════════════════════════════ */
 static const u32 sha256_k[64]={
@@ -2355,13 +2443,18 @@ int main(void){
             if(notif_center_open){
                 int ncx=NC_X,ncy=NC_Y;
                 int inside_nc=in_box(mouse_x,mouse_y,ncx,ncy,NC_W,NC_H);
-                if(in_box(mouse_x,mouse_y,ncx+NC_W-92,ncy+14,72,26)){notif_count=0;goto click_done;}
-                int visible2=notif_count<NC_MAX_VISIBLE?notif_count:NC_MAX_VISIBLE;
+                if(in_box(mouse_x,mouse_y,ncx+NC_W-92,ncy+14,72,26)){notif_count=0;notif_scroll=0;goto click_done;}
+                if(notif_count>NC_MAX_VISIBLE){
+                    if(in_box(mouse_x,mouse_y,ncx+NC_W-16,ncy+56,14,14)&&notif_scroll>0){notif_scroll--;goto click_done;}
+                    if(in_box(mouse_x,mouse_y,ncx+NC_W-16,ncy+72,14,14)&&notif_scroll+NC_MAX_VISIBLE<notif_count){notif_scroll++;goto click_done;}
+                }
+                int visible2=notif_count-notif_scroll;
+                if(visible2>NC_MAX_VISIBLE)visible2=NC_MAX_VISIBLE;
                 for(int row=0;row<visible2;row++){
-                    int idx2=notif_count-1-row;
-                    int ry2=ncy+56+row*NC_ROW_H;
+                    int idx2=notif_count-1-notif_scroll-row;
+                    int ry2=ncy+90+row*NC_ROW_H;
                     int rbx2=ncx+NC_W-44,rby2=ry2+(NC_ROW_H-8)/2-8;
-                    if(in_box(mouse_x,mouse_y,rbx2,rby2,16,16)){notif_remove(idx2);goto click_done;}
+                    if(in_box(mouse_x,mouse_y,rbx2,rby2,16,16)){notif_remove(idx2);if(notif_scroll>0)notif_scroll--;goto click_done;}
                 }
                 if(inside_nc)goto click_done;
                 notif_center_open=0;
@@ -2547,6 +2640,12 @@ int main(void){
                     if(in_box(mouse_x,mouse_y,w->x+16,base+210,64,24)){cfg_showsecs=1;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+88,base+210,64,24)){cfg_showsecs=0;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_run(0);goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+322,w->w-32,26)){
+                        if(wallpaper_loaded){wallpaper_loaded=0;}
+                        else{wallpaper_loaded=load_wallpaper_bmp("/disk/wall.bmp");}
+                        cfg_save();
+                        goto click_done;
+                    }
                 }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
@@ -2806,6 +2905,14 @@ int main(void){
 
         /* hover updates */
         if(notif_popup_active&&g_now_ticks>=notif_popup_expire)notif_popup_active=0;
+        if(notif_center_open){
+            long wdelta=sys_mousewheel();
+            int ncxw=NC_X,ncyw=NC_Y;
+            if(in_box(mouse_x,mouse_y,ncxw,ncyw,NC_W,NC_H)){
+                if(wdelta<0&&notif_scroll+NC_MAX_VISIBLE<notif_count)notif_scroll++;
+                else if(wdelta>0&&notif_scroll>0)notif_scroll--;
+            }
+        }
         sm_hov=-1;
         if(menu_open){
             for(int gi=0;gi<sm_filtered_n;gi++){
