@@ -26,6 +26,9 @@ void fb_terminal_puts_color(const char* s, uint32_t fg, uint32_t bg);
 void fb_terminal_set_color(uint32_t fg, uint32_t bg);
 /* Pass address_space_t* as void* to avoid circular include */
 void fb_map_into_as(void* as);
+fb_info_t* fb_get_info(void);
+void fb_put_pixel_alpha(int x, int y, uint32_t color, uint8_t alpha);
+void fb_fill_rect_alpha(int x, int y, int w, int h, uint32_t color, uint8_t alpha);
 
 #define FB_COLOR(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
 #define FB_BLACK   0x000000

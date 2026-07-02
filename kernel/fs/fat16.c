@@ -269,6 +269,29 @@ int fat16_read(int fd, void* buf, uint32_t size) {
         uint32_t sector_in_cluster = f->cluster_offset / 512;
         uint32_t offset_in_sector  = f->cluster_offset % 512;
 
+        /* Fast path: sector-aligned start with at least one full sector
+         * wanted — batch every whole sector remaining in this cluster into
+         * a single multi-sector ATA PIO command instead of one command per
+         * 512 bytes. */
+        if (offset_in_sector == 0 && can_read >= 512) {
+            uint32_t full_sectors = can_read / 512;
+            uint32_t avail_in_cluster = sectors_per_cluster - sector_in_cluster;
+            if (full_sectors > avail_in_cluster) full_sectors = avail_in_cluster;
+            if (full_sectors > 255) full_sectors = 255;
+            if (full_sectors > 0) {
+                ata_read_sectors(lba + sector_in_cluster, (uint8_t)full_sectors,
+                                  dst + bytes_read);
+                uint32_t nbytes = full_sectors * 512;
+                bytes_read        += nbytes;
+                f->position       += nbytes;
+                f->cluster_offset += nbytes;
+                can_read          -= nbytes;
+                sector_in_cluster += full_sectors;
+                offset_in_sector   = 0;
+            }
+        }
+
+        /* Slow path: leftover partial sector (<512 bytes) or misaligned tail */
         uint8_t sbuf[512];
         while (can_read > 0) {
             read_sector(lba + sector_in_cluster, sbuf);

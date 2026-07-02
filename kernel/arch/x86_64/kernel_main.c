@@ -12,6 +12,7 @@
 #include <kernel/syscall.h>
 #include <kernel/userspace.h>
 #include <kernel/initrd.h>
+#include <kernel/boot_anim.h>
 #include <kernel/elf.h>
 #include <kernel/vfs.h>
 #include <kernel/fat16.h>
@@ -167,10 +168,16 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     vga_puts("\n");
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    boot_anim_run();
+
     /* Auto-launch user shell */
     {
         uint64_t sz = 0;
-        const void* sd = initrd_find("shell", &sz);
+        const void* sd = initrd_find("desktop", &sz);
+        if (!sd) {
+            vga_puts_color("  [!!] desktop not found in initrd, falling back to shell\n", VGA_LIGHT_GREEN, VGA_BLACK);
+            sd = initrd_find("shell", &sz);
+        }
         if (sd) {
             elf_load_result_t r;
             address_space_t pa = vmm_create_user_as();

@@ -440,8 +440,8 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
-    int mh=1,mc=1,ma=1,ms=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
@@ -450,12 +450,14 @@ static void tcmd(const char*cmd){
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
+    for(int k=0;rb[k]||cmd[k];k++)  if(rb[k]!=cmd[k])  {mrb=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown ipc crashlog syslog mousedbg");
+    if(mh)tprint("Commands: help clear about ls shutdown reboot ipc crashlog syslog mousedbg");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
+    else if(mrb){tprint("Restarting...");flush();sys_reboot();}
     else if(mcrl){
         static char cbuf[2048];
         int n=sys_readcrash(cbuf,2047);
@@ -2304,13 +2306,31 @@ static void draw_window_preview(int wi,int wpx,int wpy){
         outline(bx0,by0,WPREV_BW,WPREV_BH,0x21262D);
     }
 }
+static void draw_loading_splash(int spin_deg){
+    rect(0,0,1024,768,0x0D1117);
+    text_big_center(512,330,"YouOS",0xFFFFFF,0x0D1117);
+    int cx=512,cy=430,r=28;
+    for(int i=0;i<8;i++){
+        int deg=(spin_deg+i*45)%360;
+        int dx=cx+(icos(deg)*r)/1000;
+        int dy=cy-(isin(deg)*r)/1000;
+        int a=255-(i*28);if(a<40)a=40;
+        int dotr=4;
+        for(int yy=-dotr;yy<=dotr;yy++)for(int xx=-dotr;xx<=dotr;xx++)
+            if(xx*xx+yy*yy<=dotr*dotr)px_alpha(dx+xx,dy+yy,0x58A6FF,a);
+    }
+    flush();
+}
 int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
+    draw_loading_splash(0);
     sha256_self_test();
     hmac_sha256_self_test();pbkdf2_self_test();auth_self_test();
+    draw_loading_splash(90);
     cfg_load();
+    draw_loading_splash(200);
     if(!auth_exists(AUTH_PATH)){acct_setup_run(1);}
     if(auth_exists(AUTH_PATH)){lock_screen_run(0);}
     open_terminal();

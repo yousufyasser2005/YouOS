@@ -67,10 +67,5 @@ int elf_load(address_space_t* as, const void* elf_data, uint64_t elf_size, elf_l
         vga_puts_color("  [ELF] No loadable segments\n", VGA_LIGHT_RED, VGA_BLACK); return -1;
     }
 
-    char hex[17]; hex[16] = 0; uint64_t v = result->entry;
-    for (int j = 15; j >= 0; j--) { hex[j] = "0123456789ABCDEF"[v & 0xF]; v >>= 4; }
-    vga_puts_color("  [ELF] Loaded OK, entry=0x", VGA_LIGHT_GREEN, VGA_BLACK);
-    vga_puts_color(hex, VGA_LIGHT_GREEN, VGA_BLACK);
-    vga_puts_color("\n", VGA_LIGHT_GREEN, VGA_BLACK);
     return 0;
 }

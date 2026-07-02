@@ -25,6 +25,13 @@ static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
 }
 
+static inline void insw(uint16_t port, void* addr, uint32_t count) {
+    __asm__ volatile("rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
+}
+static inline void outsw(uint16_t port, const void* addr, uint32_t count) {
+    __asm__ volatile("rep outsw" : "+S"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
 /* 400ns delay by reading status 4 times */
 static void ata_delay(void) {
     inb(ATA_PRIMARY_CTRL);
@@ -137,8 +144,7 @@ int ata_read_sectors(uint32_t lba, uint8_t count, void* buf) {
     for (int s = 0; s < count; s++) {
         if (ata_wait_busy() < 0) return -1;
         if (ata_wait_drq()  < 0) return -1;
-        for (int w = 0; w < 256; w++)
-            ptr[s * 256 + w] = inw(ATA_PRIMARY_DATA);
+        insw(ATA_PRIMARY_DATA, &ptr[s * 256], 256);
     }
     return 0;
 }
@@ -158,8 +164,7 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const void* buf) {
     for (int s = 0; s < count; s++) {
         if (ata_wait_busy() < 0) return -1;
         if (ata_wait_drq()  < 0) return -1;
-        for (int w = 0; w < 256; w++)
-            outw(ATA_PRIMARY_DATA, ptr[s * 256 + w]);
+        outsw(ATA_PRIMARY_DATA, &ptr[s * 256], 256);
         /* Flush cache */
         outb(ATA_PRIMARY_COMMAND, 0xE7);
         ata_wait_busy();
