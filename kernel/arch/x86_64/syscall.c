@@ -77,19 +77,37 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     uint64_t elf_size = 0;
     const void* elf_data = initrd_find(name, &elf_size);
     if (!elf_data) return (uint64_t)-1;
-    elf_load_result_t res;
-    address_space_t proc_as = vmm_create_user_as();
-    if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) return (uint64_t)-2;
-    extern uint64_t pmm_alloc_pages(uint64_t);
-    uint64_t stack_base = pmm_alloc_pages(16);
-    uint64_t stack_top  = stack_base + 16 * 4096;
-    for (uint64_t a = stack_base; a < stack_top; a += 4096)
-        vmm_map(&proc_as, a, a, 0x7);
+
+    /* Capture the CALLER's real CR3 before touching anything else — this is
+     * what we restore to when the child eventually exits. */
     extern uint64_t user_rsp_tmp;
     exec_saved_kstack    = kernel_stack_top;
     exec_saved_user_rsp  = user_rsp_tmp;
     exec_saved_jmp       = kernel_exit_jmp;
     __asm__ volatile("mov %%cr3, %0" : "=r"(exec_saved_cr3));
+
+    /* Page-table construction (vmm_create_user_as/elf_load/stack mapping)
+     * dereferences physical addresses as if they were directly-mapped
+     * pointers, which only holds under the kernel's own pristine identity
+     * map. A user process's own CR3 (e.g. the caller's) can have that low
+     * 1GB region partially punched by its own ELF load at 0x400000, so we
+     * must do all of this construction work under kernel_as, not whatever
+     * CR3 happened to be active when sys_exec was called. */
+    extern address_space_t kernel_as;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(kernel_as.pml4_phys) : "memory");
+
+    elf_load_result_t res;
+    address_space_t proc_as = vmm_create_user_as();
+    if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
+        __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3) : "memory");
+        return (uint64_t)-2;
+    }
+    extern uint64_t pmm_alloc_pages(uint64_t);
+    uint64_t stack_base = pmm_alloc_pages(16);
+    uint64_t stack_top  = stack_base + 16 * 4096;
+    for (uint64_t a = stack_base; a < stack_top; a += 4096)
+        vmm_map(&proc_as, a, a, 0x7);
+
     kernel_exit_jmp_valid = 1;
     int exited = ksetjmp(&kernel_exit_jmp);
     if (!exited) {
@@ -97,6 +115,12 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         tss_set_kernel_stack(kernel_stack_top);
         vmm_switch(&proc_as);
         __asm__ volatile("mov %%cr3,%%rax;mov %%rax,%%cr3":::"rax","memory");
+        /* Full-screen clear before handing off — the caller (e.g. desktop)
+         * may have left graphical content on screen, and the exec'd
+         * process's own text console only draws into a small fixed
+         * region, so without this the old frame stays visible underneath. */
+        fb_fill(FB_BLACK);
+        fb_terminal_init();
         extern void jump_to_userspace(uint64_t, uint64_t);
         jump_to_userspace(res.entry, stack_top);
     }

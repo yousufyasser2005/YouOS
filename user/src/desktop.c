@@ -440,8 +440,8 @@ static void tprint(const char*s){
 }
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
@@ -451,13 +451,20 @@ static void tcmd(const char*cmd){
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;rb[k]||cmd[k];k++)  if(rb[k]!=cmd[k])  {mrb=0;break;}
+    for(int k=0;shl[k]||cmd[k];k++) if(shl[k]!=cmd[k]) {msh=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot ipc crashlog syslog mousedbg");
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell ipc crashlog syslog mousedbg");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
     else if(mrb){tprint("Restarting...");flush();sys_reboot();}
+    else if(msh){
+        tprint("Switching to shell... type 'exit' to return.");
+        flush();
+        sys_exec("shell");
+        tprint("Welcome back to the desktop.");
+    }
     else if(mcrl){
         static char cbuf[2048];
         int n=sys_readcrash(cbuf,2047);
