@@ -36,7 +36,14 @@ vfs_node_t* vfs_resolve(const char* path) {
 
         /* Find child */
         if (!node->finddir) return 0;
-        node = node->finddir(node, part);
+        vfs_node_t* next = node->finddir(node, part);
+        /* Free the node we just walked through if it was a dynamically
+         * allocated intermediate directory node (never the mount root or
+         * a static mount-point node — those have dynamic == 0). The final
+         * resolved node (next, once the loop ends) is left for the caller
+         * (vfs_open) to free later via vfs_close(). */
+        if (node != vfs_root && node->dynamic) kfree(node);
+        node = next;
         if (!node) return 0;
     }
     return node;

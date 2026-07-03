@@ -145,6 +145,55 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             vga_puts_color("  [OK] /disk mounted (FAT16)\n", VGA_LIGHT_GREEN, VGA_BLACK);
         }
     }
+
+    /* Mount YCFS as /ycfs (phase 1: read-only, lives in a fixed 16MB
+     * region 64MB into disk.img — see include/kernel/ycfs.h) */
+    {
+        extern vfs_node_t* ycfs_vfs_mount(void);
+        vfs_node_t* yc = ycfs_vfs_mount();
+        if (yc) {
+            vfs_node_t* root = vfs_resolve("/");
+            if (root) {
+                yc->next = (vfs_node_t*)root->fs_data;
+                root->fs_data = yc;
+            }
+            vga_puts_color("  [OK] /ycfs mounted\n", VGA_LIGHT_GREEN, VGA_BLACK);
+
+            /* Self-test: read the seed files mkycfs.py wrote, including
+             * through a nested directory, to confirm real path traversal
+             * and multi-level finddir() work end-to-end. Non-fatal. */
+            int fd1 = vfs_open("/ycfs/hello.txt", 0);
+            if (fd1 >= 0) {
+                char buf[128]; int n = 0;
+                uint64_t r = vfs_read(fd1, buf, sizeof(buf) - 1);
+                n = (int)r; buf[n] = 0;
+                vfs_close(fd1);
+                vga_puts_color("  [OK] YCFS self-test: /ycfs/hello.txt -> ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts_color(buf, VGA_WHITE, VGA_BLACK);
+                syslog_write("YCFS", "hello.txt OK");
+                syslog_write("YCFS", buf);
+            } else {
+                vga_puts_color("  [!!] YCFS self-test: /ycfs/hello.txt not found\n", VGA_LIGHT_RED, VGA_BLACK);
+                syslog_write("YCFS", "hello.txt FAILED - not found");
+            }
+            int fd2 = vfs_open("/ycfs/docs/notes.txt", 0);
+            if (fd2 >= 0) {
+                char buf[128]; int n = 0;
+                uint64_t r = vfs_read(fd2, buf, sizeof(buf) - 1);
+                n = (int)r; buf[n] = 0;
+                vfs_close(fd2);
+                vga_puts_color("  [OK] YCFS self-test: /ycfs/docs/notes.txt -> ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts_color(buf, VGA_WHITE, VGA_BLACK);
+                syslog_write("YCFS", "docs/notes.txt OK (nested dirs work)");
+                syslog_write("YCFS", buf);
+            } else {
+                vga_puts_color("  [!!] YCFS self-test: /ycfs/docs/notes.txt not found (nested dir traversal failed)\n", VGA_LIGHT_RED, VGA_BLACK);
+                syslog_write("YCFS", "docs/notes.txt FAILED - nested dir traversal broken");
+            }
+        } else {
+            vga_puts_color("  [!!] YCFS mount failed (did you run mkycfs.py?)\n", VGA_LIGHT_RED, VGA_BLACK);
+        }
+    }
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("Heap initialized\n");
 

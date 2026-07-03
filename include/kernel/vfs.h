@@ -36,6 +36,13 @@ struct vfs_node {
     /* Filesystem-private data */
     void*       fs_data;
     vfs_node_t* next;   /* sibling in directory */
+
+    /* 1 if this node was heap-allocated by finddir() and is safe for the
+     * VFS layer to kfree() once done with it (e.g. an intermediate
+     * directory node produced while walking a multi-component path).
+     * 0 (the default, since nodes are usually kzalloc'd) means this is a
+     * static mount-point node that must never be freed. */
+    int         dynamic;
 };
 
 /* Open file descriptor */

@@ -76,6 +76,7 @@ static vfs_node_t* fat16_vfs_finddir(vfs_node_t* dir, const char* name)
     node->write   = fat16_vfs_write;
     node->finddir = 0;
     node->close   = fat16_vfs_close;
+    node->dynamic = 1;
 
     fat16_file_data_t* d = (fat16_file_data_t*)kzalloc(sizeof(fat16_file_data_t));
     if (!d) { kfree(node); fat16_close(fd); return 0; }
