@@ -22,6 +22,8 @@ static uint64_t   exec_saved_kstack;
 static uint64_t   exec_saved_user_rsp;
 static uint64_t   exec_saved_cr3;
 static kjmp_buf_t exec_saved_jmp;
+static int path_is_ycfs(const char* p);
+
 static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)code;(void)a2;(void)a3;(void)a4;(void)a5;
     process_current()->state = PROCESS_DEAD;
@@ -233,6 +235,11 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
                               uint64_t size, uint64_t a4, uint64_t a5) {
     (void)a4;(void)a5;
     const char* path = (const char*)path_arg;
+    if (path_is_ycfs(path)) {
+        extern int64_t ycfs_savefile(const char*, const void*, uint32_t);
+        int64_t n = ycfs_savefile(path, (const void*)buf, (uint32_t)size);
+        return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+    }
     /* extract filename after last '/' */
     const char* name = path;
     for(const char* p = path; *p; p++) if(*p=='/') name=p+1;
@@ -268,13 +275,27 @@ static uint64_t sys_readsyslog(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,
     (void)a3;(void)a4;(void)a5;
     return (uint64_t)(int64_t)syslog_read((void*)buf,(uint32_t)sz);
 }
+static int path_is_ycfs(const char* p) {
+    if (p[0] == '/') p++;
+    return p[0]=='y'&&p[1]=='c'&&p[2]=='f'&&p[3]=='s'&&(p[4]=='/'||p[4]==0);
+}
 static uint64_t sys_readdir2(uint64_t path,uint64_t buf,uint64_t max,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
-    return (uint64_t)(int64_t)fat16_list_dir((const char*)path,(fat16_entry_t*)buf,(int)max);
+    const char* p = (const char*)path;
+    if (path_is_ycfs(p)) {
+        extern int ycfs_list_dir(const char*, void*, int);
+        return (uint64_t)(int64_t)ycfs_list_dir(p, (void*)buf, (int)max);
+    }
+    return (uint64_t)(int64_t)fat16_list_dir(p,(fat16_entry_t*)buf,(int)max);
 }
 static uint64_t sys_rename(uint64_t op,uint64_t np,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a3;(void)a4;(void)a5;
-    return (uint64_t)(int64_t)fat16_rename((const char*)op,(const char*)np);
+    const char* o = (const char*)op;
+    if (path_is_ycfs(o)) {
+        extern int ycfs_rename(const char*, const char*);
+        return (uint64_t)(int64_t)ycfs_rename(o, (const char*)np);
+    }
+    return (uint64_t)(int64_t)fat16_rename(o,(const char*)np);
 }
 static uint64_t sys_msgpost(uint64_t name,uint64_t data,uint64_t len,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
@@ -290,16 +311,34 @@ static uint64_t sys_mqcreate(uint64_t name,uint64_t a2,uint64_t a3,uint64_t a4,u
 }
 static uint64_t sys_stat(uint64_t p,uint64_t so,uint64_t io,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;uint32_t sz=0;uint8_t isd=0;
-    if(fat16_stat((const char*)p,&sz,&isd)<0)return (uint64_t)-1ULL;
+    const char* path = (const char*)p;
+    int r;
+    if (path_is_ycfs(path)) {
+        extern int ycfs_stat(const char*, uint32_t*, uint8_t*);
+        r = ycfs_stat(path,&sz,&isd);
+    } else {
+        r = fat16_stat(path,&sz,&isd);
+    }
+    if(r<0)return (uint64_t)-1ULL;
     if(so)*(uint32_t*)so=sz;if(io)*(uint8_t*)io=isd;return 0;
 }
 static uint64_t sys_mkdir(uint64_t p,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a2;(void)a3;(void)a4;(void)a5;
-    return (uint64_t)(int64_t)fat16_mkdir((const char*)p);
+    const char* path = (const char*)p;
+    if (path_is_ycfs(path)) {
+        extern int ycfs_mkdir(const char*);
+        return (uint64_t)(int64_t)ycfs_mkdir(path);
+    }
+    return (uint64_t)(int64_t)fat16_mkdir(path);
 }
 static uint64_t sys_unlink(uint64_t p,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a2;(void)a3;(void)a4;(void)a5;
-    return (uint64_t)(int64_t)fat16_unlink((const char*)p);
+    const char* path = (const char*)p;
+    if (path_is_ycfs(path)) {
+        extern int ycfs_unlink(const char*);
+        return (uint64_t)(int64_t)ycfs_unlink(path);
+    }
+    return (uint64_t)(int64_t)fat16_unlink(path);
 }
 static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_exit, sys_write, sys_read, sys_getpid, sys_yield, sys_sleep,

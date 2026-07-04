@@ -64,4 +64,27 @@ int      ycfs_lookup(uint32_t dir_inode, const char* name,
                       uint32_t* out_inode, uint32_t* out_type, uint64_t* out_size);
 int64_t  ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf);
 
+/* Phase 2: writes */
+int64_t  ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf);
+int      ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode);
+
+/* Same field layout as fat16_entry_t (char name[32]; uint32_t size;
+ * uint8_t is_dir;) so listings look identical to callers regardless of
+ * which filesystem backs a path. */
+typedef struct {
+    char     name[32];
+    uint32_t size;
+    uint8_t  is_dir;
+} ycfs_entry_t;
+
+/* Path-based ops, mirroring fat16's own convention: accept a full path
+ * (leading "/ycfs/" or bare "ycfs/" prefix optional, stripped internally)
+ * and resolve real nested directories via repeated ycfs_lookup(). */
+int ycfs_unlink(const char* path);
+int ycfs_mkdir(const char* path);
+int ycfs_rename(const char* old_path, const char* new_path);
+int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out);
+int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries);
+int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size);
+
 #endif

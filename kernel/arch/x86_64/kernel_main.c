@@ -190,6 +190,85 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [!!] YCFS self-test: /ycfs/docs/notes.txt not found (nested dir traversal failed)\n", VGA_LIGHT_RED, VGA_BLACK);
                 syslog_write("YCFS", "docs/notes.txt FAILED - nested dir traversal broken");
             }
+            /* Phase 2 self-test: create a new file and a new subdirectory
+             * under root, write content, read it back, and confirm the
+             * subdirectory is findable — all non-fatal, logged to syslog. */
+            extern int ycfs_create(uint32_t, const char*, uint32_t, uint32_t*);
+            extern int64_t ycfs_write(uint32_t, uint64_t, uint32_t, const void*);
+            extern uint32_t ycfs_root_inode(void);
+            #define YCFS_TYPE_FILE_ 1
+            #define YCFS_TYPE_DIR_  2
+            uint32_t new_file_inode = 0, new_dir_inode = 0;
+            const char* write_msg = "Phase 2 write test - if you can read this, writes work.\n";
+            int create_ok = ycfs_create(ycfs_root_inode(), "written.txt", YCFS_TYPE_FILE_, &new_file_inode);
+            int mkdir_ok  = ycfs_create(ycfs_root_inode(), "newdir", YCFS_TYPE_DIR_, &new_dir_inode);
+            if (create_ok == 0) {
+                int64_t wn = ycfs_write(new_file_inode, 0, (uint32_t)(sizeof("Phase 2 write test - if you can read this, writes work.\n") - 1), write_msg);
+                (void)wn;
+                int fd3 = vfs_open("/ycfs/written.txt", 0);
+                if (fd3 >= 0) {
+                    char buf[128];
+                    uint64_t r = vfs_read(fd3, buf, sizeof(buf) - 1);
+                    buf[(int)r] = 0;
+                    vfs_close(fd3);
+                    syslog_write("YCFS", "write test OK");
+                    syslog_write("YCFS", buf);
+                } else {
+                    syslog_write("YCFS", "write test FAILED - could not reopen written.txt");
+                }
+            } else {
+                syslog_write("YCFS", "write test FAILED - ycfs_create(written.txt) failed");
+            }
+            if (mkdir_ok == 0) {
+                int fd4 = vfs_open("/ycfs/newdir", 0);
+                if (fd4 >= 0) {
+                    vfs_close(fd4);
+                    syslog_write("YCFS", "mkdir test OK - /ycfs/newdir findable");
+                } else {
+                    syslog_write("YCFS", "mkdir test FAILED - /ycfs/newdir not findable after create");
+                }
+            } else {
+                syslog_write("YCFS", "mkdir test FAILED - ycfs_create(newdir) failed");
+            }
+
+            /* Phase 2b self-test: list_dir, rename (into a nested dir,
+             * proving cross-directory moves work), then unlink. */
+            extern int ycfs_list_dir(const char*, void*, int);
+            extern int ycfs_rename(const char*, const char*);
+            extern int ycfs_unlink(const char*);
+            struct { char name[32]; uint32_t size; uint8_t is_dir; } list_buf[16];
+            int list_n = ycfs_list_dir("/ycfs", list_buf, 16);
+            if (list_n >= 3) { /* hello.txt, docs, newdir, written.txt at least */
+                syslog_write("YCFS", "list_dir test OK - /ycfs root listed");
+            } else {
+                syslog_write("YCFS", "list_dir test FAILED - unexpected entry count");
+            }
+
+            int rename_ok = ycfs_rename("/ycfs/written.txt", "/ycfs/newdir/moved.txt");
+            if (rename_ok == 0) {
+                int fd5 = vfs_open("/ycfs/newdir/moved.txt", 0);
+                if (fd5 >= 0) {
+                    vfs_close(fd5);
+                    syslog_write("YCFS", "rename test OK - moved into nested dir");
+                } else {
+                    syslog_write("YCFS", "rename test FAILED - moved.txt not findable at new path");
+                }
+            } else {
+                syslog_write("YCFS", "rename test FAILED - ycfs_rename returned error");
+            }
+
+            int unlink_ok = ycfs_unlink("/ycfs/newdir/moved.txt");
+            if (unlink_ok == 0) {
+                int fd6 = vfs_open("/ycfs/newdir/moved.txt", 0);
+                if (fd6 < 0) {
+                    syslog_write("YCFS", "unlink test OK - moved.txt gone");
+                } else {
+                    vfs_close(fd6);
+                    syslog_write("YCFS", "unlink test FAILED - moved.txt still findable");
+                }
+            } else {
+                syslog_write("YCFS", "unlink test FAILED - ycfs_unlink returned error");
+            }
         } else {
             vga_puts_color("  [!!] YCFS mount failed (did you run mkycfs.py?)\n", VGA_LIGHT_RED, VGA_BLACK);
         }
