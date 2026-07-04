@@ -14,6 +14,7 @@
 
 static ycfs_superblock_t sb;
 static int initialized = 0;
+static void ycfs_journal_replay(void);
 
 #define SECTORS_PER_BLOCK (YCFS_BLOCK_SIZE / 512)
 
@@ -49,6 +50,7 @@ int ycfs_init(void) {
     }
     sb = *s;
     initialized = 1;
+    ycfs_journal_replay();
     vga_puts_color("  [OK] YCFS filesystem mounted\n", VGA_LIGHT_GREEN, VGA_BLACK);
     return 0;
 }
@@ -146,9 +148,169 @@ int ycfs_lookup(uint32_t dir_inode, const char* name,
 
 /* ==================== Phase 2: writes ==================== */
 
-static int write_block(uint32_t block_num, const void* buf) {
+static int raw_write_block(uint32_t block_num, const void* buf) {
     uint32_t lba = YCFS_START_LBA + block_num * SECTORS_PER_BLOCK;
     return ata_write_sectors(lba, (uint8_t)SECTORS_PER_BLOCK, buf);
+}
+
+/* ---- journaling machinery ----
+ * current_txn_id != 0 means every write_block() call between txn_begin()
+ * and txn_commit() gets logged to the journal (write-ahead) before the
+ * real write happens. journal_pos is in-memory only and resets to 0 each
+ * boot, since ycfs_journal_replay() always wipes the journal region
+ * after replaying it. */
+static uint32_t current_txn_id = 0;
+static uint32_t journal_pos    = 0;
+static uint32_t next_txn_id    = 1;
+
+static int journal_log(uint32_t txn_id, uint32_t target_block, const void* data) {
+    if (sb.journal_num_blocks == 0) return -1; /* unformatted / no journal */
+    if (journal_pos + 2 > sb.journal_num_blocks) journal_pos = 0;
+    ycfs_journal_hdr_t hdr;
+    uint8_t* hp = (uint8_t*)&hdr;
+    for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
+    hdr.magic        = YCFS_JOURNAL_MAGIC;
+    hdr.txn_id       = txn_id;
+    hdr.target_block = target_block;
+    hdr.type         = YCFS_JTYPE_DESC;
+    raw_write_block(sb.journal_start_block + journal_pos, &hdr);
+    raw_write_block(sb.journal_start_block + journal_pos + 1, data);
+    journal_pos += 2;
+    return 0;
+}
+
+static uint32_t txn_begin(void) {
+    current_txn_id = next_txn_id++;
+    return current_txn_id;
+}
+
+static void txn_commit(void) {
+    if (current_txn_id == 0) return;
+    if (sb.journal_num_blocks != 0) {
+        if (journal_pos + 1 > sb.journal_num_blocks) journal_pos = 0;
+        ycfs_journal_hdr_t hdr;
+        uint8_t* hp = (uint8_t*)&hdr;
+        for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
+        hdr.magic  = YCFS_JOURNAL_MAGIC;
+        hdr.txn_id = current_txn_id;
+        hdr.type   = YCFS_JTYPE_COMMIT;
+        raw_write_block(sb.journal_start_block + journal_pos, &hdr);
+        journal_pos += 1;
+    }
+    current_txn_id = 0;
+}
+
+static int write_block(uint32_t block_num, const void* buf) {
+    if (current_txn_id != 0) journal_log(current_txn_id, block_num, buf);
+    return raw_write_block(block_num, buf);
+}
+
+/* Replay any committed-but-possibly-unapplied transactions, discard any
+ * incomplete (no matching commit) ones, then wipe the journal so the
+ * next boot starts clean. Safe to call even if journal_num_blocks == 0
+ * (old/unformatted superblock) — becomes a no-op. */
+static void ycfs_journal_replay(void) {
+    if (sb.journal_num_blocks == 0) return;
+
+    #define YCFS_MAX_STAGE 32
+    static uint8_t  hdrbuf[YCFS_BLOCK_SIZE];
+    static uint8_t  databuf[YCFS_BLOCK_SIZE];
+    static uint32_t stage_targets[YCFS_MAX_STAGE];
+    static uint8_t  stage_data[YCFS_MAX_STAGE][YCFS_BLOCK_SIZE];
+    uint32_t stage_count = 0;
+    uint32_t stage_txn   = 0;
+    int replayed_any = 0;
+
+    uint32_t pos = 0;
+    while (pos < sb.journal_num_blocks) {
+        if (read_block(sb.journal_start_block + pos, hdrbuf) != 0) break;
+        ycfs_journal_hdr_t* hdr = (ycfs_journal_hdr_t*)hdrbuf;
+        if (hdr->magic != YCFS_JOURNAL_MAGIC) break;
+
+        if (hdr->type == YCFS_JTYPE_DESC) {
+            if (stage_count == 0) stage_txn = hdr->txn_id;
+            if (hdr->txn_id != stage_txn) {
+                /* a different transaction started without the previous
+                 * one committing — the previous group is incomplete */
+                stage_count = 0;
+                stage_txn   = hdr->txn_id;
+            }
+            if (pos + 1 >= sb.journal_num_blocks) break;
+            if (read_block(sb.journal_start_block + pos + 1, databuf) != 0) break;
+            if (stage_count < YCFS_MAX_STAGE) {
+                stage_targets[stage_count] = hdr->target_block;
+                for (int i = 0; i < YCFS_BLOCK_SIZE; i++) stage_data[stage_count][i] = databuf[i];
+                stage_count++;
+            }
+            pos += 2;
+        } else if (hdr->type == YCFS_JTYPE_COMMIT) {
+            if (hdr->txn_id == stage_txn && stage_count > 0) {
+                for (uint32_t i = 0; i < stage_count; i++)
+                    raw_write_block(stage_targets[i], stage_data[i]);
+                replayed_any = 1;
+            }
+            stage_count = 0;
+            stage_txn   = 0;
+            pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    static uint8_t zero[YCFS_BLOCK_SIZE];
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) zero[i] = 0;
+    for (uint32_t i = 0; i < sb.journal_num_blocks; i++)
+        raw_write_block(sb.journal_start_block + i, zero);
+    journal_pos = 0;
+
+    if (replayed_any)
+        vga_puts_color("  [OK] YCFS journal: replayed pending transaction(s)\n", VGA_LIGHT_GREEN, VGA_BLACK);
+}
+
+/* Deliberately simulates both crash scenarios to prove replay makes the
+ * right call in each, rather than just hoping the logic is correct:
+ *   1. An incomplete transaction (logged, no commit) must be discarded.
+ *   2. A complete transaction (logged + committed) whose real write never
+ *      landed before the "crash" must still get applied by replay.
+ * Uses the volume's last block as scratch space (well past any real
+ * data at this filesystem's size). Non-destructive to real content. */
+int ycfs_journal_self_test(void) {
+    if (sb.journal_num_blocks < 6) return -1;
+    uint32_t scratch = sb.total_blocks - 1;
+    static uint8_t testblock[YCFS_BLOCK_SIZE];
+    static uint8_t check[YCFS_BLOCK_SIZE];
+
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) testblock[i] = 0;
+    raw_write_block(scratch, testblock);
+
+    /* Test 1: log a write but never commit it, and never perform the
+     * real write either (simulating a crash right after logging). */
+    uint32_t txn1 = 999000;
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) testblock[i] = 0xAA;
+    journal_log(txn1, scratch, testblock);
+    ycfs_journal_replay();
+    read_block(scratch, check);
+    int test1_ok = 1;
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) if (check[i] != 0) { test1_ok = 0; break; }
+
+    /* Test 2: log a write AND its commit, but skip the real write
+     * (simulating a crash after the journal was durable but before the
+     * real target update landed) — replay must still apply it. */
+    uint32_t txn2 = 999001;
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) testblock[i] = 0xBB;
+    journal_log(txn2, scratch, testblock);
+    ycfs_journal_hdr_t hdr;
+    uint8_t* hp = (uint8_t*)&hdr;
+    for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
+    hdr.magic = YCFS_JOURNAL_MAGIC; hdr.txn_id = txn2; hdr.type = YCFS_JTYPE_COMMIT;
+    raw_write_block(sb.journal_start_block + journal_pos, &hdr);
+    journal_pos += 1;
+    ycfs_journal_replay();
+    read_block(scratch, check);
+    int test2_ok = 1;
+    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) if (check[i] != 0xBB) { test2_ok = 0; break; }
+
+    return (test1_ok && test2_ok) ? 0 : -1;
 }
 
 static int write_superblock(void) {
@@ -304,8 +466,10 @@ int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* o
     if (ycfs_lookup(dir_inode, name, &existing_inode, &existing_type, &existing_size) == 0)
         return -1; /* already exists */
 
+    txn_begin();
+
     uint32_t new_inode_num;
-    if (alloc_inode_num(&new_inode_num) != 0) return -1;
+    if (alloc_inode_num(&new_inode_num) != 0) { txn_commit(); return -1; }
 
     ycfs_inode_t ni;
     uint8_t* p = (uint8_t*)&ni;
@@ -314,10 +478,11 @@ int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* o
     ni.size        = 0;
     ni.links_count = 1;
     ni.blocks_used = 0;
-    if (write_inode(new_inode_num, &ni) != 0) return -1;
+    if (write_inode(new_inode_num, &ni) != 0) { txn_commit(); return -1; }
 
-    if (append_dirent(dir_inode, new_inode_num, name, type) != 0) return -1;
+    if (append_dirent(dir_inode, new_inode_num, name, type) != 0) { txn_commit(); return -1; }
 
+    txn_commit();
     if (out_inode) *out_inode = new_inode_num;
     return 0;
 }
@@ -441,7 +606,9 @@ int ycfs_unlink(const char* path) {
     uint32_t target_inode, target_type; uint64_t target_size;
     if (ycfs_lookup(parent, name, &target_inode, &target_type, &target_size) != 0) return -1;
 
-    if (clear_dirent(parent, name) != 0) return -1;
+    txn_begin();
+
+    if (clear_dirent(parent, name) != 0) { txn_commit(); return -1; }
 
     ycfs_inode_t ti;
     if (read_inode(target_inode, &ti) == 0) {
@@ -456,6 +623,8 @@ int ycfs_unlink(const char* path) {
         }
     }
     free_inode_num(target_inode);
+
+    txn_commit();
     return 0;
 }
 
@@ -473,8 +642,11 @@ int ycfs_rename(const char* old_path, const char* new_path) {
     if (ycfs_lookup(new_parent, new_name, &existing_inode, &existing_type, &existing_size) == 0)
         return -1; /* destination already exists */
 
-    if (append_dirent(new_parent, target_inode, new_name, target_type) != 0) return -1;
-    return clear_dirent(old_parent, old_name);
+    txn_begin();
+    if (append_dirent(new_parent, target_inode, new_name, target_type) != 0) { txn_commit(); return -1; }
+    int r = clear_dirent(old_parent, old_name);
+    txn_commit();
+    return r;
 }
 
 int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {

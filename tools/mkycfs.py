@@ -31,17 +31,20 @@ BLOCK_BITMAP_BLOCK = 2
 INODE_TABLE_BLOCK  = 3
 INODE_SIZE = 128
 INODE_TABLE_BLOCKS = (TOTAL_INODES * INODE_SIZE + BLOCK_SIZE - 1) // BLOCK_SIZE
-DATA_START_BLOCK = INODE_TABLE_BLOCK + INODE_TABLE_BLOCKS
+JOURNAL_START_BLOCK = INODE_TABLE_BLOCK + INODE_TABLE_BLOCKS
+JOURNAL_BLOCKS = 128   # 512KB — room for ~42 two-block journal entries + commits
+DATA_START_BLOCK = JOURNAL_START_BLOCK + JOURNAL_BLOCKS
 ROOT_INODE = 1
 
 
 def pack_superblock(free_blocks, free_inodes):
-    fields = struct.pack('<13I',
+    fields = struct.pack('<15I',
         MAGIC, 1, BLOCK_SIZE, TOTAL_BLOCKS, TOTAL_INODES,
         free_blocks, free_inodes,
         INODE_BITMAP_BLOCK, BLOCK_BITMAP_BLOCK,
         INODE_TABLE_BLOCK, INODE_TABLE_BLOCKS,
-        DATA_START_BLOCK, ROOT_INODE)
+        DATA_START_BLOCK, ROOT_INODE,
+        JOURNAL_START_BLOCK, JOURNAL_BLOCKS)
     return fields + b'\x00' * (BLOCK_SIZE - len(fields))
 
 
@@ -116,8 +119,12 @@ def main():
 
     superblock = pack_superblock(free_blocks, free_inodes)
 
+    zero_block = b'\x00' * BLOCK_SIZE
+
     with open(path, 'r+b') as f:
         f.seek(YCFS_START + 0 * BLOCK_SIZE);                 f.write(superblock)
+        for jb in range(JOURNAL_START_BLOCK, JOURNAL_START_BLOCK + JOURNAL_BLOCKS):
+            f.seek(YCFS_START + jb * BLOCK_SIZE); f.write(zero_block)
         f.seek(YCFS_START + INODE_BITMAP_BLOCK * BLOCK_SIZE); f.write(inode_bitmap)
         f.seek(YCFS_START + BLOCK_BITMAP_BLOCK * BLOCK_SIZE); f.write(block_bitmap)
         f.seek(YCFS_START + INODE_TABLE_BLOCK * BLOCK_SIZE);  f.write(inode_table)
@@ -127,6 +134,7 @@ def main():
         f.seek(YCFS_START + notes_block * BLOCK_SIZE);        f.write(pad_block(notes_content))
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
+    print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
     print(f"  root (inode 1) -> hello.txt, docs/")
     print(f"  hello.txt (inode 2, {len(hello_content)} bytes)")
     print(f"  docs/ (inode 3) -> notes.txt")

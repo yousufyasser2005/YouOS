@@ -159,6 +159,21 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             }
             vga_puts_color("  [OK] /ycfs mounted\n", VGA_LIGHT_GREEN, VGA_BLACK);
 
+            /* Phase 3 self-test: deliberately simulates a crash mid-
+             * transaction and a crash after-commit-but-before-real-write,
+             * proving journal replay makes the correct call in both cases. */
+            extern int ycfs_journal_self_test(void);
+            if (ycfs_journal_self_test() == 0) {
+                syslog_write("YCFS", "journal self-test OK - incomplete txn discarded, committed txn replayed");
+                vga_puts_color("  [OK] YCFS journal self-test passed\n", VGA_LIGHT_GREEN, VGA_BLACK);
+            } else {
+                syslog_write("YCFS", "journal self-test FAILED");
+                vga_puts_color("\n\n  [FATAL] YCFS JOURNAL SELF-TEST FAILED — replay logic is broken.\n", VGA_LIGHT_RED, VGA_BLACK);
+                vga_puts_color("  System halted so this can't be missed. Check ycfs_journal_self_test()\n", VGA_LIGHT_RED, VGA_BLACK);
+                vga_puts_color("  and ycfs_journal_replay() in kernel/fs/ycfs.c.\n", VGA_LIGHT_RED, VGA_BLACK);
+                while (1) { __asm__ volatile("hlt"); }
+            }
+
             /* Self-test: read the seed files mkycfs.py wrote, including
              * through a nested directory, to confirm real path traversal
              * and multi-level finddir() work end-to-end. Non-fatal. */

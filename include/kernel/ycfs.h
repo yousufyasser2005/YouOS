@@ -36,8 +36,35 @@ typedef struct {
     uint32_t inode_table_blocks;
     uint32_t data_start_block;
     uint32_t root_inode;
-    uint8_t  reserved[4096 - 52];
+    uint32_t journal_start_block;  /* phase 3 */
+    uint32_t journal_num_blocks;   /* 0 = no journal (old/unformatted) */
+    uint8_t  reserved[4096 - 60];
 } __attribute__((packed)) ycfs_superblock_t;
+
+/* ---- Phase 3: journaling ----
+ * Write-ahead log: before any metadata write inside a transaction, log
+ * {target_block, new content} as a (descriptor, data) block pair. Once
+ * every write in the transaction is logged, write one commit record.
+ * At mount, replay scans from journal block 0: any transaction whose
+ * commit is present gets its logged writes re-applied (idempotent —
+ * harmless even if the real write already landed before a crash);
+ * anything logged without a matching commit (crash happened mid-
+ * transaction) is discarded entirely, so the filesystem never ends up
+ * half-updated. The journal is wiped after every replay so each boot
+ * starts clean. */
+#define YCFS_JOURNAL_MAGIC   0x594A524Eu  /* "YJRN" */
+#define YCFS_JTYPE_DESC      1
+#define YCFS_JTYPE_COMMIT    2
+
+typedef struct {
+    uint32_t magic;
+    uint32_t txn_id;
+    uint32_t target_block;   /* unused for YCFS_JTYPE_COMMIT */
+    uint32_t type;
+    uint8_t  reserved[4096 - 16];
+} __attribute__((packed)) ycfs_journal_hdr_t;
+
+int ycfs_journal_self_test(void);
 
 typedef struct {
     uint32_t mode;          /* YCFS_TYPE_FILE or YCFS_TYPE_DIR */
