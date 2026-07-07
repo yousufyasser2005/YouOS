@@ -61,7 +61,35 @@ static void vga_putchar_hw(char c) {
     if (++col >= VGA_COLS) { col = 0; if (++row >= VGA_ROWS) scroll(); }
 }
 
+static inline uint8_t vga_inb(uint16_t port) {
+    uint8_t val;
+    __asm__ volatile("inb %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+static inline void vga_outb(uint16_t port, uint8_t val) {
+    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+#define COM1 0x3F8
+static int serial_ready = 0;
+static void serial_init(void) {
+    vga_outb(COM1 + 1, 0x00);
+    vga_outb(COM1 + 3, 0x80);
+    vga_outb(COM1 + 0, 0x03);
+    vga_outb(COM1 + 1, 0x00);
+    vga_outb(COM1 + 3, 0x03);
+    vga_outb(COM1 + 2, 0xC7);
+    vga_outb(COM1 + 4, 0x0B);
+    serial_ready = 1;
+}
+static void serial_putc(char c) {
+    if (!serial_ready) serial_init();
+    while (!(vga_inb(COM1 + 5) & 0x20));
+    vga_outb(COM1, c);
+}
+
 void vga_putchar(char c) {
+    serial_putc(c);
     if (fb_available())
         fb_terminal_putchar(c);
     else

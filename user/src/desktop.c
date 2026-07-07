@@ -8,14 +8,16 @@ typedef unsigned char  u8;
 typedef signed long    s64;
 
 static u64 FB_W,FB_H;
-static u32 buf[1024*768];
-static void px(int x,int y,u32 c){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*1024+x]=c;}
+#define MAX_FB_W 1920
+#define MAX_FB_H 1080
+static u32 buf[MAX_FB_W*MAX_FB_H];
+static void px(int x,int y,u32 c){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*(int)FB_W+x]=c;}
 static void rect(int x,int y,int w,int h,u32 c){for(int r=y;r<y+h;r++)for(int col=x;col<x+w;col++)px(col,r,c);}
 static void outline(int x,int y,int w,int h,u32 c){for(int i=x;i<x+w;i++){px(i,y,c);px(i,y+h-1,c);}for(int i=y;i<y+h;i++){px(x,i,c);px(x+w-1,i,c);}}
 static void hline(int x,int y,int w,u32 c){for(int i=0;i<w;i++)px(x+i,y,c);}
 static void vline(int x,int y,int h,u32 c){for(int i=0;i<h;i++)px(x,y+i,c);}
 static u32 ablend(u32 bg,u32 fg,int a){int br=(bg>>16)&0xFF,bgc=(bg>>8)&0xFF,bb=bg&0xFF;int fr=(fg>>16)&0xFF,fgc=(fg>>8)&0xFF,fbc=fg&0xFF;int r=(fr*a+br*(255-a))/255,g=(fgc*a+bgc*(255-a))/255,b=(fbc*a+bb*(255-a))/255;return (r<<16)|(g<<8)|b;}
-static void px_alpha(int x,int y,u32 c,int a){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*1024+x]=ablend(buf[y*1024+x],c,a);}
+static void px_alpha(int x,int y,u32 c,int a){if((u64)x<FB_W&&(u64)y<FB_H)buf[y*(int)FB_W+x]=ablend(buf[y*(int)FB_W+x],c,a);}
 static void rect_alpha(int x,int y,int w,int h,u32 c,int a){for(int r=y;r<y+h;r++)for(int col=x;col<x+w;col++)px_alpha(col,r,c,a);}
 static void blit_rgba(int x,int y,int w,int h,const unsigned char*rgba){
     for(int row=0;row<h;row++)for(int col=0;col<w;col++){
@@ -62,7 +64,7 @@ static void outline_round(int x,int y,int w,int h,int r,u32 c){
         if(edge)px(x+col,y+row,c);
     }
 }
-static void flush(void){sys_fbwrite(0,0,1024,768,buf);}
+static void flush(void){sys_fbwrite(0,0,FB_W,FB_H,buf);}
 
 static const u8 font[96][16]={
 {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
@@ -219,8 +221,8 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_GAP   10
 #define TBAR_PILL_W 900
 #define TBAR_PILL_H (TBAR_H-TBAR_GAP)
-#define TBAR_PILL_X ((1024-TBAR_PILL_W)/2)
-#define TBAR_PILL_Y (768-TBAR_H)
+#define TBAR_PILL_X (((int)FB_W-TBAR_PILL_W)/2)
+#define TBAR_PILL_Y ((int)FB_H-TBAR_H)
 #define TBAR_SB_SZ  50
 #define TBAR_SB_X   (TBAR_PILL_X+8)
 #define TBAR_SB_Y   (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_SB_SZ)/2)
@@ -234,7 +236,7 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_BELL_Y (TBAR_PILL_Y+(TBAR_PILL_H-TBAR_BELL_SZ)/2)
 #define NOTIF_POPUP_W 320
 #define NOTIF_POPUP_H 80
-#define NOTIF_POPUP_X (1024-NOTIF_POPUP_W-20)
+#define NOTIF_POPUP_X ((int)FB_W-NOTIF_POPUP_W-20)
 #define NOTIF_POPUP_Y 20
 #define NC_W 380
 #define NC_H 420
@@ -243,7 +245,7 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define NC_X (TBAR_BELL_X+TBAR_BELL_SZ-NC_W)
 #define NC_Y (TBAR_PILL_Y-NC_H-12)
 #define PANEL_W    240
-#define PANEL_X    (1024-PANEL_W)
+#define PANEL_X    ((int)FB_W-PANEL_W)
 #define TITLEBAR_H 28
 #define RESIZE_GRIP 8
 #define ANIM_TICKS  8
@@ -398,8 +400,8 @@ static int wm_draw_frame(int i){
         w->anim--;
     }
     if(!w->minimized){
-        int sh1=dh;if(dy+4+sh1>768-TBAR_H)sh1=(768-TBAR_H)-(dy+4);if(sh1<0)sh1=0;
-        int sh2=dh;if(dy+2+sh2>768-TBAR_H)sh2=(768-TBAR_H)-(dy+2);if(sh2<0)sh2=0;
+        int sh1=dh;if(dy+4+sh1>(int)FB_H-TBAR_H)sh1=((int)FB_H-TBAR_H)-(dy+4);if(sh1<0)sh1=0;
+        int sh2=dh;if(dy+2+sh2>(int)FB_H-TBAR_H)sh2=((int)FB_H-TBAR_H)-(dy+2);if(sh2<0)sh2=0;
         rect(dx+4,dy+4,dw,sh1,0x000000);
         rect(dx+2,dy+2,dw,sh2,0x080808);
         rect(dx,dy,dw,dh,0x0D1117);
@@ -438,6 +440,7 @@ static void tprint(const char*s){
     if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;}
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
 }
+static void do_shutdown(void);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
     const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
@@ -457,7 +460,7 @@ static void tcmd(const char*cmd){
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
-    else if(ms){tprint("Shutting down...");flush();sys_shutdown();}
+    else if(ms){do_shutdown();}
     else if(mrb){tprint("Restarting...");flush();sys_reboot();}
     else if(msh){
         tprint("Switching to shell... type 'exit' to return.");
@@ -613,8 +616,8 @@ static void draw_files_content(int wi){
         u32 icol=fm_entries[i].is_dir?YELLOW:cfg_accent;
         rect(x+8,ry+5,12,12,icol);
         for(int r2=ry+6;r2<ry+16;r2++)for(int c2=x+9;c2<x+19;c2++){
-            u32 col=buf[r2*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
-            buf[r2*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
+            u32 col=buf[r2*(int)FB_W+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
+            buf[r2*(int)FB_W+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
         }
         u32 tfg=(fm_has_clip&&fm_clip_cut&&fm_selected==i)?DIM:(fm_entries[i].is_dir?YELLOW:TEXT);
         int name_max=(size_col_x-x-30)/8;if(name_max<1)name_max=1;
@@ -946,7 +949,20 @@ static void draw_about_content(int i){
     text_center(cx,y,"Architecture: x86_64",DIM,0x0D1117);y+=18;
     text_center(cx,y,"Bootloader:   GRUB2+Multiboot2",DIM,0x0D1117);y+=18;
     text_center(cx,y,"Filesystem:   FAT16+initrd",DIM,0x0D1117);y+=18;
-    text_center(cx,y,"Display:      1024x768x32bpp",DIM,0x0D1117);y+=18;
+    {
+        char reslbl[48];const char*pfx="Display:      ";int pi=0;
+        while(pfx[pi]){reslbl[pi]=pfx[pi];pi++;}
+        u64 v=FB_W;char tmp[24];int t=0;
+        if(!v)tmp[t++]='0';else{char rv[24];int rr=0;while(v){rv[rr++]='0'+(int)(v%10);v/=10;}while(rr>0)tmp[t++]=rv[--rr];}
+        for(int k=0;k<t;k++)reslbl[pi++]=tmp[k];
+        reslbl[pi++]='x';
+        v=FB_H;t=0;
+        if(!v)tmp[t++]='0';else{char rv[24];int rr=0;while(v){rv[rr++]='0'+(int)(v%10);v/=10;}while(rr>0)tmp[t++]=rv[--rr];}
+        for(int k=0;k<t;k++)reslbl[pi++]=tmp[k];
+        const char*suf="x32bpp";int si=0;while(suf[si])reslbl[pi++]=suf[si++];
+        reslbl[pi]=0;
+        text_center(cx,y,reslbl,DIM,0x0D1117);
+    }y+=18;
     text_center(cx,y,"Syscalls:     19",DIM,0x0D1117);y+=18;
     hline(w->x+20,y,w->w-40,BORDER);y+=12;
     text_center(cx,y,"Built from scratch in C+NASM",GREEN,0x0D1117);
@@ -954,7 +970,7 @@ static void draw_about_content(int i){
 
 /* ═══ WALLPAPER + PANEL ═════════════════════════════════════════ */
 /* ═══ Wallpaper: BMP loader ═════════════════════════════════════ */
-static u32 wallpaper_pixels[1024*768];
+static u32 wallpaper_pixels[MAX_FB_W*MAX_FB_H];
 static int wallpaper_loaded=0;
 static int load_wallpaper_bmp(const char*path){
     u64 fd=sys_open(path,0);
@@ -966,7 +982,7 @@ static int load_wallpaper_bmp(const char*path){
     int width    =(int)((u32)hdr[18]|((u32)hdr[19]<<8)|((u32)hdr[20]<<16)|((u32)hdr[21]<<24));
     int height   =(int)((u32)hdr[22]|((u32)hdr[23]<<8)|((u32)hdr[24]<<16)|((u32)hdr[25]<<24));
     u16 bpp      =(u16)hdr[28]|((u16)hdr[29]<<8);
-    if(width!=1024||height!=768||bpp!=24){sys_close(fd);return 0;}
+    if((u64)width!=FB_W||(u64)height!=FB_H||bpp!=24){sys_close(fd);return 0;}
     u64 skip=pix_off-54;
     u8 skipbuf[64];
     while(skip>0){
@@ -976,7 +992,7 @@ static int load_wallpaper_bmp(const char*path){
     }
     int row_bytes=width*3;
     int pad=(4-(row_bytes%4))%4;
-    static u8 rowbuf[1024*3];
+    static u8 rowbuf[MAX_FB_W*3];
     for(int row=0;row<height;row++){
         u64 got=0;
         while(got<(u64)row_bytes){
@@ -988,7 +1004,7 @@ static int load_wallpaper_bmp(const char*path){
         int screen_y=height-1-row;
         for(int x=0;x<width;x++){
             u8 b=rowbuf[x*3+0],g=rowbuf[x*3+1],r=rowbuf[x*3+2];
-            wallpaper_pixels[screen_y*1024+x]=((u32)r<<16)|((u32)g<<8)|b;
+            wallpaper_pixels[screen_y*(int)FB_W+x]=((u32)r<<16)|((u32)g<<8)|b;
         }
     }
     sys_close(fd);
@@ -997,18 +1013,18 @@ static int load_wallpaper_bmp(const char*path){
 
 static void wallpaper(void){
     if(wallpaper_loaded){
-        for(int y=0;y<768;y++)for(int x=0;x<1024;x++)px(x,y,wallpaper_pixels[y*1024+x]);
+        for(int y=0;y<(int)FB_H;y++)for(int x=0;x<(int)FB_W;x++)px(x,y,wallpaper_pixels[y*(int)FB_W+x]);
         return;
     }
-    for(int y=0;y<768;y++){
-        u32 r=0x0D,g=0x11+(y*8)/768,b=0x17+(y*20)/768;
+    for(int y=0;y<(int)FB_H;y++){
+        u32 r=0x0D,g=0x11+(y*8)/(int)FB_H,b=0x17+(y*20)/(int)FB_H;
         u32 c=(r<<16)|(g<<8)|b;
-        for(int x=0;x<1024;x++)px(x,y,c);
+        for(int x=0;x<(int)FB_W;x++)px(x,y,c);
     }
-    for(int y=0;y<768;y+=80)for(int x=0;x<PANEL_X;x++)px(x,y,0x161B22);
-    for(int x=0;x<PANEL_X;x+=80)for(int y=0;y<768;y++)px(x,y,0x161B22);
+    for(int y=0;y<(int)FB_H;y+=80)for(int x=0;x<PANEL_X;x++)px(x,y,0x161B22);
+    for(int x=0;x<PANEL_X;x+=80)for(int y=0;y<(int)FB_H;y++)px(x,y,0x161B22);
 }
-static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,768-TBAR_H,PANEL_BG);vline(PANEL_X,0,768-TBAR_H,BORDER);}
+static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,(int)FB_H-TBAR_H,PANEL_BG);vline(PANEL_X,0,(int)FB_H-TBAR_H,BORDER);}
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
     for(int deg=0;deg<360;deg+=2){
@@ -1077,7 +1093,7 @@ static void resolve_icon_pos(int idx,int ax,int ay,int*oax,int*oay){
     if(ax<4)ax=4;
     if(ax>PANEL_X-68)ax=PANEL_X-68;
     if(ay<4)ay=4;
-    if(ay>768-TBAR_H-68)ay=768-TBAR_H-68;
+    if(ay>(int)FB_H-TBAR_H-68)ay=(int)FB_H-TBAR_H-68;
     *oax=ax;*oay=ay;
 }
 static int icon_hovered=-1;
@@ -1130,8 +1146,8 @@ static void draw_icons(void){
         rect(ic->x-4,ic->y-4,72,72,bg);outline(ic->x-4,ic->y-4,72,72,i==icon_hovered?ACCENT:BORDER);
         rect(ic->x+10,ic->y+10,52,40,ic->color);
         for(int r=ic->y+12;r<ic->y+48;r++)for(int c2=ic->x+12;c2<ic->x+60;c2++){
-            u32 col=buf[r*1024+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
-            buf[r*1024+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
+            u32 col=buf[r*(int)FB_W+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
+            buf[r*(int)FB_W+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
         }
         draw_icon_glyph(i,ic->x+36,ic->y+30,TEXT,ic->color);
         int llen=0;const char*p=ic->name;while(*p++)llen++;
@@ -1341,7 +1357,7 @@ static void draw_rctx(void){
     const char**items;int n;get_rctx(&items,&n);
     int mh=rctx_h(),mx2=rctx_x,my2=rctx_y;
     if(mx2+CTX_W>PANEL_X)mx2=PANEL_X-CTX_W;
-    if(my2+mh>768-TBAR_H)my2=768-TBAR_H-mh;
+    if(my2+mh>(int)FB_H-TBAR_H)my2=(int)FB_H-TBAR_H-mh;
     rect(mx2+3,my2+3,CTX_W,mh,0x050810);rect(mx2+2,my2+2,CTX_W,mh,0x0A0D14);
     rect_alpha(mx2,my2,CTX_W,mh,0x1C2128,190);outline(mx2,my2,CTX_W,mh,BORDER);
     hline(mx2+1,my2,CTX_W-2,cfg_accent);
@@ -1360,6 +1376,7 @@ static const u32  sw_col[]={0x58A6FF,0x3FB950,0xBC8CFF,0xF78166,0xF85149,0xD2992
 static const char*sw_lbl[]={"Blue","Green","Purple","Orange","Red","Gold"};
 #define N_SW 6
 static void cfg_save(void);
+static void do_shutdown(void);
 static void cfg_set_accent(u32 c){
     cfg_accent=c;
     for(int i=0;i<win_count;i++)if(wins[i].id==WIN_TERMINAL)wins[i].accent=c;
@@ -1713,6 +1730,44 @@ static void cfg_save(void){
     const char*p="/disk/yos.cfg";
     sys_save_file((u64)p,(u64)&b,(u64)sizeof(b));
 }
+
+static void draw_shutdown_splash(int spin_deg){
+    rect(0,0,(int)FB_W,(int)FB_H,0x0D1117);
+    int scx=(int)FB_W/2,scy=(int)FB_H/2;
+    int cx=scx,cy=scy-10,r=28;
+    for(int i=0;i<8;i++){
+        int deg=(spin_deg+i*45)%360;
+        int dx=cx+(icos(deg)*r)/1000;
+        int dy=cy-(isin(deg)*r)/1000;
+        int a=255-(i*28);if(a<40)a=40;
+        int dotr=4;
+        for(int yy=-dotr;yy<=dotr;yy++)for(int xx=-dotr;xx<=dotr;xx++)
+            if(xx*xx+yy*yy<=dotr*dotr)px_alpha(dx+xx,dy+yy,0x58A6FF,a);
+    }
+    text_center(scx,cy+60,"Shutting down...",0xFFFFFF,0x0D1117);
+    flush();
+}
+
+/* Housekeeping before power-off — persist current settings/icon layout
+ * and hide open windows (simulating "closing programs"; this desktop is
+ * effectively single-process so there's no real process list to
+ * terminate beyond the suspend/resume shell already handles). Shown for
+ * at least ~3 seconds (300 ticks at 100Hz) while that happens, so the
+ * shutdown never feels instant/jarring even though the real work here
+ * is fast. */
+static void do_shutdown(void){
+    cfg_save();
+    for(int i=0;i<MAX_WINDOWS;i++) wins[i].visible=0;
+
+    u64 start=sys_ticks();
+    int deg=0;
+    while(sys_ticks()-start<300){
+        draw_shutdown_splash(deg);
+        deg=(deg+15)%360;
+        sys_sleep(3);
+    }
+    sys_shutdown();
+}
 static void cfg_load(void){
     CfgBlob b;
     u64 fd=sys_open("/disk/yos.cfg",0);
@@ -1805,7 +1860,7 @@ static void sha256_self_test(void){
     u8 out[32];sha256((const u8*)"abc",3,out);
     for(int i=0;i<32;i++){
         if(out[i]!=expect[i]){
-            rect(0,0,1024,768,0x800000);
+            rect(0,0,(int)FB_W,(int)FB_H,0x800000);
             text(40,40,"SHA-256 SELF-TEST FAILED",0xFFFFFF,0x800000);
             text(40,60,"Refusing to start - crypto is broken.",0xFFFFFF,0x800000);flush();
             while(1);
@@ -1856,7 +1911,7 @@ static void hmac_sha256_self_test(void){
         0x88,0x1d,0xc2,0x00,0xc9,0x83,0x3d,0xa7,0x26,0xe9,0x37,0x6c,0x2e,0x32,0xcf,0xf7};
     for(int i=0;i<32;i++){
         if(out[i]!=expect[i]){
-            rect(0,0,1024,768,0x800000);
+            rect(0,0,(int)FB_W,(int)FB_H,0x800000);
             text(40,40,"HMAC-SHA256 SELF-TEST FAILED",0xFFFFFF,0x800000);
             text(40,60,"Refusing to start - crypto is broken.",0xFFFFFF,0x800000);
             flush();
@@ -1879,7 +1934,7 @@ static void pbkdf2_self_test(void){
     int ok=1;
     for(int i=0;i<32;i++){if(out1[i]!=u1[i])ok=0;if(out2[i]!=expect2[i])ok=0;}
     if(!ok){
-        rect(0,0,1024,768,0x800000);
+        rect(0,0,(int)FB_W,(int)FB_H,0x800000);
         text(40,40,"PBKDF2 SELF-TEST FAILED",0xFFFFFF,0x800000);
         text(40,60,"Refusing to start - crypto is broken.",0xFFFFFF,0x800000);
         flush();
@@ -2056,7 +2111,7 @@ static void auth_self_test(void){
         if(match)fail=1;
     }
     if(fail){
-        rect(0,0,1024,768,0x800000);
+        rect(0,0,(int)FB_W,(int)FB_H,0x800000);
         text(40,40,"AUTH LOGIC SELF-TEST FAILED",0xFFFFFF,0x800000);
         text(40,60,"Refusing to start - account system is broken.",0xFFFFFF,0x800000);
         flush();
@@ -2066,8 +2121,8 @@ static void auth_self_test(void){
 /* ═══ Account setup UI ═════════════════════════════════════════ */
 #define ACCT_W 420
 #define ACCT_H 420
-#define ACCT_X ((1024-ACCT_W)/2)
-#define ACCT_Y ((768-ACCT_H)/2)
+#define ACCT_X (((int)FB_W-ACCT_W)/2)
+#define ACCT_Y (((int)FB_H-ACCT_H)/2)
 static void text_input_key(char*buf,int*len,int maxlen,s64 ch){
     if(ch<=0||ch>=256)return;
     char c=(char)ch;
@@ -2149,7 +2204,7 @@ static int acct_setup_run(int is_first_boot){
 
         prev_mb=mb;
 
-        rect(0,0,1024,768,BG);
+        rect(0,0,(int)FB_W,(int)FB_H,BG);
         rect_round_alpha(ACCT_X+3,ACCT_Y+3,ACCT_W,ACCT_H,16,0x000000,90);
         rect_round_alpha(ACCT_X,ACCT_Y,ACCT_W,ACCT_H,16,PANEL_BG,225);
         outline_round(ACCT_X,ACCT_Y,ACCT_W,ACCT_H,16,BORDER);
@@ -2215,8 +2270,8 @@ static int acct_setup_run(int is_first_boot){
 }
 #define LOCK_W 380
 #define LOCK_H 260
-#define LOCK_X ((1024-LOCK_W)/2)
-#define LOCK_Y ((768-LOCK_H)/2)
+#define LOCK_X (((int)FB_W-LOCK_W)/2)
+#define LOCK_Y (((int)FB_H-LOCK_H)/2)
 static int lock_screen_run(int is_logout){
     AuthBlob ab;int have_user=auth_load(AUTH_PATH,&ab);
     char lk_buf[48];int lk_len=0;
@@ -2241,7 +2296,7 @@ static int lock_screen_run(int is_logout){
         }
         prev_mb2=mb;
 
-        rect(0,0,1024,768,BG);
+        rect(0,0,(int)FB_W,(int)FB_H,BG);
         rect_round_alpha(LOCK_X+3,LOCK_Y+3,LOCK_W,LOCK_H,16,0x000000,90);
         rect_round_alpha(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,PANEL_BG,225);
         outline_round(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,BORDER);
@@ -2287,9 +2342,9 @@ static void capture_window_preview(int wi){
         for(int col=0;col<WPREV_BW;col++){
             int sx=w->x+col*sw/WPREV_BW;
             int sy=w->y+row*sh/WPREV_BH;
-            if(sx<0)sx=0;if(sx>=1024)sx=1023;
-            if(sy<0)sy=0;if(sy>=768)sy=767;
-            wpreview_cache[row*WPREV_BW+col]=buf[sy*1024+sx];
+            if(sx<0)sx=0;if(sx>=(int)FB_W)sx=(int)FB_W-1;
+            if(sy<0)sy=0;if(sy>=(int)FB_H)sy=(int)FB_H-1;
+            wpreview_cache[row*WPREV_BW+col]=buf[sy*(int)FB_W+sx];
         }
     }
 }
@@ -2314,9 +2369,10 @@ static void draw_window_preview(int wi,int wpx,int wpy){
     }
 }
 static void draw_loading_splash(int spin_deg){
-    rect(0,0,1024,768,0x0D1117);
-    text_big_center(512,330,"YouOS",0xFFFFFF,0x0D1117);
-    int cx=512,cy=430,r=28;
+    rect(0,0,(int)FB_W,(int)FB_H,0x0D1117);
+    int scx=(int)FB_W/2,scy=(int)FB_H/2;
+    text_big_center(scx,scy-54,"YouOS",0xFFFFFF,0x0D1117);
+    int cx=scx,cy=scy+46,r=28;
     for(int i=0;i<8;i++){
         int deg=(spin_deg+i*45)%360;
         int dx=cx+(icos(deg)*r)/1000;
@@ -2332,6 +2388,8 @@ int main(void){
     u64 info[5];
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
+    if(FB_W>MAX_FB_W)FB_W=MAX_FB_W;
+    if(FB_H>MAX_FB_H)FB_H=MAX_FB_H;
     draw_loading_splash(0);
     sha256_self_test();
     hmac_sha256_self_test();pbkdf2_self_test();auth_self_test();
@@ -2378,7 +2436,7 @@ int main(void){
             if(w->x<-(w->w-50))w->x=-(w->w-50);
             if(w->x>PANEL_X-50)w->x=PANEL_X-50;
             if(w->y<0)w->y=0;
-            if(w->y>768-TBAR_H-TITLEBAR_H)w->y=768-TBAR_H-TITLEBAR_H;
+            if(w->y>(int)FB_H-TBAR_H-TITLEBAR_H)w->y=(int)FB_H-TBAR_H-TITLEBAR_H;
         }
 
         /* icon drag update */
@@ -2392,7 +2450,7 @@ int main(void){
             Win*w=&wins[resize_win];
             int ddx=mouse_x-resize_start_x,ddy=mouse_y-resize_start_y,e=resize_edge;
             if(e==1||e==3||e==7){int nw=resize_start_w+ddx;if(nw>=w->min_w&&resize_orig_x+nw<PANEL_X)w->w=nw;}
-            if(e==2||e==3||e==8){int nh=resize_start_h+ddy;if(nh>=w->min_h&&resize_orig_y+nh<768-TBAR_H)w->h=nh;}
+            if(e==2||e==3||e==8){int nh=resize_start_h+ddy;if(nh>=w->min_h&&resize_orig_y+nh<(int)FB_H-TBAR_H)w->h=nh;}
             if(e==4||e==6||e==8){int nw=resize_start_w-ddx,nx=resize_orig_x+ddx;if(nw>=w->min_w&&nx>=0){w->w=nw;w->x=nx;}}
             if(e==5||e==6||e==7){int nh=resize_start_h-ddy,ny=resize_orig_y+ddy;if(nh>=w->min_h&&ny>=0){w->h=nh;w->y=ny;}}
         }
@@ -2426,7 +2484,7 @@ int main(void){
             const char**ci;int cn;get_rctx(&ci,&cn);
             int cmh=rctx_h(),cmx=rctx_x,cmy=rctx_y;
             if(cmx+CTX_W>PANEL_X)cmx=PANEL_X-CTX_W;
-            if(cmy+cmh>768-TBAR_H)cmy=768-TBAR_H-cmh;
+            if(cmy+cmh>(int)FB_H-TBAR_H)cmy=(int)FB_H-TBAR_H-cmh;
             int ciy=cmy+1;
             for(int ci2=0;ci2<cn;ci2++){
                 if(!ci[ci2][0]){ciy+=CTX_SEP_H;continue;}
@@ -2438,11 +2496,11 @@ int main(void){
                         else if(ci2==3)open_notepad(0);
                         else if(ci2==4)open_calc();
                         else if(ci2==5)open_settings();
-                        else if(ci2==7){tprint("Shutting down...");flush();sys_shutdown();}
+                        else if(ci2==7){do_shutdown();}
                     } else {
                         Win*rw=&wins[rctx_target];
                         if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
-                        else if(ci2==1){if(rw->w<700){rw->x=0;rw->y=0;rw->w=1024;rw->h=768-TBAR_H;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
+                        else if(ci2==1){if(rw->w<700){rw->x=0;rw->y=0;rw->w=(int)FB_W;rw->h=(int)FB_H-TBAR_H;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
                         else if(ci2==2){
                             rw->visible=0;
                             if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
@@ -2506,7 +2564,7 @@ int main(void){
                 int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-24)/4;
                 int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8,lk_x2=sd_x2+pbw2+8,lo_x2=lk_x2+pbw2+8;
                 if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
-                if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;tprint("Shutting down...");flush();sys_shutdown();goto click_done;}
+                if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;do_shutdown();goto click_done;}
                 if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(0);goto click_done;}
                 if(in_box(mouse_x,mouse_y,lo_x2,pry2,pbw2,40)){
                     menu_open=0;auth_do_logout();lock_screen_run(1);
@@ -2541,7 +2599,7 @@ int main(void){
                 }
                 /* maximize */
                 if(in_box(mouse_x,mouse_y,w->x+40,w->y+7,14,14)){
-                    if(w->w<700){w->x=0;w->y=0;w->w=1024;w->h=768-TBAR_H;}
+                    if(w->w<700){w->x=0;w->y=0;w->w=(int)FB_W;w->h=(int)FB_H-TBAR_H;}
                     else{w->x=100;w->y=60;w->w=560;w->h=420;}
                     goto click_done;
                 }
@@ -2960,7 +3018,7 @@ int main(void){
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
         menu_sel=-1;
-        if(menu_open){int mx2=TBAR_SB_X,my2=768-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
+        if(menu_open){int mx2=TBAR_SB_X,my2=(int)FB_H-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
         fm_hovered=-1;
         int fi2=find_win(WIN_FILES);
         if(fi2>=0&&wins[fi2].visible&&!wins[fi2].minimized){
@@ -3005,7 +3063,7 @@ int main(void){
             const char**hi;int hn;get_rctx(&hi,&hn);
             int hmh=rctx_h(),hmx=rctx_x,hmy=rctx_y;
             if(hmx+CTX_W>PANEL_X)hmx=PANEL_X-CTX_W;
-            if(hmy+hmh>768-TBAR_H)hmy=768-TBAR_H-hmh;
+            if(hmy+hmh>(int)FB_H-TBAR_H)hmy=(int)FB_H-TBAR_H-hmh;
             int hiy=hmy+1;
             for(int i=0;i<hn;i++){
                 if(!hi[i][0]){hiy+=CTX_SEP_H;continue;}

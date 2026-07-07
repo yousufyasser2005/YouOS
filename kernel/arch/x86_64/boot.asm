@@ -8,13 +8,19 @@ mb2_start:
     dd mb2_end - mb2_start  ; header length
     dd 0x100000000 - (0xE85250D6 + (mb2_end - mb2_start))  ; checksum
 
-    ; Framebuffer tag — request linear framebuffer 1024x768x32
+    ; Framebuffer tag — width/height 0 turned out to make GRUB's
+    ; multiboot2 loader fall back to a hardcoded 800x600x24 default in
+    ; this environment rather than "best available", so instead we
+    ; request 1280x800 (the EDID-reported preferred/native mode here)
+    ; explicitly. desktop.c reads whatever the *actual* negotiated
+    ; size ends up being at runtime rather than assuming this exact
+    ; value, so this is a hint/preference, not a hard requirement.
     align 8
     dw 5                    ; tag type: framebuffer
     dw 0                    ; flags
     dd 20                   ; size
-    dd 1024                 ; width
-    dd 768                  ; height
+    dd 1280                 ; width
+    dd 800                  ; height
     dd 32                   ; depth (bits per pixel)
 
     ; End tag
