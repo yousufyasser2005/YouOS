@@ -1,9 +1,9 @@
 #include <kernel/syslog.h>
-#include <kernel/fat16.h>
+#include <kernel/ycfs.h>
 #include <stdint.h>
 
 #define SYSLOG_SIZE 8192
-#define SYSLOG_PATH "/disk/syslog.log"
+#define SYSLOG_PATH "/ycfs/syslog.log"
 
 static char slog_buf[SYSLOG_SIZE];
 static int  slog_len=0;
@@ -19,10 +19,7 @@ static void sl_uint(uint64_t v){
 }
 static void slog_flush(void){
     if(!slog_fat_ready||slog_len==0)return;
-    int fd=fat16_create(SYSLOG_PATH);
-    if(fd<0)return;
-    fat16_write(fd,slog_buf,(uint32_t)slog_len);
-    fat16_close(fd);
+    ycfs_savefile(SYSLOG_PATH, slog_buf, (uint32_t)slog_len);
 }
 
 void syslog_init(void){slog_len=0;slog_buf[0]=0;slog_fat_ready=0;}
@@ -30,13 +27,9 @@ void syslog_init(void){slog_len=0;slog_buf[0]=0;slog_fat_ready=0;}
 void syslog_ready(void){
     slog_fat_ready=1;
     /* read existing log */
-    int fd=fat16_open(SYSLOG_PATH);
-    if(fd>=0){
-        int n=fat16_read(fd,slog_buf,SYSLOG_SIZE-1);
-        fat16_close(fd);
-        slog_len=n>0?n:0;
-        slog_buf[slog_len]=0;
-    }
+    int64_t n=ycfs_read_file(SYSLOG_PATH, slog_buf, SYSLOG_SIZE-1);
+    slog_len=(n>0)?(int)n:0;
+    slog_buf[slog_len]=0;
     slog_flush();
 }
 
@@ -49,12 +42,8 @@ void syslog_write(const char*tag,const char*msg){
 
 int syslog_read(void*buf,uint32_t size){
     if(slog_fat_ready){
-        int fd=fat16_open(SYSLOG_PATH);
-        if(fd>=0){
-            int n=fat16_read(fd,slog_buf,SYSLOG_SIZE-1);
-            fat16_close(fd);
-            if(n>0){slog_len=n;slog_buf[n]=0;}
-        }
+        int64_t n=ycfs_read_file(SYSLOG_PATH, slog_buf, SYSLOG_SIZE-1);
+        if(n>0){slog_len=(int)n;slog_buf[n]=0;}
     }
     uint32_t copy=((uint32_t)slog_len<size-1)?(uint32_t)slog_len:size-1;
     char*out=(char*)buf;

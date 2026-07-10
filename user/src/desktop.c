@@ -329,6 +329,7 @@ static char fm_dlg_err[48];static int fm_dlg_has_err=0;
 static char fm_cpbuf[4096];
 static char fm_path[64];  /* current directory: "" = root, "dirname" = subdir */
 static int  fm_path_len=0;
+static int  fm_use_fat16=0;  /* 0 = YCFS (default), 1 = FAT16 (external disk browsing) */
 static int  settings_win_idx=-1;
 /* Calculator state */
 typedef struct{
@@ -558,12 +559,22 @@ typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 static Dirent fm_entries[MAX_FILES];
 static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
 static void fm_load(void){
-    if(fm_path_len>0){
-        char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
-        int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
-        fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
+    if(fm_use_fat16){
+        if(fm_path_len>0){
+            char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
+            int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
+            fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
+        } else {
+            fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
+        }
     } else {
-        fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
+        if(fm_path_len>0){
+            char full[72];full[0]='/';full[1]='y';full[2]='c';full[3]='f';full[4]='s';full[5]='/';
+            int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
+            fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
+        } else {
+            fm_count=(int)sys_readdir2("/ycfs",fm_entries,MAX_FILES);
+        }
     }
     fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;
     fm_ctx_open=0;fm_dialog=0;fm_dlg_has_err=0;fm_loaded=1;
@@ -589,13 +600,18 @@ static void draw_files_content(int wi){
     rect(x,y,cw,ch,0x0D1117);
     rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
     /* path bar */
-    char pathbar[72];pathbar[0]='/';pathbar[1]='d';pathbar[2]='i';pathbar[3]='s';pathbar[4]='k';
-    if(fm_path_len>0){pathbar[5]='/';int pk=6,pj=0;while(fm_path[pj]&&pk<70){pathbar[pk++]=fm_path[pj++];}pathbar[pk]=0;}
-    else pathbar[5]=0;
+    char pathbar[72];int pbi=0;
+    if(fm_use_fat16){pathbar[0]='/';pathbar[1]='d';pathbar[2]='i';pathbar[3]='s';pathbar[4]='k';pbi=5;}
+    else{pathbar[0]='/';pathbar[1]='y';pathbar[2]='c';pathbar[3]='f';pathbar[4]='s';pbi=5;}
+    if(fm_path_len>0){pathbar[pbi++]='/';int pj=0;while(fm_path[pj]&&pbi<70){pathbar[pbi++]=fm_path[pj++];}pathbar[pbi]=0;}
+    else pathbar[pbi]=0;
     text(x+8,y+6,pathbar,cfg_accent,0x161B22);
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
     rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
+    int fshov=in_box(mouse_x,mouse_y,x+cw-190,y+4,58,20);
+    rect(x+cw-190,y+4,58,20,fshov?0x21262D:0x161B22);outline(x+cw-190,y+4,58,20,BORDER);
+    text(x+cw-186,y+6,fm_use_fat16?"Disk":"YCFS",fshov?TEXT:DIM,fshov?0x21262D:0x161B22);
     if(fm_path_len>0){
         int uhov=in_box(mouse_x,mouse_y,x+cw-128,y+4,52,20);
         rect(x+cw-128,y+4,52,20,uhov?0x21262D:0x161B22);outline(x+cw-128,y+4,52,20,BORDER);
@@ -637,7 +653,7 @@ static void draw_files_content(int wi){
     int sb=w->y+w->h-status_h;rect(x,sb,cw,status_h,0x161B22);hline(x,sb,cw,BORDER);
     char stat[48];int si=0;
     if(fm_count>=10)stat[si++]='0'+fm_count/10;stat[si++]='0'+fm_count%10;
-    const char*suf=" items on /disk";int sf=0;while(suf[sf])stat[si++]=suf[sf++];
+    const char*suf=" items on /ycfs";int sf=0;while(suf[sf])stat[si++]=suf[sf++];
     if(fm_has_clip){
         const char*cs=fm_clip_cut?" | cut:":" | copied:";
         while(*cs)stat[si++]=*cs++;
@@ -1727,7 +1743,7 @@ static void cfg_save(void){
     b.h24=(u32)cfg_24h;b.secs=(u32)cfg_showsecs;
     for(int i=0;i<N_ICONS;i++){b.icon_x[i]=icons[i].x;b.icon_y[i]=icons[i].y;}
     b.wallpaper_on=(u32)wallpaper_loaded;
-    const char*p="/disk/yos.cfg";
+    const char*p="/ycfs/yos.cfg";
     sys_save_file((u64)p,(u64)&b,(u64)sizeof(b));
 }
 
@@ -1770,14 +1786,14 @@ static void do_shutdown(void){
 }
 static void cfg_load(void){
     CfgBlob b;
-    u64 fd=sys_open("/disk/yos.cfg",0);
+    u64 fd=sys_open("/ycfs/yos.cfg",0);
     if((s64)fd<0)return;
     u64 n=sys_fread(fd,&b,sizeof(b));
     sys_close(fd);
     if(n!=(u64)sizeof(b)||b.magic!=CFG_MAGIC)return;
     cfg_accent=b.accent;cfg_24h=(int)b.h24;cfg_showsecs=(int)b.secs;
     for(int i=0;i<N_ICONS;i++){icons[i].x=b.icon_x[i];icons[i].y=b.icon_y[i];}
-    wallpaper_loaded=(int)b.wallpaper_on&&load_wallpaper_bmp("/disk/wall.bmp");
+    wallpaper_loaded=(int)b.wallpaper_on&&load_wallpaper_bmp("/ycfs/wall.bmp");
 }
 static void open_calc(void){
     int i=find_win(WIN_CALC);
@@ -1944,7 +1960,7 @@ static void pbkdf2_self_test(void){
 /* ═══ Auth: entropy, recovery codes, AuthBlob storage ══════════ */
 #define AUTH_MAGIC 0xA0741CADU
 #define AUTH_PBKDF2_ITERS 10000
-#define AUTH_PATH "/disk/auth.dat"
+#define AUTH_PATH "/ycfs/auth.dat"
 static u32 auth_entropy_counter=0;
 static void auth_random_bytes(u8*out,int len){
     int filled=0;
@@ -2727,7 +2743,7 @@ int main(void){
                     if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_run(0);goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+16,base+322,w->w-32,26)){
                         if(wallpaper_loaded){wallpaper_loaded=0;}
-                        else{wallpaper_loaded=load_wallpaper_bmp("/disk/wall.bmp");}
+                        else{wallpaper_loaded=load_wallpaper_bmp("/ycfs/wall.bmp");}
                         cfg_save();
                         goto click_done;
                     }
@@ -2848,6 +2864,9 @@ int main(void){
                         goto click_done;
                     }
                     /* toolbar */
+                    if(in_box(mouse_x,mouse_y,w->x+cw2-190,fy+4,58,20)){
+                        fm_use_fat16=!fm_use_fat16;fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
+                    }
                     if(fm_path_len>0&&in_box(mouse_x,mouse_y,w->x+cw2-128,fy+4,52,20)){
                         fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
                     }

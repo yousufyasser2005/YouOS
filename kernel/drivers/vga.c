@@ -105,6 +105,10 @@ void vga_set_color(vga_color_t fg, vga_color_t bg) {
 }
 
 void vga_puts_color(const char* s, vga_color_t fg, vga_color_t bg) {
+    /* Always mirror to serial regardless of framebuffer state — this was
+     * previously skipped once fb_available() went true, silently blinding
+     * -serial stdio for every colored [OK]/[!!] boot message. */
+    for (const char* p = s; *p; p++) serial_putc(*p);
     if (fb_available()) {
         fb_terminal_puts_color(s, vga_to_rgb(fg), vga_to_rgb(bg));
         return;

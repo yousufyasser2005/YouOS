@@ -113,5 +113,6 @@ int ycfs_rename(const char* old_path, const char* new_path);
 int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out);
 int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries);
 int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size);
+int64_t ycfs_read_file(const char* path, void* buf, uint32_t max_size);
 
 #endif

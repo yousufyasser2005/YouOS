@@ -73,6 +73,17 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         __asm__ volatile("outb %0, $0x40" :: "a"((uint8_t)(divisor & 0xFF)));
         __asm__ volatile("outb %0, $0x40" :: "a"((uint8_t)(divisor >> 8)));
     }
+
+    /* Only enable hardware interrupts now that irq_init() has remapped
+     * the PIC off its default 0x08-0x0F vector range — enabling them any
+     * earlier risked a routine IRQ (e.g. the timer) landing on vector
+     * 0x08, colliding with the CPU's own Double Fault vector and being
+     * misreported as a crash. This was an intermittent, KVM-only boot
+     * failure (real elapsed time made the race far more likely to be
+     * hit than under TCG's slower emulation). */
+    extern void sti_enable(void);
+    sti_enable();
+
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
     vga_puts("PIC initialized\n");
 
@@ -205,6 +216,14 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [!!] YCFS self-test: /ycfs/docs/notes.txt not found (nested dir traversal failed)\n", VGA_LIGHT_RED, VGA_BLACK);
                 syslog_write("YCFS", "docs/notes.txt FAILED - nested dir traversal broken");
             }
+            /* Phase 2 self-test DISABLED — was running unconditionally on
+             * every boot, allocating/freeing blocks and inodes every time,
+             * with its own content-write call happening OUTSIDE any
+             * txn_begin()/txn_commit() (so it wasn't journaled). Suspected
+             * of corrupting unrelated live data via stale journal replay
+             * on reused block numbers — disabled while under investigation.
+             * See project notes on the auth.dat persistence bug. */
+            #if 0
             /* Phase 2 self-test: create a new file and a new subdirectory
              * under root, write content, read it back, and confirm the
              * subdirectory is findable — all non-fatal, logged to syslog. */
@@ -284,6 +303,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             } else {
                 syslog_write("YCFS", "unlink test FAILED - ycfs_unlink returned error");
             }
+            #endif /* Phase 2 self-test disabled */
         } else {
             vga_puts_color("  [!!] YCFS mount failed (did you run mkycfs.py?)\n", VGA_LIGHT_RED, VGA_BLACK);
         }

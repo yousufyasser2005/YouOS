@@ -707,3 +707,16 @@ int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
     }
     return ycfs_write(inode, 0, size, buf);
 }
+
+/* Path-based read, mirroring ycfs_savefile's shape. Resolves the full
+ * path (not just its parent, since there's no write/create fallback
+ * needed here) and reads up to max_size bytes from offset 0. Returns
+ * the number of bytes read, or -1 if the path doesn't resolve to a
+ * file. */
+int64_t ycfs_read_file(const char* path, void* buf, uint32_t max_size) {
+    if (!initialized) return -1;
+    uint32_t inode, type; uint64_t size;
+    if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
+    if (type != YCFS_TYPE_FILE) return -1;
+    return ycfs_read(inode, 0, max_size, buf);
+}
