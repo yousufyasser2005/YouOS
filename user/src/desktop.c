@@ -326,6 +326,7 @@ static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0;
 static int  fm_dialog=0;
 static char fm_dlg_buf[40];static int fm_dlg_len=0;
 static char fm_dlg_err[48];static int fm_dlg_has_err=0;
+static char fm_paste_err[48];
 static char fm_cpbuf[4096];
 static char fm_path[64];  /* current directory: "" = root, "dirname" = subdir */
 static int  fm_path_len=0;
@@ -559,6 +560,7 @@ typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 static Dirent fm_entries[MAX_FILES];
 static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
 static void fm_load(void){
+    fm_paste_err[0]=0;
     if(fm_use_fat16){
         if(fm_path_len>0){
             char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
@@ -652,6 +654,11 @@ static void draw_files_content(int wi){
     }
     int sb=w->y+w->h-status_h;rect(x,sb,cw,status_h,0x161B22);hline(x,sb,cw,BORDER);
     char stat[48];int si=0;
+    if(fm_paste_err[0]){
+        int ei=0;while(fm_paste_err[ei]&&si<47){stat[si++]=fm_paste_err[ei++];}
+        stat[si]=0;text(x+8,sb+2,stat,RED,0x161B22);
+        goto skip_status_line;
+    }
     if(fm_count>=10)stat[si++]='0'+fm_count/10;stat[si++]='0'+fm_count%10;
     const char*suf=" items on /ycfs";int sf=0;while(suf[sf])stat[si++]=suf[sf++];
     if(fm_has_clip){
@@ -660,6 +667,7 @@ static void draw_files_content(int wi){
         int ci=0;while(fm_clip[ci]&&si<46)stat[si++]=fm_clip[ci++];
     }
     stat[si]=0;text(x+8,sb+2,stat,DIM,0x161B22);
+    skip_status_line:;
     if(fm_dialog==1&&fm_selected>=0){
         int dw=300,dh=88,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
         rect(ddx+3,ddy+3,dw,dh,0x050810);
@@ -2838,7 +2846,8 @@ int main(void){
                         } else if(clicked==4&&fm_has_clip){
                             char spath[56];
                             int sk=0;
-                            spath[sk++]='/';spath[sk++]='d';spath[sk++]='i';spath[sk++]='s';spath[sk++]='k';spath[sk++]='/';
+                            if(fm_use_fat16){spath[sk++]='/';spath[sk++]='d';spath[sk++]='i';spath[sk++]='s';spath[sk++]='k';spath[sk++]='/';}
+                            else{spath[sk++]='/';spath[sk++]='y';spath[sk++]='c';spath[sk++]='f';spath[sk++]='s';spath[sk++]='/';}
                             int sj=0;while(fm_clip[sj]&&sk<55)spath[sk++]=fm_clip[sj++];spath[sk]=0;
                             u64 fd=sys_open(spath,0);
                             if((s64)fd>=0){
@@ -2847,14 +2856,32 @@ int main(void){
                                 sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
                                 char dpath[56];
                                 int dk=0;
-                                dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';
+                                if(fm_use_fat16){dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';}
+                                else{dpath[dk++]='/';dpath[dk++]='y';dpath[dk++]='c';dpath[dk++]='f';dpath[dk++]='s';dpath[dk++]='/';}
                                 int dj=0;while(dname[dj]&&dk<55)dpath[dk++]=dname[dj++];dpath[dk]=0;
                                 int total=0;s64 nr;
-                                while((nr=sys_fread(fd,fm_cpbuf+total,128))>0)total+=(int)nr;
+                                /* Bounded against sizeof(fm_cpbuf) — the previous
+                                 * version had no capacity check at all and would
+                                 * silently overflow this static buffer for any
+                                 * source file larger than 4096 bytes (e.g. a
+                                 * ~3MB wallpaper BMP), corrupting adjacent static
+                                 * data badly enough to hang the whole system. */
+                                while(total<(int)sizeof(fm_cpbuf)){
+                                    int room=(int)sizeof(fm_cpbuf)-total;
+                                    int chunk=room<128?room:128;
+                                    nr=(s64)sys_fread(fd,fm_cpbuf+total,(u64)chunk);
+                                    if(nr<=0)break;
+                                    total+=(int)nr;
+                                }
                                 sys_close(fd);
-                                sys_save_file((u64)dpath,(u64)fm_cpbuf,(u64)total);
-                                if(fm_clip_cut){sys_unlink(spath);fm_has_clip=0;}
-                                fm_load();
+                                if(total>=(int)sizeof(fm_cpbuf)){
+                                    const char*em="File too large to copy (max 4KB)";
+                                    int ei=0;while(em[ei]&&ei<47){fm_paste_err[ei]=em[ei];ei++;}fm_paste_err[ei]=0;
+                                } else {
+                                    sys_save_file((u64)dpath,(u64)fm_cpbuf,(u64)total);
+                                    if(fm_clip_cut){sys_unlink(spath);fm_has_clip=0;}
+                                    fm_load();
+                                }
                             }
                         } else if(clicked==5&&fm_selected>=0){
                             fm_dialog=2;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
