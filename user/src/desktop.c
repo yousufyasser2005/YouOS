@@ -443,6 +443,7 @@ static void tprint(const char*s){
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
 }
 static void do_shutdown(void);
+static void do_restart(void);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
     const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
@@ -463,7 +464,7 @@ static void tcmd(const char*cmd){
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
     else if(ms){do_shutdown();}
-    else if(mrb){tprint("Restarting...");flush();sys_reboot();}
+    else if(mrb){do_restart();}
     else if(msh){
         tprint("Switching to shell... type 'exit' to return.");
         flush();
@@ -1401,6 +1402,7 @@ static const char*sw_lbl[]={"Blue","Green","Purple","Orange","Red","Gold"};
 #define N_SW 6
 static void cfg_save(void);
 static void do_shutdown(void);
+static void do_restart(void);
 static void cfg_set_accent(u32 c){
     cfg_accent=c;
     for(int i=0;i<win_count;i++)if(wins[i].id==WIN_TERMINAL)wins[i].accent=c;
@@ -1770,6 +1772,42 @@ static void draw_shutdown_splash(int spin_deg){
     }
     text_center(scx,cy+60,"Shutting down...",0xFFFFFF,0x0D1117);
     flush();
+}
+
+static void draw_restart_splash(int spin_deg){
+    rect(0,0,(int)FB_W,(int)FB_H,0x0D1117);
+    int scx=(int)FB_W/2,scy=(int)FB_H/2;
+    int cx=scx,cy=scy-10,r=28;
+    for(int i=0;i<8;i++){
+        int deg=(spin_deg+i*45)%360;
+        int dx=cx+(icos(deg)*r)/1000;
+        int dy=cy-(isin(deg)*r)/1000;
+        int a=255-(i*28);if(a<40)a=40;
+        int dotr=4;
+        for(int yy=-dotr;yy<=dotr;yy++)for(int xx=-dotr;xx<=dotr;xx++)
+            if(xx*xx+yy*yy<=dotr*dotr)px_alpha(dx+xx,dy+yy,0x58A6FF,a);
+    }
+    text_center(scx,cy+60,"Restarting...",0xFFFFFF,0x0D1117);
+    flush();
+}
+
+/* Same shape as do_shutdown(): persist config, hide windows, show a
+ * spinning splash for at least ~3 seconds, then actually reboot. The
+ * splash stays on screen right up until sys_reboot() hard-resets the
+ * machine, so there's no gap back to the desktop before the real
+ * hardware reset/reboot sequence begins. */
+static void do_restart(void){
+    cfg_save();
+    for(int i=0;i<MAX_WINDOWS;i++) wins[i].visible=0;
+
+    u64 start=sys_ticks();
+    int deg=0;
+    while(sys_ticks()-start<300){
+        draw_restart_splash(deg);
+        deg=(deg+15)%360;
+        sys_sleep(3);
+    }
+    sys_reboot();
 }
 
 /* Housekeeping before power-off — persist current settings/icon layout
@@ -2587,7 +2625,7 @@ int main(void){
                 }
                 int pry2=SM_Y+SM_H-56,pbw2=(SM_W-40-24)/4;
                 int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8,lk_x2=sd_x2+pbw2+8,lo_x2=lk_x2+pbw2+8;
-                if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;tprint("Restarting...");flush();sys_reboot();goto click_done;}
+                if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;do_restart();goto click_done;}
                 if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;do_shutdown();goto click_done;}
                 if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(0);goto click_done;}
                 if(in_box(mouse_x,mouse_y,lo_x2,pry2,pbw2,40)){
