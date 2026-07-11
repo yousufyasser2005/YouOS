@@ -749,8 +749,9 @@ typedef struct{
     int  mode3_err;
     char err_name[36];
 }Notepad;
-static Notepad np;
-static int np_win_idx=-1;
+static Notepad np_states[MAX_WINDOWS];
+static int np_current=-1;
+#define np (np_states[np_current])
 
 static void np_insert(char c){
     if(np.text_len>=NP_BUFSIZE-1)return;
@@ -808,9 +809,9 @@ static void np_do_save(void){
     int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
     sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
     np.modified=0;fm_loaded=0;np.save_flash=80;
-    if(np_win_idx>=0){
-        j=0;while(np.filename[j]&&j<39){wins[np_win_idx].title[j]=np.filename[j];j++;}
-        wins[np_win_idx].title[j]=0;
+    if(np_current>=0){
+        j=0;while(np.filename[j]&&j<39){wins[np_current].title[j]=np.filename[j];j++;}
+        wins[np_current].title[j]=0;
     }
 }
 static void np_do_saveas(void){
@@ -1321,6 +1322,52 @@ static void draw_notif_center(void){
         text(x+NC_W-14,y+73,"v",(notif_scroll+NC_MAX_VISIBLE<notif_count)?TEXT:BORDER,(notif_scroll+NC_MAX_VISIBLE<notif_count)?0x21262D:0x13161B);
     }
 }
+#define MAX_GROUPS 8
+#define MAX_GROUP_INST 6
+typedef struct{int id;int count;int idx[MAX_GROUP_INST];int rep;}TGroup;
+static TGroup taskbar_groups[MAX_GROUPS];
+static int taskbar_group_count=0;
+static int group_last_focus[6]={-1,-1,-1,-1,-1,-1};
+static void rebuild_taskbar_groups(void){
+    taskbar_group_count=0;
+    if(focused>=0&&focused<win_count&&wins[focused].visible&&wins[focused].id>=0&&wins[focused].id<6)
+        group_last_focus[wins[focused].id]=focused;
+    for(int i=0;i<win_count;i++){
+        if(!wins[i].visible)continue;
+        int gi=-1;
+        for(int g=0;g<taskbar_group_count;g++)if(taskbar_groups[g].id==wins[i].id){gi=g;break;}
+        if(gi<0){
+            if(taskbar_group_count>=MAX_GROUPS)continue;
+            gi=taskbar_group_count++;taskbar_groups[gi].id=wins[i].id;taskbar_groups[gi].count=0;
+        }
+        if(taskbar_groups[gi].count<MAX_GROUP_INST)taskbar_groups[gi].idx[taskbar_groups[gi].count++]=i;
+    }
+    for(int g=0;g<taskbar_group_count;g++){
+        int id=taskbar_groups[g].id;
+        int gl=(id>=0&&id<6)?group_last_focus[id]:-1;
+        int rep=taskbar_groups[g].idx[0];
+        if(gl>=0&&gl<win_count&&wins[gl].visible&&wins[gl].id==id){
+            for(int k=0;k<taskbar_groups[g].count;k++)if(taskbar_groups[g].idx[k]==gl){rep=gl;break;}
+        }
+        taskbar_groups[g].rep=rep;
+    }
+}
+#define WPREV_W 200
+#define WPREV_H 130
+#define WPREV_BW (WPREV_W-16)
+#define WPREV_BH (WPREV_H-30)
+#define WPREV_GAP 10
+static void taskbar_group_strip_rect(int g,int*out_x,int*out_y,int*out_w,int*out_h){
+    int gcount=taskbar_groups[g].count;
+    int gbx=TBAR_WINBTN_X0;
+    for(int k=0;k<g;k++)gbx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
+    int cxp=gbx+TBAR_WINBTN_W/2;
+    int stripw=gcount*WPREV_W+(gcount-1)*WPREV_GAP;
+    int pxp0=cxp-stripw/2;
+    if(pxp0<4)pxp0=4;
+    if(pxp0+stripw>1020)pxp0=1020-stripw;
+    *out_x=pxp0;*out_y=TBAR_PILL_Y-WPREV_H-12;*out_w=stripw;*out_h=WPREV_H;
+}
 static void draw_taskbar(u64 secs){
     int hs=in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ);
     rect_round_alpha(TBAR_PILL_X+3,TBAR_PILL_Y+3,TBAR_PILL_W,TBAR_PILL_H,16,0x000000,90);
@@ -1331,16 +1378,28 @@ static void draw_taskbar(u64 secs){
     outline_round(TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ,12,menu_open?0x79C0FF:BORDER);
     blit_rgba(TBAR_SB_X+1,TBAR_SB_Y+1,START_ICON_W,START_ICON_H,start_icon_rgba);
     int bx=TBAR_WINBTN_X0;
-    for(int i=0;i<win_count;i++){
-        if(!wins[i].visible)continue;
-        int foc=(i==focused);u32 bbg=foc?0x21262D:0x13161B;
+    for(int g=0;g<taskbar_group_count;g++){
+        int rep=taskbar_groups[g].rep;
+        int foc=(rep==focused);u32 bbg=foc?0x21262D:0x13161B;
+        int gc=taskbar_groups[g].count;
+        /* Windows-style "layered" look for 2+ open instances: draw 1-2
+         * offset card outlines behind the main button, peeking out from
+         * the top-right corner. */
+        if(gc>1){
+            int layers=gc>2?2:1;
+            for(int ly=layers;ly>=1;ly--){
+                int off=ly*2;
+                int topy=TBAR_PILL_Y+4-off;
+                if(topy<TBAR_PILL_Y+1)topy=TBAR_PILL_Y+1;
+                rect_round(bx+off,topy,TBAR_WINBTN_W,TBAR_PILL_H-8,10,0x0D1117);
+                outline_round(bx+off,topy,TBAR_WINBTN_W,TBAR_PILL_H-8,10,BORDER);
+            }
+        }
         rect_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,bbg);
-        outline_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,foc?wins[i].accent:BORDER);
-        if(foc)hline(bx+8,TBAR_PILL_Y+TBAR_PILL_H-6,TBAR_WINBTN_W-16,wins[i].accent);
-        char ts[8];int k=0;while(wins[i].title[k]&&k<6){ts[k]=wins[i].title[k];k++;}
-        if(slen(wins[i].title)>6){ts[5]='.';ts[6]='.';k=7;}ts[k]=0;
-        draw_icon_glyph(win_glyph_idx(wins[i].id),bx+TBAR_WINBTN_W/2,TBAR_PILL_Y+TBAR_PILL_H/2,foc?TEXT:DIM,bbg);
-        bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
+        outline_round(bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8,10,foc?wins[rep].accent:BORDER);
+        if(foc)hline(bx+8,TBAR_PILL_Y+TBAR_PILL_H-6,TBAR_WINBTN_W-16,wins[rep].accent);
+        draw_icon_glyph(win_glyph_idx(taskbar_groups[g].id),bx+TBAR_WINBTN_W/2,TBAR_PILL_Y+TBAR_PILL_H/2,foc?TEXT:DIM,bbg);
+        bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP+(gc>1?6:0);
     }
     int hovbell=in_box(mouse_x,mouse_y,TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ);
     rect_round(TBAR_BELL_X,TBAR_BELL_Y,TBAR_BELL_SZ,TBAR_BELL_SZ,10,notif_center_open?ACCENT:(hovbell?0x2D333B:0x21262D));
@@ -1727,16 +1786,14 @@ static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].vi
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
 static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;fm_path_len=0;fm_path[0]=0;}}
 static void open_notepad(const char*fn){
-    int i=find_win(WIN_NOTEPAD);
-    if(i<0){
-        i=wm_new(WIN_NOTEPAD,150,70,580,460,"YC Notepad",YELLOW);
-        np_win_idx=i;
-        np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
-        np.modified=0;np.mode=0;np.filename[0]=0;
-        np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
-    } else {
-        wins[i].visible=1;wins[i].minimized=0;wm_focus(i);np_win_idx=i;
-    }
+    int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD)cnt++;
+    int ox=150+(cnt%6)*24,oy=70+(cnt%6)*24;
+    int i=wm_new(WIN_NOTEPAD,ox,oy,580,460,"YC Notepad",YELLOW);
+    if(i<0)return;
+    np_current=i;
+    np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
+    np.modified=0;np.mode=0;np.filename[0]=0;
+    np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
     if(fn&&fn[0]){
         char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
         int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
@@ -2381,8 +2438,8 @@ static int lock_screen_run(int is_logout){
 static void auth_do_logout(void){
     for(int i=0;i<win_count;i++){wins[i].visible=0;wins[i].minimized=0;}
     win_count=0;focused=-1;
-    np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;np.modified=0;np.filename[0]=0;np.mode=0;
-    np_win_idx=-1;settings_win_idx=-1;calc_win_idx=-1;
+    for(int k=0;k<MAX_WINDOWS;k++){np_states[k].text[0]=0;np_states[k].text_len=0;np_states[k].cursor=0;np_states[k].scroll=0;np_states[k].modified=0;np_states[k].filename[0]=0;np_states[k].mode=0;}
+    np_current=-1;settings_win_idx=-1;calc_win_idx=-1;
     calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;calc.error=0;calc.hist_count=0;
     notif_count=0;notif_center_open=0;notif_popup_active=0;
     menu_open=0;rctx_open=0;fm_ctx_open=0;fm_dialog=0;fm_selected=-1;fm_has_clip=0;
@@ -2390,13 +2447,12 @@ static void auth_do_logout(void){
     for(int i=0;i<32;i++)tlines[i][0]=0;
     trow=0;tinput[0]=0;tinput_len=0;
 }
-#define WPREV_W 200
-#define WPREV_H 130
-#define WPREV_BW (WPREV_W-16)
-#define WPREV_BH (WPREV_H-30)
+
 static int hover_preview_win=-1;
-static u32 wpreview_cache[WPREV_BW*WPREV_BH];
-static void capture_window_preview(int wi){
+static int hover_preview_group=-1;
+static u32 wpreview_slots[MAX_GROUP_INST][WPREV_BW*WPREV_BH];
+static void capture_window_preview_slot(int wi,int slot){
+    if(slot<0||slot>=MAX_GROUP_INST)return;
     Win*w=&wins[wi];
     int sw=w->w,sh=w->h;
     if(sw<1)sw=1;if(sh<1)sh=1;
@@ -2406,15 +2462,17 @@ static void capture_window_preview(int wi){
             int sy=w->y+row*sh/WPREV_BH;
             if(sx<0)sx=0;if(sx>=(int)FB_W)sx=(int)FB_W-1;
             if(sy<0)sy=0;if(sy>=(int)FB_H)sy=(int)FB_H-1;
-            wpreview_cache[row*WPREV_BW+col]=buf[sy*(int)FB_W+sx];
+            wpreview_slots[slot][row*WPREV_BW+col]=buf[sy*(int)FB_W+sx];
         }
     }
 }
-static void draw_window_preview(int wi,int wpx,int wpy){
+static void draw_window_preview_slot(int wi,int slot,int wpx,int wpy){
+    if(slot<0||slot>=MAX_GROUP_INST)return;
     Win*w=&wins[wi];
+    int foc=(wi==focused);
     rect_round_alpha(wpx+3,wpy+3,WPREV_W,WPREV_H,12,0x000000,90);
     rect_round(wpx,wpy,WPREV_W,WPREV_H,12,0x0D1117);
-    outline_round(wpx,wpy,WPREV_W,WPREV_H,12,w->accent);
+    outline_round(wpx,wpy,WPREV_W,WPREV_H,12,foc?w->accent:BORDER);
     int tx=wpx+10,ty=wpy+8;
     int tlen=slen(w->title);if(tlen>22)tlen=22;
     char tt[24];int k=0;for(;k<tlen;k++)tt[k]=w->title[k];tt[k]=0;
@@ -2426,7 +2484,7 @@ static void draw_window_preview(int wi,int wpx,int wpy){
     }else{
         for(int row=0;row<WPREV_BH;row++)
             for(int col=0;col<WPREV_BW;col++)
-                px(bx0+col,by0+row,wpreview_cache[row*WPREV_BW+col]);
+                px(bx0+col,by0+row,wpreview_slots[slot][row*WPREV_BW+col]);
         outline(bx0,by0,WPREV_BW,WPREV_BH,0x21262D);
     }
 }
@@ -2565,7 +2623,7 @@ int main(void){
                         else if(ci2==1){if(rw->w<700){rw->x=0;rw->y=0;rw->w=(int)FB_W;rw->h=(int)FB_H-TBAR_H;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
                         else if(ci2==2){
                             rw->visible=0;
-                            if(wins[rctx_target].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
+                            if(wins[rctx_target].id==WIN_NOTEPAD){np_current=rctx_target;np.mode=0;}
                             if(wins[rctx_target].id==WIN_SETTINGS)settings_win_idx=-1;
                             focused=-1;int cbz=-1;
                             for(int ck=0;ck<win_count;ck++)if(wins[ck].visible&&wins[ck].z>cbz){cbz=wins[ck].z;focused=ck;}
@@ -2639,6 +2697,23 @@ int main(void){
                 if(inside_panel)goto click_done;
                 menu_open=0;goto click_done;
             }
+            /* preview-strip click: pick a specific instance from the
+             * currently-hovered group's strip (checked before the plain
+             * taskbar-button click below, since the strip floats above
+             * the taskbar pill when visible) */
+            if(hover_preview_group>=0&&hover_preview_group<taskbar_group_count){
+                int gcount=taskbar_groups[hover_preview_group].count;
+                int sx,sy,sw,sh;taskbar_group_strip_rect(hover_preview_group,&sx,&sy,&sw,&sh);
+                for(int gk=0;gk<gcount;gk++){
+                    int wpx=sx+gk*(WPREV_W+WPREV_GAP);
+                    if(in_box(mouse_x,mouse_y,wpx,sy,WPREV_W,WPREV_H)){
+                        int wi=taskbar_groups[hover_preview_group].idx[gk];
+                        wins[wi].minimized=0;wins[wi].anim=ANIM_TICKS;wins[wi].anim_type=1;
+                        wm_focus(wi);
+                        goto click_done;
+                    }
+                }
+            }
             int hit=wm_hit(mouse_x,mouse_y);
             if(hit>=0&&hit!=focused)wm_focus(hit);
 
@@ -2647,7 +2722,7 @@ int main(void){
                 /* close */
                 if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
                     w->visible=0;
-                    if(wins[hit].id==WIN_NOTEPAD){np.mode=0;np_win_idx=-1;}
+                    if(wins[hit].id==WIN_NOTEPAD){np_current=hit;np.mode=0;}
                     if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;
                     if(wins[hit].id==WIN_CALC)calc_win_idx=-1;
                     focused=-1;int bz=-1;
@@ -2692,8 +2767,9 @@ int main(void){
                     drag_win=hit;drag_ox=mouse_x-w->x;drag_oy=mouse_y-w->y;goto click_done;
                 }
                 /* notepad toolbar */
-                    /* error dialog click — checked first */
-                    if(np.mode3_err){
+                    /* error dialog click — checked first (only meaningful
+                     * for the Notepad window actually being clicked) */
+                    if(w->id==WIN_NOTEPAD&&(np_current=hit,np.mode3_err)){
                         int edw=320,edh=90;
                         int edx=w->x+(w->w-edw)/2;
                         int edy=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-edh)/2;
@@ -2701,11 +2777,12 @@ int main(void){
                         goto click_done;
                     }
                 if(w->id==WIN_NOTEPAD&&!w->minimized){
+                    np_current=hit;
                     int bary=w->y+TITLEBAR_H;
                     if(in_box(mouse_x,mouse_y,w->x+4,bary+4,40,20)){
                         np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
                         np.modified=0;np.filename[0]=0;np.mode=0;
-                        if(np_win_idx>=0){int j=0;const char*t="YC Notepad";while(t[j]&&j<39){wins[np_win_idx].title[j]=t[j];j++;}wins[np_win_idx].title[j]=0;}
+                        if(np_current>=0){int j=0;const char*t="YC Notepad";while(t[j]&&j<39){wins[np_current].title[j]=t[j];j++;}wins[np_current].title[j]=0;}
                         goto click_done;
                     }
                     if(in_box(mouse_x,mouse_y,w->x+50,bary+4,52,20)){
@@ -2728,7 +2805,7 @@ int main(void){
                                 char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
                                 int pk=6,pj=0;while(np_dlg_files[fi].name[pj]&&pk<55){path[pk++]=np_dlg_files[fi].name[pj++];}path[pk]=0;
                                 np_load(path,np_dlg_files[fi].name);
-                                if(np_win_idx>=0){pj=0;while(np_dlg_files[fi].name[pj]&&pj<39){wins[np_win_idx].title[pj]=np_dlg_files[fi].name[pj];pj++;}wins[np_win_idx].title[pj]=0;}
+                                if(np_current>=0){pj=0;while(np_dlg_files[fi].name[pj]&&pj<39){wins[np_current].title[pj]=np_dlg_files[fi].name[pj];pj++;}wins[np_current].title[pj]=0;}
                                 np.mode=0;goto click_done;
                             }
                         }
@@ -2966,16 +3043,18 @@ int main(void){
                 goto click_done;
             }
 
-            /* taskbar buttons */
-            int bx=TBAR_WINBTN_X0;
-            for(int i=0;i<win_count;i++){
-                if(!wins[i].visible)continue;
-                if(in_box(mouse_x,mouse_y,bx,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8)){
-                    if(i==focused){wins[i].minimized=!wins[i].minimized;wins[i].anim=ANIM_TICKS;wins[i].anim_type=wins[i].minimized?3:1;}
-                    else{wins[i].minimized=0;wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;wm_focus(i);}
-                    goto click_done;
+            /* taskbar buttons (grouped by app) */
+            {
+                int bxg=TBAR_WINBTN_X0;
+                for(int g=0;g<taskbar_group_count;g++){
+                    if(in_box(mouse_x,mouse_y,bxg,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8)){
+                        int rep=taskbar_groups[g].rep;
+                        if(rep==focused){wins[rep].minimized=!wins[rep].minimized;wins[rep].anim=ANIM_TICKS;wins[rep].anim_type=wins[rep].minimized?3:1;}
+                        else{wins[rep].minimized=0;wins[rep].anim=ANIM_TICKS;wins[rep].anim_type=1;wm_focus(rep);}
+                        goto click_done;
+                    }
+                    bxg+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
                 }
-                bx+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
             }
             /* start button */
             if(in_box(mouse_x,mouse_y,TBAR_SB_X,TBAR_SB_Y,TBAR_SB_SZ,TBAR_SB_SZ)){
@@ -3042,6 +3121,7 @@ int main(void){
                 calc_handle_key(ch);
             }
             if(wins[focused].id==WIN_NOTEPAD&&wins[focused].visible){
+                np_current=focused;
                 if(np.mode==2){
                     if(ch>0&&ch<256){
                         char c=(char)ch;
@@ -3092,12 +3172,25 @@ int main(void){
         }
         hover_preview_win=-1;
         {
+            int prev_group=hover_preview_group;
+            hover_preview_group=-1;
             int bxh=TBAR_WINBTN_X0;
-            for(int i=0;i<win_count;i++){
-                if(!wins[i].visible)continue;
-                if(in_box(mouse_x,mouse_y,bxh,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8))hover_preview_win=i;
+            for(int g=0;g<taskbar_group_count;g++){
+                if(in_box(mouse_x,mouse_y,bxh,TBAR_PILL_Y+4,TBAR_WINBTN_W,TBAR_PILL_H-8))
+                    hover_preview_group=g;
                 bxh+=TBAR_WINBTN_W+TBAR_WINBTN_GAP;
             }
+            /* If not directly over a button, but the mouse is in the
+             * corridor between the previously-hovered group's button
+             * and its strip (moving the cursor up to click a preview),
+             * keep that group active instead of dropping hover. */
+            if(hover_preview_group<0&&prev_group>=0&&prev_group<taskbar_group_count){
+                int sx,sy,sw,sh;taskbar_group_strip_rect(prev_group,&sx,&sy,&sw,&sh);
+                int corridor_y0=sy,corridor_y1=TBAR_PILL_Y+TBAR_PILL_H;
+                if(mouse_y>=corridor_y0&&mouse_y<corridor_y1&&mouse_x>=sx-20&&mouse_x<sx+sw+20)
+                    hover_preview_group=prev_group;
+            }
+            if(hover_preview_group>=0)hover_preview_win=taskbar_groups[hover_preview_group].rep;
         }
         icon_hovered=-1;
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
@@ -3112,8 +3205,8 @@ int main(void){
             for(int i=start;i<fm_count&&i<start+max_vis3;i++){int ry=row_y+(i-start)*22;if(in_box(mouse_x,mouse_y,wf->x,ry,wf->w,22))fm_hovered=i;}
         }
         np.dlg_hov=-1;
-        if(np_win_idx>=0&&np_win_idx<MAX_WINDOWS&&wins[np_win_idx].visible&&np.mode==1){
-            Win*wn=&wins[np_win_idx];
+        if(np_current>=0&&np_current<MAX_WINDOWS&&wins[np_current].visible&&np.mode==1){
+            Win*wn=&wins[np_current];
             int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
             int dw=280,dh=dh2,dx=wn->x+(wn->w-dw)/2,dy2=wn->y+TITLEBAR_H+(wn->h-TITLEBAR_H-dh)/2;
             int ly=dy2+28,max_vis2=(dh-36)/20;
@@ -3162,6 +3255,7 @@ int main(void){
         if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0)continue;
         last_ticks=ticks;
 
+        rebuild_taskbar_groups();
         wallpaper();draw_icons();draw_panel_bg();
         int px2=PANEL_X+4;
         draw_analog_clock(PANEL_X+PANEL_W/2,95,80,secs);
@@ -3175,20 +3269,22 @@ int main(void){
             if(wins[i].id==WIN_TERMINAL)draw_terminal_content(i);
             else if(wins[i].id==WIN_ABOUT)draw_about_content(i);
             else if(wins[i].id==WIN_FILES)draw_files_content(i);
-            else if(wins[i].id==WIN_NOTEPAD)draw_notepad_content(i);
+            else if(wins[i].id==WIN_NOTEPAD){np_current=i;draw_notepad_content(i);}
             else if(wins[i].id==WIN_CALC)draw_calc_content(i);
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
-            if(i==hover_preview_win)capture_window_preview(i);
+            if(hover_preview_group>=0){
+                for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
+                    if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
+            }
         }
         draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();
-        if(hover_preview_win>=0){
-            int bxp=TBAR_WINBTN_X0+hover_preview_win*(TBAR_WINBTN_W+TBAR_WINBTN_GAP);
-            int cxp=bxp+TBAR_WINBTN_W/2;
-            int pxp=cxp-WPREV_W/2;
-            if(pxp<4)pxp=4;
-            if(pxp+WPREV_W>1020)pxp=1020-WPREV_W;
-            int pyp=TBAR_PILL_Y-WPREV_H-12;
-            draw_window_preview(hover_preview_win,pxp,pyp);
+        if(hover_preview_group>=0){
+            int gcount=taskbar_groups[hover_preview_group].count;
+            int sx,sy,sw,sh;taskbar_group_strip_rect(hover_preview_group,&sx,&sy,&sw,&sh);
+            for(int gk=0;gk<gcount;gk++){
+                int wi=taskbar_groups[hover_preview_group].idx[gk];
+                draw_window_preview_slot(wi,gk,sx+gk*(WPREV_W+WPREV_GAP),sy);
+            }
         }
         draw_cursor(mouse_x,mouse_y);
         flush();sys_yield();
