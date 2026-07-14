@@ -321,16 +321,34 @@ static int mouse_x=512,mouse_y=384,mouse_btn=0,prev_btn=0;
 static u32  cfg_accent=0x58A6FF;
 static int  cfg_24h=1,cfg_showsecs=1;
 static int  rctx_open=0,rctx_x=0,rctx_y=0,rctx_target=-1,rctx_hov=-1;
-static int  fm_ctx_open=0,fm_ctx_x=0,fm_ctx_y=0,fm_ctx_hov=-1;
+/* Shared across all File Manager instances (real clipboard semantics —
+ * copy in one window, paste in another, like a normal desktop). */
 static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0;
-static int  fm_dialog=0;
-static char fm_dlg_buf[40];static int fm_dlg_len=0;
-static char fm_dlg_err[48];static int fm_dlg_has_err=0;
-static char fm_paste_err[48];
+static char fm_clip_path[64];  /* subdirectory the clipboard item was copied FROM, mirrors fm_path */
 static char fm_cpbuf[4096];
-static char fm_path[64];  /* current directory: "" = root, "dirname" = subdir */
-static int  fm_path_len=0;
-static int  fm_use_fat16=0;  /* 0 = YCFS (default), 1 = FAT16 (external disk browsing) */
+typedef struct{
+    int  ctx_open,ctx_x,ctx_y,ctx_hov;
+    int  dialog;
+    char dlg_buf[40];int dlg_len;
+    char dlg_err[48];int dlg_has_err;
+    char paste_err[48];
+    char path[64];int path_len;
+    int  use_fat16;
+}FMState;
+static FMState fm_states[MAX_WINDOWS];
+static int fm_current=-1;
+#define fm_ctx_open      (fm_states[fm_current].ctx_open)
+#define fm_ctx_x         (fm_states[fm_current].ctx_x)
+#define fm_ctx_y         (fm_states[fm_current].ctx_y)
+#define fm_ctx_hov       (fm_states[fm_current].ctx_hov)
+#define fm_dialog        (fm_states[fm_current].dialog)
+#define fm_dlg_buf       (fm_states[fm_current].dlg_buf)
+#define fm_dlg_len       (fm_states[fm_current].dlg_len)
+#define fm_dlg_err       (fm_states[fm_current].dlg_err)
+#define fm_dlg_has_err   (fm_states[fm_current].dlg_has_err)
+#define fm_paste_err     (fm_states[fm_current].paste_err)
+#define fm_path          (fm_states[fm_current].path)
+#define fm_path_len      (fm_states[fm_current].path_len)
 static int  settings_win_idx=-1;
 /* Calculator state */
 typedef struct{
@@ -342,10 +360,10 @@ typedef struct{
     int   hist_count;
     int   error;
 } Calc;
-static Calc calc;
-static int calc_win_idx=-1;
-static int  fm_selected=-1,fm_last_fi=-1,fm_del_confirm=0;
-static u64  fm_last_tick=0;
+static Calc calc_states[MAX_WINDOWS];
+static int calc_current=-1;
+#define calc (calc_states[calc_current])
+
 
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
     if(win_count>=MAX_WINDOWS)return -1;
@@ -558,26 +576,49 @@ static void draw_terminal_content(int i){
 /* ═══ FILE MANAGER ══════════════════════════════════════════════ */
 typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
-static Dirent fm_entries[MAX_FILES];
-static int fm_count=0,fm_scroll=0,fm_hovered=-1,fm_loaded=0;
+typedef struct{
+    Dirent entries[MAX_FILES];
+    int count,scroll,hovered,loaded;
+    int selected,last_fi,del_confirm;
+    u64 last_tick;
+}FMListState;
+static FMListState fml_states[MAX_WINDOWS];
+#define fm_entries       (fml_states[fm_current].entries)
+#define fm_count         (fml_states[fm_current].count)
+#define fm_scroll        (fml_states[fm_current].scroll)
+#define fm_hovered       (fml_states[fm_current].hovered)
+#define fm_loaded        (fml_states[fm_current].loaded)
+#define fm_selected      (fml_states[fm_current].selected)
+#define fm_last_fi       (fml_states[fm_current].last_fi)
+#define fm_del_confirm   (fml_states[fm_current].del_confirm)
+#define fm_last_tick     (fml_states[fm_current].last_tick)
+/* Build a full path for `name` inside the CURRENTLY BROWSED directory
+ * of the given File Manager instance (root, or fm_path if navigated
+ * into a subdirectory), using the given filesystem prefix. Every file
+ * operation (delete/rename/mkdir/paste) must go through this instead
+ * of hand-building paths — previously each site rebuilt the prefix
+ * itself and silently ignored fm_path, so every operation always
+ * targeted the root directory regardless of which folder was actually
+ * being browsed. */
+/* Build a full /ycfs path for `name` inside the CURRENTLY BROWSED
+ * directory (root, or fm_path if navigated into a subdirectory). */
+static void fm_build_path(char*out,int outsz,const char*cur_path,const char*name){
+    int k=0;
+    if(k<outsz-1)out[k++]='/';if(k<outsz-1)out[k++]='y';if(k<outsz-1)out[k++]='c';if(k<outsz-1)out[k++]='f';if(k<outsz-1)out[k++]='s';if(k<outsz-1)out[k++]='/';
+    int j=0;while(cur_path[j]&&k<outsz-1){out[k++]=cur_path[j++];}
+    if(cur_path[0]&&k<outsz-1)out[k++]='/';
+    j=0;while(name[j]&&k<outsz-1){out[k++]=name[j++];}
+    out[k]=0;
+}
 static void fm_load(void){
     fm_paste_err[0]=0;
-    if(fm_use_fat16){
-        if(fm_path_len>0){
-            char full[72];full[0]='/';full[1]='d';full[2]='i';full[3]='s';full[4]='k';full[5]='/';
-            int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
-            fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
-        } else {
-            fm_count=(int)sys_readdir(fm_entries,MAX_FILES);
-        }
+    if(fm_path_len>0){
+        char full[72];
+        fm_build_path(full,sizeof(full),fm_path,"");
+        int fl=slen(full);if(fl>0&&full[fl-1]=='/')full[fl-1]=0; /* fm_build_path always trails a '/', trim when name is empty */
+        fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
     } else {
-        if(fm_path_len>0){
-            char full[72];full[0]='/';full[1]='y';full[2]='c';full[3]='f';full[4]='s';full[5]='/';
-            int k=6,j=0;while(fm_path[j]&&k<71){full[k++]=fm_path[j++];}full[k]=0;
-            fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
-        } else {
-            fm_count=(int)sys_readdir2("/ycfs",fm_entries,MAX_FILES);
-        }
+        fm_count=(int)sys_readdir2("/ycfs",fm_entries,MAX_FILES);
     }
     fm_scroll=0;fm_selected=-1;fm_last_fi=-1;fm_last_tick=0;fm_del_confirm=0;
     fm_ctx_open=0;fm_dialog=0;fm_dlg_has_err=0;fm_loaded=1;
@@ -604,17 +645,13 @@ static void draw_files_content(int wi){
     rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
     /* path bar */
     char pathbar[72];int pbi=0;
-    if(fm_use_fat16){pathbar[0]='/';pathbar[1]='d';pathbar[2]='i';pathbar[3]='s';pathbar[4]='k';pbi=5;}
-    else{pathbar[0]='/';pathbar[1]='y';pathbar[2]='c';pathbar[3]='f';pathbar[4]='s';pbi=5;}
+    pathbar[0]='/';pathbar[1]='y';pathbar[2]='c';pathbar[3]='f';pathbar[4]='s';pbi=5;
     if(fm_path_len>0){pathbar[pbi++]='/';int pj=0;while(fm_path[pj]&&pbi<70){pathbar[pbi++]=fm_path[pj++];}pathbar[pbi]=0;}
     else pathbar[pbi]=0;
     text(x+8,y+6,pathbar,cfg_accent,0x161B22);
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
     rect(x+cw-60,y+4,52,20,rhov?0x21262D:0x161B22);outline(x+cw-60,y+4,52,20,BORDER);
     text(x+cw-56,y+6,"Reload",rhov?TEXT:DIM,rhov?0x21262D:0x161B22);
-    int fshov=in_box(mouse_x,mouse_y,x+cw-190,y+4,58,20);
-    rect(x+cw-190,y+4,58,20,fshov?0x21262D:0x161B22);outline(x+cw-190,y+4,58,20,BORDER);
-    text(x+cw-186,y+6,fm_use_fat16?"Disk":"YCFS",fshov?TEXT:DIM,fshov?0x21262D:0x161B22);
     if(fm_path_len>0){
         int uhov=in_box(mouse_x,mouse_y,x+cw-128,y+4,52,20);
         rect(x+cw-128,y+4,52,20,uhov?0x21262D:0x161B22);outline(x+cw-128,y+4,52,20,BORDER);
@@ -808,7 +845,8 @@ static void np_do_save(void){
     char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
     int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
     sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
-    np.modified=0;fm_loaded=0;np.save_flash=80;
+    np.modified=0;np.save_flash=80;
+    for(int fk=0;fk<MAX_WINDOWS;fk++)fml_states[fk].loaded=0;
     if(np_current>=0){
         j=0;while(np.filename[j]&&j<39){wins[np_current].title[j]=np.filename[j];j++;}
         wins[np_current].title[j]=0;
@@ -1784,7 +1822,15 @@ static void calc_handle_key(s64 ch){
 static int find_win(int id){for(int i=0;i<win_count;i++)if(wins[i].id==id)return i;return -1;}
 static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",cfg_accent);}
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
-static void open_files(void){int i=find_win(WIN_FILES);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else{wm_new(WIN_FILES,100,80,560,420,"File Manager",GREEN);fm_loaded=0;fm_path_len=0;fm_path[0]=0;}}
+static void open_files(void){
+    int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_FILES)cnt++;
+    int ox=100+(cnt%6)*24,oy=80+(cnt%6)*24;
+    int i=wm_new(WIN_FILES,ox,oy,560,420,"File Manager",GREEN);
+    if(i<0)return;
+    fm_current=i;
+    fm_states[i].use_fat16=0;
+    fm_loaded=0;fm_path_len=0;fm_path[0]=0;
+}
 static void open_notepad(const char*fn){
     int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD)cnt++;
     int ox=150+(cnt%6)*24,oy=70+(cnt%6)*24;
@@ -1899,13 +1945,13 @@ static void cfg_load(void){
     wallpaper_loaded=(int)b.wallpaper_on&&load_wallpaper_bmp("/ycfs/wall.bmp");
 }
 static void open_calc(void){
-    int i=find_win(WIN_CALC);
-    if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);calc_win_idx=i;}
-    else{
-        calc_win_idx=wm_new(WIN_CALC,220,100,280,380,"Calculator",ACCENT);
-        calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;
-        calc.error=0;calc.hist_count=0;
-    }
+    int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_CALC)cnt++;
+    int ox=220+(cnt%6)*24,oy=100+(cnt%6)*24;
+    int i=wm_new(WIN_CALC,ox,oy,280,380,"Calculator",ACCENT);
+    if(i<0)return;
+    calc_current=i;
+    calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;
+    calc.error=0;calc.hist_count=0;
 }
 static int acct_setup_open=0,acct_setup_mode=0;
 static void open_settings(void){
@@ -2439,8 +2485,9 @@ static void auth_do_logout(void){
     for(int i=0;i<win_count;i++){wins[i].visible=0;wins[i].minimized=0;}
     win_count=0;focused=-1;
     for(int k=0;k<MAX_WINDOWS;k++){np_states[k].text[0]=0;np_states[k].text_len=0;np_states[k].cursor=0;np_states[k].scroll=0;np_states[k].modified=0;np_states[k].filename[0]=0;np_states[k].mode=0;}
-    np_current=-1;settings_win_idx=-1;calc_win_idx=-1;
-    calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;calc.error=0;calc.hist_count=0;
+    np_current=-1;settings_win_idx=-1;
+    for(int k=0;k<MAX_WINDOWS;k++){calc_states[k].expr_len=0;calc_states[k].expr[0]=0;calc_states[k].has_result=0;calc_states[k].error=0;calc_states[k].hist_count=0;}
+    calc_current=-1;
     notif_count=0;notif_center_open=0;notif_popup_active=0;
     menu_open=0;rctx_open=0;fm_ctx_open=0;fm_dialog=0;fm_selected=-1;fm_has_clip=0;
     drag_win=-1;resize_win=-1;drag_icon=-1;
@@ -2576,11 +2623,17 @@ int main(void){
         }
 
         int rbtn_down=(mouse_btn&2)&&!(prev_btn&2);
-        /* FM right-click */
+        /* FM right-click — must target the specific File Manager window
+         * actually under the cursor (via wm_hit, respecting z-order and
+         * overlap), not just "the first File Manager window that
+         * exists" (find_win() always returns the first match, which
+         * broke right-click entirely for any File Manager window other
+         * than the first one opened). */
         if(rbtn_down&&drag_win<0){
-            int fmi=find_win(WIN_FILES);
-            if(fmi>=0&&wins[fmi].visible&&!wins[fmi].minimized&&
+            int fmi=wm_hit(mouse_x,mouse_y);
+            if(fmi>=0&&wins[fmi].id==WIN_FILES&&wins[fmi].visible&&!wins[fmi].minimized&&
                in_box(mouse_x,mouse_y,wins[fmi].x,wins[fmi].y+TITLEBAR_H,wins[fmi].w,wins[fmi].h-TITLEBAR_H)){
+                fm_current=fmi;
                 fm_ctx_x=mouse_x;fm_ctx_y=mouse_y;fm_ctx_hov=-1;fm_ctx_open=1;
                 wm_focus(fmi);goto click_done;
             }
@@ -2595,9 +2648,9 @@ int main(void){
             rctx_open=1;goto click_done;
         }
         /* left-click closes context menu */
-        if(btn_down&&fm_ctx_open){
-            int fmi3=find_win(WIN_FILES);
-            if(fmi3<0||!in_box(mouse_x,mouse_y,wins[fmi3].x,wins[fmi3].y,wins[fmi3].w,wins[fmi3].h))
+        if(btn_down&&fm_ctx_open&&fm_current>=0){
+            int fmi3=fm_current;
+            if(!in_box(mouse_x,mouse_y,wins[fmi3].x,wins[fmi3].y,wins[fmi3].w,wins[fmi3].h))
                 fm_ctx_open=0;
         }
         if(btn_down&&rctx_open){
@@ -2724,7 +2777,7 @@ int main(void){
                     w->visible=0;
                     if(wins[hit].id==WIN_NOTEPAD){np_current=hit;np.mode=0;}
                     if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;
-                    if(wins[hit].id==WIN_CALC)calc_win_idx=-1;
+                    if(wins[hit].id==WIN_CALC)calc_current=-1;
                     focused=-1;int bz=-1;
                     for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
                     goto click_done;
@@ -2837,6 +2890,7 @@ int main(void){
                 }
                 /* calculator window */
                 if(w->id==WIN_CALC&&!w->minimized){
+                    calc_current=hit;
                     int btn_top=w->y+TITLEBAR_H+80+60;
                     int bw=(w->w-12)/CALC_COLS;
                     for(int r=0;r<CALC_ROWS;r++){
@@ -2873,6 +2927,7 @@ int main(void){
                 }
                 /* file manager interactions */
                 if(w->id==WIN_FILES&&!w->minimized){
+                    fm_current=hit;
                     int fy=w->y+TITLEBAR_H;
                     int cw2=w->w;
                     /* dialog: delete confirm */
@@ -2882,13 +2937,7 @@ int main(void){
                         int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
                         if(in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22)){
                             char dpath[56];
-                            int dk=0;
-                            dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';
-                            dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';
-                            int dj=0;
-                            while(fm_entries[fm_selected].name[dj]&&dk<55)
-                                dpath[dk++]=fm_entries[fm_selected].name[dj++];
-                            dpath[dk]=0;
+                            fm_build_path(dpath,sizeof(dpath),fm_path,fm_entries[fm_selected].name);
                             sys_unlink(dpath);fm_selected=-1;fm_dialog=0;fm_load();
                         } else fm_dialog=0;
                         goto click_done;
@@ -2901,11 +2950,8 @@ int main(void){
                         if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
                             if(fm_dlg_len>0&&fm_selected>=0){
                                 char op[56],np2[56];
-                                int k=0;
-                                op[k++]='/';op[k++]='d';op[k++]='i';op[k++]='s';op[k++]='k';op[k++]='/';
-                                int j=0;while(fm_entries[fm_selected].name[j]&&k<55)op[k++]=fm_entries[fm_selected].name[j++];op[k]=0;
-                                k=0;np2[k++]='/';np2[k++]='d';np2[k++]='i';np2[k++]='s';np2[k++]='k';np2[k++]='/';
-                                j=0;while(fm_dlg_buf[j]&&k<55)np2[k++]=fm_dlg_buf[j++];np2[k]=0;
+                                fm_build_path(op,sizeof(op),fm_path,fm_entries[fm_selected].name);
+                                fm_build_path(np2,sizeof(np2),fm_path,fm_dlg_buf);
                                 if(sys_rename(op,np2)<0){
                                     fm_dlg_has_err=1;
                                     const char*em="Name exists or invalid";
@@ -2923,9 +2969,7 @@ int main(void){
                         if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
                             if(fm_dlg_len>0){
                                 char np2[56];
-                                int k=0;
-                                np2[k++]='/';np2[k++]='d';np2[k++]='i';np2[k++]='s';np2[k++]='k';np2[k++]='/';
-                                int j=0;while(fm_dlg_buf[j]&&k<55)np2[k++]=fm_dlg_buf[j++];np2[k]=0;
+                                fm_build_path(np2,sizeof(np2),fm_path,fm_dlg_buf);
                                 if(sys_mkdir(np2)<0){
                                     fm_dlg_has_err=1;
                                     const char*em="Folder already exists";
@@ -2955,25 +2999,39 @@ int main(void){
                         } else if(clicked==2&&fm_selected>=0){
                             int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
                             fm_has_clip=1;fm_clip_cut=0;
+                            {int cpi=0;while(fm_path[cpi]&&cpi<63){fm_clip_path[cpi]=fm_path[cpi];cpi++;}fm_clip_path[cpi]=0;}
                         } else if(clicked==3&&fm_selected>=0){
                             int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
                             fm_has_clip=1;fm_clip_cut=1;
+                            {int cpi=0;while(fm_path[cpi]&&cpi<63){fm_clip_path[cpi]=fm_path[cpi];cpi++;}fm_clip_path[cpi]=0;}
                         } else if(clicked==4&&fm_has_clip){
                             char spath[56];
-                            int sk=0;
-                            if(fm_use_fat16){spath[sk++]='/';spath[sk++]='d';spath[sk++]='i';spath[sk++]='s';spath[sk++]='k';spath[sk++]='/';}
-                            else{spath[sk++]='/';spath[sk++]='y';spath[sk++]='c';spath[sk++]='f';spath[sk++]='s';spath[sk++]='/';}
-                            int sj=0;while(fm_clip[sj]&&sk<55)spath[sk++]=fm_clip[sj++];spath[sk]=0;
+                            fm_build_path(spath,sizeof(spath),fm_clip_path,fm_clip);
                             u64 fd=sys_open(spath,0);
                             if((s64)fd>=0){
+                                /* Destination name: use the original name by
+                                 * default (correct for Cut/move always, and
+                                 * for Copy into a different location). Only
+                                 * fall back to a "copy_" prefix for Copy when
+                                 * a file with the exact same name already
+                                 * exists at the destination — previously this
+                                 * prefix was applied unconditionally, which
+                                 * both looked wrong for ordinary copies and
+                                 * broke Cut (a moved file should keep its own
+                                 * name, not become "copy_name"). */
+                                char dpath_probe[56];
+                                fm_build_path(dpath_probe,sizeof(dpath_probe),fm_path,fm_clip);
+                                u64 probe_fd=sys_open(dpath_probe,0);
+                                int name_collision=((s64)probe_fd>=0);
+                                if(name_collision)sys_close(probe_fd);
+
                                 char dname[40];int di=0;
-                                dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';
-                                sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
+                                if(name_collision&&!fm_clip_cut){
+                                    dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';
+                                }
+                                int sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
                                 char dpath[56];
-                                int dk=0;
-                                if(fm_use_fat16){dpath[dk++]='/';dpath[dk++]='d';dpath[dk++]='i';dpath[dk++]='s';dpath[dk++]='k';dpath[dk++]='/';}
-                                else{dpath[dk++]='/';dpath[dk++]='y';dpath[dk++]='c';dpath[dk++]='f';dpath[dk++]='s';dpath[dk++]='/';}
-                                int dj=0;while(dname[dj]&&dk<55)dpath[dk++]=dname[dj++];dpath[dk]=0;
+                                fm_build_path(dpath,sizeof(dpath),fm_path,dname);
                                 int total=0;s64 nr;
                                 /* Bounded against sizeof(fm_cpbuf) — the previous
                                  * version had no capacity check at all and would
@@ -3006,9 +3064,6 @@ int main(void){
                         goto click_done;
                     }
                     /* toolbar */
-                    if(in_box(mouse_x,mouse_y,w->x+cw2-190,fy+4,58,20)){
-                        fm_use_fat16=!fm_use_fat16;fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
-                    }
                     if(fm_path_len>0&&in_box(mouse_x,mouse_y,w->x+cw2-128,fy+4,52,20)){
                         fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
                     }
@@ -3020,7 +3075,14 @@ int main(void){
                     for(int fi=fm_scroll;fi<fm_count&&fi<fm_scroll+max_vis2;fi++){
                         int ry=row_y2+(fi-fm_scroll)*22;
                         if(in_box(mouse_x,mouse_y,w->x,ry,w->w,22)){
-                            if(fi==fm_last_fi&&(ticks-fm_last_tick)<30){
+                            /* Double-click window: 100 ticks (~1000ms at the
+                             * 100Hz tick rate). Measured real click gaps
+                             * during testing under QEMU ranged from ~770ms
+                             * to 5000ms+ even for deliberate "quick" double
+                             * clicks — 30-50 ticks (300-500ms) never once
+                             * registered. Set generously above the worst
+                             * observed fast case. */
+                            if(fi==fm_last_fi&&(ticks-fm_last_tick)<100){
                                 fm_last_fi=-1;fm_last_tick=0;
                                 if(fm_entries[fi].is_dir&&fm_path_len==0){
                                     /* navigate into subdir (1 level deep) */
@@ -3091,7 +3153,7 @@ int main(void){
                 else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
                 else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
             }
-            if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_dialog==2||fm_dialog==3)){
+            if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_current=focused,fm_dialog==2||fm_dialog==3)){
                 if(ch>0&&ch<256){
                     char fc=(char)ch;
                     if(fc=='\b'||fc==127){if(fm_dlg_len>0){fm_dlg_buf[--fm_dlg_len]=0;fm_dlg_has_err=0;}}
@@ -3099,17 +3161,13 @@ int main(void){
                         if(fm_dlg_len>0){
                             if(fm_dialog==2&&fm_selected>=0){
                                 char op2[56],np3[56];
-                                int k2=0;
-                                op2[k2++]='/';op2[k2++]='d';op2[k2++]='i';op2[k2++]='s';op2[k2++]='k';op2[k2++]='/';
-                                int j2=0;while(fm_entries[fm_selected].name[j2]&&k2<55)op2[k2++]=fm_entries[fm_selected].name[j2++];op2[k2]=0;
-                                k2=0;np3[k2++]='/';np3[k2++]='d';np3[k2++]='i';np3[k2++]='s';np3[k2++]='k';np3[k2++]='/';
-                                j2=0;while(fm_dlg_buf[j2]&&k2<55)np3[k2++]=fm_dlg_buf[j2++];np3[k2]=0;
+                                fm_build_path(op2,sizeof(op2),fm_path,fm_entries[fm_selected].name);
+                                fm_build_path(np3,sizeof(np3),fm_path,fm_dlg_buf);
                                 if(sys_rename(op2,np3)<0){fm_dlg_has_err=1;const char*em2="Name exists";int ei2=0;while(em2[ei2]&&ei2<47){fm_dlg_err[ei2]=em2[ei2];ei2++;}fm_dlg_err[ei2]=0;}
                                 else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
                             } else if(fm_dialog==3){
-                                char np4[56];int k3=0;
-                                np4[k3++]='/';np4[k3++]='d';np4[k3++]='i';np4[k3++]='s';np4[k3++]='k';np4[k3++]='/';
-                                int j3=0;while(fm_dlg_buf[j3]&&k3<55)np4[k3++]=fm_dlg_buf[j3++];np4[k3]=0;
+                                char np4[56];
+                                fm_build_path(np4,sizeof(np4),fm_path,fm_dlg_buf);
                                 if(sys_mkdir(np4)<0){fm_dlg_has_err=1;const char*em3="Already exists";int ei3=0;while(em3[ei3]&&ei3<47){fm_dlg_err[ei3]=em3[ei3];ei3++;}fm_dlg_err[ei3]=0;}
                                 else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
                             }
@@ -3118,6 +3176,7 @@ int main(void){
                 }
             }
             if(wins[focused].id==WIN_CALC&&wins[focused].visible&&!wins[focused].minimized){
+                calc_current=focused;
                 calc_handle_key(ch);
             }
             if(wins[focused].id==WIN_NOTEPAD&&wins[focused].visible){
@@ -3196,9 +3255,11 @@ int main(void){
         for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
         menu_sel=-1;
         if(menu_open){int mx2=TBAR_SB_X,my2=(int)FB_H-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
-        fm_hovered=-1;
-        int fi2=find_win(WIN_FILES);
-        if(fi2>=0&&wins[fi2].visible&&!wins[fi2].minimized){
+        for(int fi2=0;fi2<win_count;fi2++){
+            if(wins[fi2].id!=WIN_FILES||!wins[fi2].visible)continue;
+            fm_current=fi2;
+            fm_hovered=-1;
+            if(wins[fi2].minimized)continue;
             Win*wf=&wins[fi2];
             int row_y=wf->y+TITLEBAR_H+72,start=fm_scroll;
             int max_vis3=(wf->h-TITLEBAR_H-72-20)/22;if(max_vis3<1)max_vis3=1;
@@ -3216,11 +3277,10 @@ int main(void){
             }
         }
 
-        fm_ctx_hov=-1;
-        if(fm_ctx_open){
-            int fmi2=find_win(WIN_FILES);
-            if(fmi2>=0){
-                Win*wfm=&wins[fmi2];
+        if(fm_current>=0)fm_ctx_hov=-1;
+        if(fm_current>=0&&fm_ctx_open){
+            {
+                Win*wfm=&wins[fm_current];
                 const char*fitems[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
                 int fn=7,fiw=160,fih=22,fsep=6;
                 int fmh=2;for(int i=0;i<fn;i++)fmh+=fitems[i][0]?fih:fsep;
@@ -3250,7 +3310,12 @@ int main(void){
         }
         cursor_blink=(cursor_blink+1)%100;
         prev_btn=mouse_btn;
-        if(!fm_loaded)fm_load();
+        for(int fmk=0;fmk<win_count;fmk++){
+            if(wins[fmk].id==WIN_FILES&&wins[fmk].visible){
+                fm_current=fmk;
+                if(!fm_loaded)fm_load();
+            }
+        }
 
         if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0)continue;
         last_ticks=ticks;
@@ -3268,9 +3333,9 @@ int main(void){
             int db=wm_draw_frame(i);if(!db)continue;
             if(wins[i].id==WIN_TERMINAL)draw_terminal_content(i);
             else if(wins[i].id==WIN_ABOUT)draw_about_content(i);
-            else if(wins[i].id==WIN_FILES)draw_files_content(i);
+            else if(wins[i].id==WIN_FILES){fm_current=i;draw_files_content(i);}
             else if(wins[i].id==WIN_NOTEPAD){np_current=i;draw_notepad_content(i);}
-            else if(wins[i].id==WIN_CALC)draw_calc_content(i);
+            else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
