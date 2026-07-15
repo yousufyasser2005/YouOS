@@ -66,6 +66,20 @@ typedef struct {
 
 int ycfs_journal_self_test(void);
 
+/* Owner/group/permission bits, added for Phase 3.5 item 4 (multi-user
+ * + POSIX-style permissions). uid 0 = root; every user gets a private
+ * group by default (uid == gid), matching common Unix convention.
+ * perm is a standard 9-bit rwxrwxrwx field (owner/group/other), same
+ * bit layout as a traditional Unix mode (e.g. 0644, 0755). */
+#define YCFS_PERM_R(shift) (0x4 << (shift))
+#define YCFS_PERM_W(shift) (0x2 << (shift))
+#define YCFS_PERM_X(shift) (0x1 << (shift))
+#define YCFS_PERM_OWNER_SHIFT 6
+#define YCFS_PERM_GROUP_SHIFT 3
+#define YCFS_PERM_OTHER_SHIFT 0
+#define YCFS_ROOT_UID 0
+#define YCFS_ROOT_GID 0
+
 typedef struct {
     uint32_t mode;          /* YCFS_TYPE_FILE or YCFS_TYPE_DIR */
     uint64_t size;
@@ -74,7 +88,10 @@ typedef struct {
     uint32_t direct[YCFS_DIRECT_BLOCKS];
     uint32_t indirect;
     uint64_t mtime;
-    uint8_t  reserved[128 - (4+8+4+4+48+4+8)];
+    uint32_t uid;            /* owner user ID (0 = root) */
+    uint32_t gid;            /* owner group ID (0 = root group) */
+    uint16_t perm;           /* rwxrwxrwx permission bits */
+    uint8_t  reserved[128 - (4+8+4+4+48+4+8+4+4+2)];
 } __attribute__((packed)) ycfs_inode_t;
 
 typedef struct {

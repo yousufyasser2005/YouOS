@@ -48,9 +48,17 @@ def pack_superblock(free_blocks, free_inodes):
     return fields + b'\x00' * (BLOCK_SIZE - len(fields))
 
 
-def pack_inode(mode, size, links, blocks_used, direct, indirect=0, mtime=0):
+def pack_inode(mode, size, links, blocks_used, direct, indirect=0, mtime=0,
+               uid=0, gid=0, perm=None):
+    # Default permissions follow standard Unix convention if not given
+    # explicitly: 0755 (rwxr-xr-x) for directories, 0644 (rw-r--r--)
+    # for regular files. uid/gid default to root (0), matching every
+    # file seeded by this formatter being created by the OS itself.
+    if perm is None:
+        perm = 0o755 if mode == YCFS_TYPE_DIR else 0o644
     direct = (direct + [0] * 12)[:12]
-    data = struct.pack('<IQII12IIQ', mode, size, links, blocks_used, *direct, indirect, mtime)
+    data = struct.pack('<IQII12IIQIIH', mode, size, links, blocks_used, *direct,
+                        indirect, mtime, uid, gid, perm)
     return data + b'\x00' * (INODE_SIZE - len(data))
 
 
