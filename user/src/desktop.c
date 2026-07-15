@@ -324,7 +324,7 @@ static int  rctx_open=0,rctx_x=0,rctx_y=0,rctx_target=-1,rctx_hov=-1;
 /* Shared across all File Manager instances (real clipboard semantics —
  * copy in one window, paste in another, like a normal desktop). */
 static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0;
-static char fm_clip_path[64];  /* subdirectory the clipboard item was copied FROM, mirrors fm_path */
+static char fm_clip_path[200];  /* subdirectory the clipboard item was copied FROM, mirrors fm_path */
 static char fm_cpbuf[4096];
 typedef struct{
     int  ctx_open,ctx_x,ctx_y,ctx_hov;
@@ -332,7 +332,7 @@ typedef struct{
     char dlg_buf[40];int dlg_len;
     char dlg_err[48];int dlg_has_err;
     char paste_err[48];
-    char path[64];int path_len;
+    char path[200];int path_len;
     int  use_fat16;
 }FMState;
 static FMState fm_states[MAX_WINDOWS];
@@ -613,7 +613,7 @@ static void fm_build_path(char*out,int outsz,const char*cur_path,const char*name
 static void fm_load(void){
     fm_paste_err[0]=0;
     if(fm_path_len>0){
-        char full[72];
+        char full[220];
         fm_build_path(full,sizeof(full),fm_path,"");
         int fl=slen(full);if(fl>0&&full[fl-1]=='/')full[fl-1]=0; /* fm_build_path always trails a '/', trim when name is empty */
         fm_count=(int)sys_readdir2(full,fm_entries,MAX_FILES);
@@ -644,9 +644,9 @@ static void draw_files_content(int wi){
     rect(x,y,cw,ch,0x0D1117);
     rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
     /* path bar */
-    char pathbar[72];int pbi=0;
+    char pathbar[220];int pbi=0;
     pathbar[0]='/';pathbar[1]='y';pathbar[2]='c';pathbar[3]='f';pathbar[4]='s';pbi=5;
-    if(fm_path_len>0){pathbar[pbi++]='/';int pj=0;while(fm_path[pj]&&pbi<70){pathbar[pbi++]=fm_path[pj++];}pathbar[pbi]=0;}
+    if(fm_path_len>0){pathbar[pbi++]='/';int pj=0;while(fm_path[pj]&&pbi<218){pathbar[pbi++]=fm_path[pj++];}pathbar[pbi]=0;}
     else pathbar[pbi]=0;
     text(x+8,y+6,pathbar,cfg_accent,0x161B22);
     int rhov=in_box(mouse_x,mouse_y,x+cw-60,y+4,52,20);
@@ -2936,7 +2936,7 @@ int main(void){
                         int ddx=w->x+(cw2-dw)/2;
                         int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
                         if(in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22)){
-                            char dpath[56];
+                            char dpath[220];
                             fm_build_path(dpath,sizeof(dpath),fm_path,fm_entries[fm_selected].name);
                             sys_unlink(dpath);fm_selected=-1;fm_dialog=0;fm_load();
                         } else fm_dialog=0;
@@ -2949,7 +2949,7 @@ int main(void){
                         int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
                         if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
                             if(fm_dlg_len>0&&fm_selected>=0){
-                                char op[56],np2[56];
+                                char op[220],np2[220];
                                 fm_build_path(op,sizeof(op),fm_path,fm_entries[fm_selected].name);
                                 fm_build_path(np2,sizeof(np2),fm_path,fm_dlg_buf);
                                 if(sys_rename(op,np2)<0){
@@ -2968,7 +2968,7 @@ int main(void){
                         int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
                         if(in_box(mouse_x,mouse_y,ddx+dw/2-34,ddy+76,64,20)){
                             if(fm_dlg_len>0){
-                                char np2[56];
+                                char np2[220];
                                 fm_build_path(np2,sizeof(np2),fm_path,fm_dlg_buf);
                                 if(sys_mkdir(np2)<0){
                                     fm_dlg_has_err=1;
@@ -3005,7 +3005,7 @@ int main(void){
                             fm_has_clip=1;fm_clip_cut=1;
                             {int cpi=0;while(fm_path[cpi]&&cpi<63){fm_clip_path[cpi]=fm_path[cpi];cpi++;}fm_clip_path[cpi]=0;}
                         } else if(clicked==4&&fm_has_clip){
-                            char spath[56];
+                            char spath[220];
                             fm_build_path(spath,sizeof(spath),fm_clip_path,fm_clip);
                             u64 fd=sys_open(spath,0);
                             if((s64)fd>=0){
@@ -3019,7 +3019,7 @@ int main(void){
                                  * both looked wrong for ordinary copies and
                                  * broke Cut (a moved file should keep its own
                                  * name, not become "copy_name"). */
-                                char dpath_probe[56];
+                                char dpath_probe[220];
                                 fm_build_path(dpath_probe,sizeof(dpath_probe),fm_path,fm_clip);
                                 u64 probe_fd=sys_open(dpath_probe,0);
                                 int name_collision=((s64)probe_fd>=0);
@@ -3030,7 +3030,7 @@ int main(void){
                                     dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';
                                 }
                                 int sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
-                                char dpath[56];
+                                char dpath[220];
                                 fm_build_path(dpath,sizeof(dpath),fm_path,dname);
                                 int total=0;s64 nr;
                                 /* Bounded against sizeof(fm_cpbuf) — the previous
@@ -3065,7 +3065,14 @@ int main(void){
                     }
                     /* toolbar */
                     if(fm_path_len>0&&in_box(mouse_x,mouse_y,w->x+cw2-128,fy+4,52,20)){
-                        fm_path_len=0;fm_path[0]=0;fm_load();goto click_done;
+                        /* pop one level: find the last '/' and truncate
+                         * there, or clear entirely if already at the
+                         * top-level subdirectory (no '/' present) */
+                        int lastslash=-1;
+                        for(int pi3=0;pi3<fm_path_len;pi3++)if(fm_path[pi3]=='/')lastslash=pi3;
+                        if(lastslash>=0){fm_path[lastslash]=0;fm_path_len=lastslash;}
+                        else{fm_path[0]=0;fm_path_len=0;}
+                        fm_load();goto click_done;
                     }
                     if(in_box(mouse_x,mouse_y,w->x+cw2-60,fy+4,52,20)){fm_load();goto click_done;}
                     int max_vis2=(w->h-TITLEBAR_H-72-20)/22;if(max_vis2<1)max_vis2=1;
@@ -3084,9 +3091,14 @@ int main(void){
                              * observed fast case. */
                             if(fi==fm_last_fi&&(ticks-fm_last_tick)<100){
                                 fm_last_fi=-1;fm_last_tick=0;
-                                if(fm_entries[fi].is_dir&&fm_path_len==0){
-                                    /* navigate into subdir (1 level deep) */
-                                    int ni=0;while(fm_entries[fi].name[ni]&&ni<62){fm_path[ni]=fm_entries[fi].name[ni];ni++;}
+                                if(fm_entries[fi].is_dir){
+                                    /* navigate into subdir, appending to
+                                     * whatever path is already current
+                                     * (real arbitrary-depth navigation,
+                                     * not the previous 1-level-only gate) */
+                                    int ni=fm_path_len;
+                                    if(ni>0&&ni<199)fm_path[ni++]='/';
+                                    int nj=0;while(fm_entries[fi].name[nj]&&ni<199){fm_path[ni++]=fm_entries[fi].name[nj++];}
                                     fm_path[ni]=0;fm_path_len=ni;fm_load();goto click_done;
                                 } else if(!fm_entries[fi].is_dir){
                                     char*n=fm_entries[fi].name;int nl=slen(n);
@@ -3160,13 +3172,13 @@ int main(void){
                     else if(fc=='\n'||fc=='\r'){
                         if(fm_dlg_len>0){
                             if(fm_dialog==2&&fm_selected>=0){
-                                char op2[56],np3[56];
+                                char op2[220],np3[220];
                                 fm_build_path(op2,sizeof(op2),fm_path,fm_entries[fm_selected].name);
                                 fm_build_path(np3,sizeof(np3),fm_path,fm_dlg_buf);
                                 if(sys_rename(op2,np3)<0){fm_dlg_has_err=1;const char*em2="Name exists";int ei2=0;while(em2[ei2]&&ei2<47){fm_dlg_err[ei2]=em2[ei2];ei2++;}fm_dlg_err[ei2]=0;}
                                 else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
                             } else if(fm_dialog==3){
-                                char np4[56];
+                                char np4[220];
                                 fm_build_path(np4,sizeof(np4),fm_path,fm_dlg_buf);
                                 if(sys_mkdir(np4)<0){fm_dlg_has_err=1;const char*em3="Already exists";int ei3=0;while(em3[ei3]&&ei3<47){fm_dlg_err[ei3]=em3[ei3];ei3++;}fm_dlg_err[ei3]=0;}
                                 else{fm_dialog=0;fm_dlg_has_err=0;fm_load();}
