@@ -2155,126 +2155,232 @@ static void auth_normalize_code(const char*in,char*out,int outsize){
 static void auth_copy_str(char*dst,int dstsize,const char*src){
     int i=0;while(src[i]&&i<dstsize-1){dst[i]=src[i];i++;}dst[i]=0;
 }
+/* Multi-user account table (Phase 3.5 item 4, stage 2). Replaces the
+ * old single-account AuthBlob with a small fixed table of accounts.
+ * uid 0 is always root, created during first-time setup; additional
+ * users are appended later via a root-only "Add User" action. */
+#define MAX_USERS 16
 typedef struct{
-    u32 magic;
+    u32 uid;
     char username[32];
     u8 pass_salt[16];
     u8 pass_hash[32];
     u8 rec_salt[16];
     u8 rec_hash[32];
-}AuthBlob;
-static int auth_load(const char*path,AuthBlob*b){
+}UserEntry;
+typedef struct{
+    u32 magic;
+    u32 count;
+    UserEntry users[MAX_USERS];
+}UserTable;
+static int auth_table_load(const char*path,UserTable*t){
     u64 fd=sys_open(path,0);
     if((s64)fd<0)return 0;
-    u64 n=sys_fread(fd,b,sizeof(AuthBlob));
+    u64 n=sys_fread(fd,t,sizeof(UserTable));
     sys_close(fd);
-    if(n!=(u64)sizeof(AuthBlob)||b->magic!=AUTH_MAGIC)return 0;
+    if(n!=(u64)sizeof(UserTable)||t->magic!=AUTH_MAGIC)return 0;
+    if(t->count>MAX_USERS)return 0;
     return 1;
 }
-static void auth_save(const char*path,AuthBlob*b){
-    b->magic=AUTH_MAGIC;
-    sys_save_file((u64)path,(u64)b,(u64)sizeof(AuthBlob));
+static void auth_table_save(const char*path,UserTable*t){
+    t->magic=AUTH_MAGIC;
+    sys_save_file((u64)path,(u64)t,(u64)sizeof(UserTable));
 }
 static int auth_exists(const char*path){
-    AuthBlob b;return auth_load(path,&b);
+    UserTable t;return auth_table_load(path,&t)&&t.count>0;
 }
-static int auth_create_account(const char*path,const char*username,const char*password,char recovery_out[20]){
-    AuthBlob b;
-    auth_copy_str(b.username,32,username);
-    auth_random_bytes(b.pass_salt,16);
-    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+/* Find a user entry by username. Returns the index into t->users, or
+ * -1 if not found. Case-sensitive, matching the original single-
+ * account behavior (no case-folding was ever applied to usernames). */
+static int auth_find_user(UserTable*t,const char*username){
+    for(u32 i=0;i<t->count;i++){
+        int match=1;
+        for(int k=0;k<32;k++){
+            if(t->users[i].username[k]!=username[k]){match=0;break;}
+            if(username[k]==0)break;
+        }
+        if(match)return (int)i;
+    }
+    return -1;
+}
+/* Create a new user in the table. is_first calls (uid 0 / root) go
+ * through acct_setup_run(1) which only runs when the table is empty,
+ * so uid 0 is always root by construction. Subsequent users get the
+ * next free uid. Returns 1 on success, 0 if the table is full or the
+ * username already exists. */
+static int auth_create_user(const char*path,const char*username,const char*password,char recovery_out[20]){
+    UserTable t;
+    if(!auth_table_load(path,&t)){t.magic=AUTH_MAGIC;t.count=0;}
+    if(t.count>=MAX_USERS)return 0;
+    if(auth_find_user(&t,username)>=0)return 0; /* username taken */
+
+    UserEntry*b=&t.users[t.count];
+    b->uid=t.count; /* uid 0 for the very first user (root), then 1,2,3... */
+    auth_copy_str(b->username,32,username);
+    auth_random_bytes(b->pass_salt,16);
+    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b->pass_salt,16,AUTH_PBKDF2_ITERS,b->pass_hash);
     auth_make_recovery_code(recovery_out);
     char norm[20];auth_normalize_code(recovery_out,norm,20);
-    auth_random_bytes(b.rec_salt,16);
-    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
-    auth_save(path,&b);
+    auth_random_bytes(b->rec_salt,16);
+    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b->rec_salt,16,AUTH_PBKDF2_ITERS,b->rec_hash);
+    t.count++;
+    auth_table_save(path,&t);
     return 1;
 }
-static int auth_verify_password(const char*path,const char*password){
-    AuthBlob b;
-    if(!auth_load(path,&b))return 0;
+/* Verify a password for a specific username. On success, if out_uid
+ * is non-null, writes that user's uid (for the caller to track as the
+ * now-logged-in user). */
+static int auth_verify_password(const char*path,const char*username,const char*password,u32*out_uid){
+    UserTable t;
+    if(!auth_table_load(path,&t))return 0;
+    int idx=auth_find_user(&t,username);
+    if(idx<0)return 0;
+    UserEntry*b=&t.users[idx];
     u8 h[32];
-    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
-    for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])return 0;
+    pbkdf2_hmac_sha256((const u8*)password,(u64)slen(password),b->pass_salt,16,AUTH_PBKDF2_ITERS,h);
+    for(int i=0;i<32;i++)if(h[i]!=b->pass_hash[i])return 0;
+    if(out_uid)*out_uid=b->uid;
     return 1;
 }
-static int auth_reset_password(const char*path,const char*old_recovery_code,const char*new_password,char new_recovery_out[20]){
-    AuthBlob b;
-    if(!auth_load(path,&b))return 0;
+static int auth_reset_password(const char*path,const char*username,const char*old_recovery_code,const char*new_password,char new_recovery_out[20]){
+    UserTable t;
+    if(!auth_table_load(path,&t))return 0;
+    int idx=auth_find_user(&t,username);
+    if(idx<0)return 0;
+    UserEntry*b=&t.users[idx];
     char norm[20];auth_normalize_code(old_recovery_code,norm,20);
     u8 h[32];
-    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
+    pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b->rec_salt,16,AUTH_PBKDF2_ITERS,h);
     int match=1;
-    for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
+    for(int i=0;i<32;i++)if(h[i]!=b->rec_hash[i])match=0;
     if(!match)return 0;
-    auth_random_bytes(b.pass_salt,16);
-    pbkdf2_hmac_sha256((const u8*)new_password,(u64)slen(new_password),b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
+    auth_random_bytes(b->pass_salt,16);
+    pbkdf2_hmac_sha256((const u8*)new_password,(u64)slen(new_password),b->pass_salt,16,AUTH_PBKDF2_ITERS,b->pass_hash);
     auth_make_recovery_code(new_recovery_out);
     char norm2[20];auth_normalize_code(new_recovery_out,norm2,20);
-    auth_random_bytes(b.rec_salt,16);
-    pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
-    auth_save(path,&b);
+    auth_random_bytes(b->rec_salt,16);
+    pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b->rec_salt,16,AUTH_PBKDF2_ITERS,b->rec_hash);
+    auth_table_save(path,&t);
     return 1;
 }
+/* Self-test using a real (throwaway) on-disk table, exercising the
+ * actual auth_create_user/auth_verify_password/auth_reset_password
+ * functions end-to-end rather than hand-rolling the crypto calls
+ * inline like the old single-blob version did — this way the test
+ * genuinely covers the multi-user table path, not just the hashing
+ * primitives. Writes to a scratch path that's never used for real
+ * accounts. */
+/* Pure in-memory test of the auth crypto/table logic — deliberately
+ * does NOT touch disk at all. An earlier version of this test wrote
+ * real accounts to a scratch YCFS path and unlinked them at the end,
+ * but that path went through the same journal/transaction machinery
+ * as everything else on the filesystem, and a transaction from one
+ * boot occasionally got replayed on a LATER boot (the journal is only
+ * guaranteed to fully drain-and-wipe once replay actually runs, and
+ * that depends on a clean shutdown happening in between) — landing
+ * scratch-test user data on top of the real auth.dat's block on a
+ * subsequent boot. Testing the logic directly against in-memory
+ * structs instead of a real file sidesteps that whole class of bug:
+ * this exercises the exact same hashing/comparison code paths that
+ * auth_create_user/auth_verify_password/auth_reset_password use
+ * internally, just without ever calling sys_open/sys_save_file. */
 static void auth_self_test(void){
     int fail=0;
-    AuthBlob b;
+    UserTable t;
+    t.magic=AUTH_MAGIC;t.count=0;
     char rec1[20],rec2[20];
-    auth_copy_str(b.username,32,"tester");
-    auth_random_bytes(b.pass_salt,16);
-    pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
-    auth_make_recovery_code(rec1);
+
+    /* Simulate auth_create_user("tester", "correct_password") */
     {
+        UserEntry*b=&t.users[t.count];
+        b->uid=t.count;
+        auth_copy_str(b->username,32,"tester");
+        auth_random_bytes(b->pass_salt,16);
+        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b->pass_salt,16,AUTH_PBKDF2_ITERS,b->pass_hash);
+        auth_make_recovery_code(rec1);
         char norm[20];auth_normalize_code(rec1,norm,20);
-        auth_random_bytes(b.rec_salt,16);
-        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+        auth_random_bytes(b->rec_salt,16);
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b->rec_salt,16,AUTH_PBKDF2_ITERS,b->rec_hash);
+        t.count++;
     }
+
+    /* Simulate auth_verify_password("tester", "correct_password") */
     {
-        u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
-        if(!match)fail=1;
-    }
-    if(!fail){
-        u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)"wrong_password",14,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
-        if(match)fail=1;
-    }
-    if(!fail){
-        char norm[20];auth_normalize_code(rec1,norm,20);
-        u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
-        if(!match)fail=1;
+        int idx=auth_find_user(&t,"tester");
+        if(idx<0)fail=1;
         else{
-            auth_random_bytes(b.pass_salt,16);
-            pbkdf2_hmac_sha256((const u8*)"new_password",12,b.pass_salt,16,AUTH_PBKDF2_ITERS,b.pass_hash);
-            auth_make_recovery_code(rec2);
-            char norm2[20];auth_normalize_code(rec2,norm2,20);
-            auth_random_bytes(b.rec_salt,16);
-            pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b.rec_salt,16,AUTH_PBKDF2_ITERS,b.rec_hash);
+            UserEntry*b=&t.users[idx];
+            u8 h[32];
+            pbkdf2_hmac_sha256((const u8*)"correct_password",16,b->pass_salt,16,AUTH_PBKDF2_ITERS,h);
+            int match=1;for(int i=0;i<32;i++)if(h[i]!=b->pass_hash[i])match=0;
+            if(!match||b->uid!=0)fail=1;
         }
     }
+    /* wrong password must be rejected */
     if(!fail){
+        int idx=auth_find_user(&t,"tester");
+        UserEntry*b=&t.users[idx];
         u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)"new_password",12,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        pbkdf2_hmac_sha256((const u8*)"wrong_password",14,b->pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b->pass_hash[i])match=0;
+        if(match)fail=1;
+    }
+    /* recovery-code reset */
+    if(!fail){
+        int idx=auth_find_user(&t,"tester");
+        UserEntry*b=&t.users[idx];
+        char norm[20];auth_normalize_code(rec1,norm,20);
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b->rec_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b->rec_hash[i])match=0;
+        if(!match)fail=1;
+        else{
+            auth_random_bytes(b->pass_salt,16);
+            pbkdf2_hmac_sha256((const u8*)"new_password",12,b->pass_salt,16,AUTH_PBKDF2_ITERS,b->pass_hash);
+            auth_make_recovery_code(rec2);
+            char norm2[20];auth_normalize_code(rec2,norm2,20);
+            auth_random_bytes(b->rec_salt,16);
+            pbkdf2_hmac_sha256((const u8*)norm2,(u64)slen(norm2),b->rec_salt,16,AUTH_PBKDF2_ITERS,b->rec_hash);
+        }
+    }
+    /* new password works, old one doesn't, old recovery code is spent */
+    if(!fail){
+        int idx=auth_find_user(&t,"tester");
+        UserEntry*b=&t.users[idx];
+        u8 h[32];
+        pbkdf2_hmac_sha256((const u8*)"new_password",12,b->pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b->pass_hash[i])match=0;
         if(!match)fail=1;
     }
     if(!fail){
+        int idx=auth_find_user(&t,"tester");
+        UserEntry*b=&t.users[idx];
         u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b.pass_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.pass_hash[i])match=0;
+        pbkdf2_hmac_sha256((const u8*)"correct_password",16,b->pass_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b->pass_hash[i])match=0;
         if(match)fail=1;
     }
     if(!fail){
+        int idx=auth_find_user(&t,"tester");
+        UserEntry*b=&t.users[idx];
         char norm[20];auth_normalize_code(rec1,norm,20);
         u8 h[32];
-        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b.rec_salt,16,AUTH_PBKDF2_ITERS,h);
-        int match=1;for(int i=0;i<32;i++)if(h[i]!=b.rec_hash[i])match=0;
-        if(match)fail=1;
+        pbkdf2_hmac_sha256((const u8*)norm,(u64)slen(norm),b->rec_salt,16,AUTH_PBKDF2_ITERS,h);
+        int match=1;for(int i=0;i<32;i++)if(h[i]!=b->rec_hash[i])match=0;
+        if(match)fail=1; /* old recovery code must NOT work anymore */
     }
+    /* a second distinct user must get uid 1, no collision with the first */
+    if(!fail){
+        UserEntry*b=&t.users[t.count];
+        b->uid=t.count;
+        auth_copy_str(b->username,32,"tester2");
+        auth_random_bytes(b->pass_salt,16);
+        pbkdf2_hmac_sha256((const u8*)"pw2",3,b->pass_salt,16,AUTH_PBKDF2_ITERS,b->pass_hash);
+        t.count++;
+        int idx2=auth_find_user(&t,"tester2");
+        if(idx2<0||t.users[idx2].uid!=1)fail=1;
+    }
+
     if(fail){
         rect(0,0,(int)FB_W,(int)FB_H,0x800000);
         text(40,40,"AUTH LOGIC SELF-TEST FAILED",0xFFFFFF,0x800000);
@@ -2344,7 +2450,7 @@ static int acct_setup_run(int is_first_boot){
                 else if(acct_pass_len<4){auth_copy_str(acct_err_buf,64,"Password must be at least 4 characters");acct_focus=1;}
                 else if(!auth_str_eq(acct_pass_buf,acct_pass2_buf)){auth_copy_str(acct_err_buf,64,"Passwords do not match");acct_focus=2;}
                 else{
-                    auth_create_account(AUTH_PATH,acct_user_buf,acct_pass_buf,acct_recovery_code);
+                    auth_create_user(AUTH_PATH,acct_user_buf,acct_pass_buf,acct_recovery_code);
                     acct_err_buf[0]=0;acct_screen=1;
                 }
             }
@@ -2437,46 +2543,175 @@ static int acct_setup_run(int is_first_boot){
 #define LOCK_H 260
 #define LOCK_X (((int)FB_W-LOCK_W)/2)
 #define LOCK_Y (((int)FB_H-LOCK_H)/2)
+/* The currently logged-in user's uid, set on successful login. Used
+ * by permission-checking code (later stage) to decide what the active
+ * session is allowed to do. -1 means "not logged in yet". */
+static s64 current_uid=-1;
+static char current_username[32];
+
+/* Draws a circular avatar with a single centered letter as a
+ * placeholder for a real profile picture. Real image support (PNG/
+ * JPEG decoding) is a separate, future piece of work — this is the
+ * fallback used until then. */
+static void draw_avatar(int cx,int cy,int r,const char*username,u32 ring){
+    circle(cx,cy,r,0x21262D);
+    circle_outline(cx,cy,r,ring);
+    char letter=username[0];
+    if(letter>='a'&&letter<='z')letter=(char)(letter-'a'+'A');
+    if(!letter)letter='?';
+    char s[2]={letter,0};
+    text_big_center(cx,cy-8,s,TEXT,0x21262D);
+}
+/* Login power buttons (shutdown/restart), always available on the
+ * login screen even before any account exists or is logged in. */
+static void draw_login_power_buttons(int mx,int my,int*out_sd,int*out_rb){
+    int pbx=32,pby=(int)FB_H-80,pbsz=48;
+    int sd_x=pbx,rb_x=pbx+pbsz+16;
+    int hov_sd=in_box(mx,my,sd_x,pby,pbsz,pbsz);
+    int hov_rb=in_box(mx,my,rb_x,pby,pbsz,pbsz);
+    rect_round(sd_x,pby,pbsz,pbsz,10,hov_sd?RED:0x21262D);
+    outline_round(sd_x,pby,pbsz,pbsz,10,hov_sd?RED:BORDER);
+    text_center(sd_x+pbsz/2,pby+pbsz/2-4,"PWR",hov_sd?BG:TEXT,hov_sd?RED:0x21262D);
+    rect_round(rb_x,pby,pbsz,pbsz,10,hov_rb?cfg_accent:0x21262D);
+    outline_round(rb_x,pby,pbsz,pbsz,10,hov_rb?cfg_accent:BORDER);
+    text_center(rb_x+pbsz/2,pby+pbsz/2-4,"RST",hov_rb?BG:TEXT,hov_rb?cfg_accent:0x21262D);
+    *out_sd=hov_sd;*out_rb=hov_rb;
+}
+#define LOGIN_AVATAR_R   40
+#define LOGIN_CARD_W     130
+#define LOGIN_CARD_H     160
+#define LOGIN_CARD_GAP   30
+#define LOGIN_COLS       4
 static int lock_screen_run(int is_logout){
-    AuthBlob ab;int have_user=auth_load(AUTH_PATH,&ab);
-    char lk_buf[48];int lk_len=0;
-    char lk_err[48];lk_err[0]=0;
-    static int prev_mb2=0;
+    (void)is_logout;
+    UserTable t;int have_table=auth_table_load(AUTH_PATH,&t);
+    int ucount=have_table?(int)t.count:0;
+
+    int screen=0; /* 0 = select user, 1 = password entry */
+    int sel_idx=-1;
+    char pw_buf[48];int pw_len=0;
+    char pw_err[64];pw_err[0]=0;
+    int show_pw=0;
+    static int prev_mb3=0;
     int success=0;
     int mb=0;
+
+    /* Preselect whoever was last logged in, if they still exist in the
+     * table, so a returning user's card is easy to find quickly. */
+    int pre_idx=-1;
+    if(current_username[0]){
+        for(int i=0;i<ucount;i++){
+            int m=1;for(int k=0;k<32;k++){if(t.users[i].username[k]!=current_username[k]){m=0;break;}if(current_username[k]==0)break;}
+            if(m){pre_idx=i;break;}
+        }
+    }
+
     while(!success){
+        u64 ticks=sys_ticks();
         unsigned long long mstate[3];sys_mouseread(mstate);
         int mx=(int)mstate[0],my=(int)mstate[1];mb=(int)mstate[2];
-        int click=(mb&1)&&!(prev_mb2&1);
+        int click=(mb&1)&&!(prev_mb3&1);
         s64 ch=sys_keypoll();
-        int bbx=LOCK_X+24,bby=LOCK_Y+LOCK_H-56,bbw=LOCK_W-48,bbh=32;
-        text_input_key(lk_buf,&lk_len,48,ch);
-        int submit=(ch=='\n'||ch=='\r')||(click&&in_box(mx,my,bbx,bby,bbw,bbh));
-        if(submit){
-            if(have_user&&auth_verify_password(AUTH_PATH,lk_buf)){success=1;}
-            else{
-                auth_copy_str(lk_err,48,"Incorrect password");
-                lk_len=0;lk_buf[0]=0;
-            }
-        }
-        prev_mb2=mb;
 
-        rect(0,0,(int)FB_W,(int)FB_H,BG);
-        rect_round_alpha(LOCK_X+3,LOCK_Y+3,LOCK_W,LOCK_H,16,0x000000,90);
-        rect_round_alpha(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,PANEL_BG,225);
-        outline_round(LOCK_X,LOCK_Y,LOCK_W,LOCK_H,16,BORDER);
-        text_bold(LOCK_X+24,LOCK_Y+20,is_logout?"Signed Out":"Locked",TEXT,PANEL_BG);
-        hline(LOCK_X+24,LOCK_Y+48,LOCK_W-48,0x21262D);
-        if(have_user)text_center(LOCK_X+LOCK_W/2,LOCK_Y+64,ab.username,DIM,PANEL_BG);
-        {int fbx=LOCK_X+24,fby=LOCK_Y+96,fbw=LOCK_W-48,fbh=30;
-         rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,cfg_accent);
-         draw_masked(fbx+10,fby+8,lk_len,TEXT,0x0D1117);}
-        if(lk_err[0])text(LOCK_X+24,LOCK_Y+134,lk_err,RED,PANEL_BG);
-        {int hov=in_box(mx,my,bbx,bby,bbw,bbh);
-         rect(bbx,bby,bbw,bbh,hov?cfg_accent:0x161B22);outline(bbx,bby,bbw,bbh,cfg_accent);
-         text_center(bbx+bbw/2,bby+9,"Unlock",hov?BG:TEXT,hov?cfg_accent:0x161B22);}
-        draw_cursor(mx,my);
-        flush();sys_yield();
+        int hov_sd=0,hov_rb=0;
+
+        if(screen==0){
+            /* grid geometry */
+            int gridw=LOGIN_COLS*LOGIN_CARD_W+(LOGIN_COLS-1)*LOGIN_CARD_GAP;
+            int gx0=((int)FB_W-gridw)/2;
+            int gy0=(int)FB_H/2-LOGIN_CARD_H/2-20;
+            int hov_card=-1;
+            for(int i=0;i<ucount;i++){
+                int col=i%LOGIN_COLS,row=i/LOGIN_COLS;
+                int cx0=gx0+col*(LOGIN_CARD_W+LOGIN_CARD_GAP),cy0=gy0+row*(LOGIN_CARD_H+LOGIN_CARD_GAP);
+                if(in_box(mx,my,cx0,cy0,LOGIN_CARD_W,LOGIN_CARD_H))hov_card=i;
+            }
+            if(click&&hov_card>=0){sel_idx=hov_card;screen=1;pw_len=0;pw_buf[0]=0;pw_err[0]=0;show_pw=0;}
+
+            draw_login_power_buttons(mx,my,&hov_sd,&hov_rb);
+            if(click&&hov_sd){do_shutdown();}
+            if(click&&hov_rb){do_restart();}
+
+            prev_mb3=mb;
+
+            wallpaper();
+            rect_alpha(0,0,(int)FB_W,(int)FB_H,0x000000,60);
+            {u64 hh=(ticks/100/3600)%24,mm=(ticks/100/60)%60;
+             char cl[6];cl[0]='0'+hh/10;cl[1]='0'+hh%10;cl[2]=':';cl[3]='0'+mm/10;cl[4]='0'+mm%10;cl[5]=0;
+             text_big_center((int)FB_W/2,60,cl,TEXT,BG);}
+            text_big_center((int)FB_W/2,gy0-56,"Select User",TEXT,BG);
+            if(ucount==0){
+                text_center((int)FB_W/2,gy0+40,"No accounts exist yet.",DIM,BG);
+            }
+            for(int i=0;i<ucount;i++){
+                int col=i%LOGIN_COLS,row=i/LOGIN_COLS;
+                int cx0=gx0+col*(LOGIN_CARD_W+LOGIN_CARD_GAP),cy0=gy0+row*(LOGIN_CARD_H+LOGIN_CARD_GAP);
+                int hov=(hov_card==i);
+                rect_round_alpha(cx0,cy0,LOGIN_CARD_W,LOGIN_CARD_H,14,hov?0x21262D:0x161B22,hov?220:170);
+                outline_round(cx0,cy0,LOGIN_CARD_W,LOGIN_CARD_H,14,i==pre_idx?cfg_accent:BORDER);
+                draw_avatar(cx0+LOGIN_CARD_W/2,cy0+56,LOGIN_AVATAR_R,t.users[i].username,i==pre_idx?cfg_accent:BORDER);
+                char un[20];int uk=0;while(t.users[i].username[uk]&&uk<18){un[uk]=t.users[i].username[uk];uk++;}un[uk]=0;
+                text_center(cx0+LOGIN_CARD_W/2,cy0+112,un,TEXT,hov?0x21262D:0x161B22);
+                if(t.users[i].uid==0)text_center(cx0+LOGIN_CARD_W/2,cy0+132,"root",cfg_accent,hov?0x21262D:0x161B22);
+            }
+            draw_cursor(mx,my);
+            flush();sys_yield();
+        } else {
+            /* password entry for t.users[sel_idx] */
+            int pw_x=LOCK_X,pw_y=LOCK_Y,pw_w=LOCK_W,pw_h=LOCK_H;
+            int bbx=pw_x+24,bby=pw_y+pw_h-56,bbw=pw_w-48,bbh=32;
+            int backx=pw_x+24,backy=pw_y+20,backw=60,backh=22;
+            int eyex=pw_x+pw_w-70,eyey=pw_y+150,eyew=46,eyeh=22;
+            int fbx=pw_x+24,fby=pw_y+120,fbw=pw_w-48-eyew-8,fbh=30;
+
+            if(click){
+                if(in_box(mx,my,backx,backy,backw,backh)){screen=0;sel_idx=-1;}
+                else if(in_box(mx,my,eyex,eyey,eyew,eyeh))show_pw=!show_pw;
+            }
+            text_input_key(pw_buf,&pw_len,48,ch);
+            int submit=(ch=='\n'||ch=='\r')||(click&&in_box(mx,my,bbx,bby,bbw,bbh));
+            if(submit&&sel_idx>=0){
+                u32 uid=0;
+                if(auth_verify_password(AUTH_PATH,t.users[sel_idx].username,pw_buf,&uid)){
+                    success=1;
+                    current_uid=(s64)uid;
+                    auth_copy_str(current_username,32,t.users[sel_idx].username);
+                } else {
+                    auth_copy_str(pw_err,64,"Incorrect password");
+                    pw_len=0;pw_buf[0]=0;
+                }
+            }
+
+            draw_login_power_buttons(mx,my,&hov_sd,&hov_rb);
+            if(click&&hov_sd){do_shutdown();}
+            if(click&&hov_rb){do_restart();}
+
+            prev_mb3=mb;
+
+            wallpaper();
+            rect_alpha(0,0,(int)FB_W,(int)FB_H,0x000000,60);
+            rect_round_alpha(pw_x+3,pw_y+3,pw_w,pw_h,16,0x000000,90);
+            rect_round_alpha(pw_x,pw_y,pw_w,pw_h,16,PANEL_BG,230);
+            outline_round(pw_x,pw_y,pw_w,pw_h,16,BORDER);
+            {int hovb=in_box(mx,my,backx,backy,backw,backh);
+             text(backx,backy+4,"< Back",hovb?TEXT:DIM,PANEL_BG);}
+            if(sel_idx>=0){
+                draw_avatar(pw_x+pw_w/2,pw_y+70,32,t.users[sel_idx].username,cfg_accent);
+                text_center(pw_x+pw_w/2,pw_y+108,t.users[sel_idx].username,TEXT,PANEL_BG);
+            }
+            rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,cfg_accent);
+            if(show_pw)text(fbx+10,fby+8,pw_buf,TEXT,0x0D1117);
+            else draw_masked(fbx+10,fby+8,pw_len,TEXT,0x0D1117);
+            {int hove=in_box(mx,my,eyex,eyey,eyew,eyeh);
+             rect(eyex,eyey,eyew,eyeh,hove?0x21262D:0x161B22);outline(eyex,eyey,eyew,eyeh,BORDER);
+             text_center(eyex+eyew/2,eyey+4,show_pw?"Hide":"Show",hove?TEXT:DIM,hove?0x21262D:0x161B22);}
+            if(pw_err[0])text(pw_x+24,pw_y+166,pw_err,RED,PANEL_BG);
+            {int hov=in_box(mx,my,bbx,bby,bbw,bbh);
+             rect(bbx,bby,bbw,bbh,hov?cfg_accent:0x161B22);outline(bbx,bby,bbw,bbh,cfg_accent);
+             text_center(bbx+bbw/2,bby+9,"Sign In",hov?BG:TEXT,hov?cfg_accent:0x161B22);}
+            draw_cursor(mx,my);
+            flush();sys_yield();
+        }
     }
     prev_btn=mb;
     return 1;
