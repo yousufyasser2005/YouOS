@@ -842,7 +842,7 @@ static void np_load(const char*path,const char*shortname){
     int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
 }
 static void np_do_save(void){
-    char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+    char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
     int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
     sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
     np.modified=0;np.save_flash=80;
@@ -1841,7 +1841,7 @@ static void open_notepad(const char*fn){
     np.modified=0;np.mode=0;np.filename[0]=0;
     np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
     if(fn&&fn[0]){
-        char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+        char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
         int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
         np_load(path,fn);
         j=0;while(fn[j]&&j<39){wins[i].title[j]=fn[j];j++;}wins[i].title[j]=0;
@@ -3102,7 +3102,7 @@ int main(void){
                         for(int fi=np.dlg_scroll;fi<np_dlg_count&&fi<np.dlg_scroll+max_vis2;fi++){
                             int ry=ly+(fi-np.dlg_scroll)*20;
                             if(in_box(mouse_x,mouse_y,dx+2,ry,dw-4,20)){
-                                char path[56];path[0]='/';path[1]='d';path[2]='i';path[3]='s';path[4]='k';path[5]='/';
+                                char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
                                 int pk=6,pj=0;while(np_dlg_files[fi].name[pj]&&pk<55){path[pk++]=np_dlg_files[fi].name[pj++];}path[pk]=0;
                                 np_load(path,np_dlg_files[fi].name);
                                 if(np_current>=0){pj=0;while(np_dlg_files[fi].name[pj]&&pj<39){wins[np_current].title[pj]=np_dlg_files[fi].name[pj];pj++;}wins[np_current].title[pj]=0;}
