@@ -12,6 +12,17 @@ own area is left completely alone).
 Seeds a small tree to verify real nested directories work:
   /ycfs/hello.txt
   /ycfs/docs/notes.txt
+
+Also seeds two permission-test files for exercising Phase 3.5 item #4
+(stage 3 permission enforcement):
+  /ycfs/roottest.txt  — uid 0 (root), perm 0600 (owner rw only)
+  /ycfs/usertest.txt  — uid 1 (first non-root user created via
+                         auth_create_user, e.g. via Settings > Add
+                         Account), perm 0600 (owner rw only)
+These let you verify that a non-root user can read/write usertest.txt
+but is denied on roottest.txt, and vice versa for root on usertest.txt
+(root bypasses all checks, so root should be able to read/write both —
+the real test is that a non-root user is denied on roottest.txt).
 """
 import struct, sys, os
 
@@ -50,10 +61,6 @@ def pack_superblock(free_blocks, free_inodes):
 
 def pack_inode(mode, size, links, blocks_used, direct, indirect=0, mtime=0,
                uid=0, gid=0, perm=None):
-    # Default permissions follow standard Unix convention if not given
-    # explicitly: 0755 (rwxr-xr-x) for directories, 0644 (rw-r--r--)
-    # for regular files. uid/gid default to root (0), matching every
-    # file seeded by this formatter being created by the OS itself.
     if perm is None:
         perm = 0o755 if mode == YCFS_TYPE_DIR else 0o644
     direct = (direct + [0] * 12)[:12]
@@ -100,25 +107,27 @@ def main():
 
     hello_content = b"Hello from YCFS!\nThis is Yousuf-Claude File System, phase 1.\n"
     notes_content = b"Nested directories work.\n"
+    roottest_content = b"Only root (uid 0) should be able to read this.\n"
+    usertest_content  = b"Only the first non-root user (uid 1) should be able to read this.\n"
 
-    # Optional: seed a wallpaper BMP as inode 5 if wall.bmp exists next to
-    # disk.img (or in cwd). Needs indirect-block support since a 1280x800
-    # 24bpp BMP is ~3MB, far past the 12 direct pointers (12*4096=48KB).
     wallpaper_path = "wall.bmp"
     wallpaper_content = b""
     if os.path.exists(wallpaper_path):
         with open(wallpaper_path, "rb") as wf:
             wallpaper_content = wf.read()
 
-    root_block  = DATA_START_BLOCK + 0
-    docs_block  = DATA_START_BLOCK + 1
-    hello_block = DATA_START_BLOCK + 2
-    notes_block = DATA_START_BLOCK + 3
-    next_block  = DATA_START_BLOCK + 4
+    root_block     = DATA_START_BLOCK + 0
+    docs_block     = DATA_START_BLOCK + 1
+    hello_block    = DATA_START_BLOCK + 2
+    notes_block    = DATA_START_BLOCK + 3
+    roottest_block = DATA_START_BLOCK + 4
+    usertest_block = DATA_START_BLOCK + 5
+    next_block     = DATA_START_BLOCK + 6
 
     wallpaper_direct   = []
     wallpaper_indirect = 0
     wallpaper_indirect_ptrs = b""
+    overflow = []
     if wallpaper_content:
         nblocks = (len(wallpaper_content) + BLOCK_SIZE - 1) // BLOCK_SIZE
         wallpaper_blocks = list(range(next_block, next_block + nblocks))
@@ -130,13 +139,16 @@ def main():
             next_block += 1
             ptrs_per_block = BLOCK_SIZE // 4
             assert len(overflow) <= ptrs_per_block, \
-                f"wallpaper too large: needs {len(overflow)} indirect pointers, max {ptrs_per_block} (single indirect level only)"
+                f"wallpaper too large: needs {len(overflow)} indirect pointers, max {ptrs_per_block}"
             ptrs = overflow + [0] * (ptrs_per_block - len(overflow))
             wallpaper_indirect_ptrs = struct.pack(f'<{ptrs_per_block}I', *ptrs)
 
     total_used_blocks = next_block
 
-    root_dirents = pack_dirent(2, "hello.txt", YCFS_TYPE_FILE) + pack_dirent(3, "docs", YCFS_TYPE_DIR)
+    root_dirents = (pack_dirent(2, "hello.txt", YCFS_TYPE_FILE) +
+                     pack_dirent(3, "docs", YCFS_TYPE_DIR) +
+                     pack_dirent(6, "roottest.txt", YCFS_TYPE_FILE) +
+                     pack_dirent(7, "usertest.txt", YCFS_TYPE_FILE))
     if wallpaper_content:
         root_dirents += pack_dirent(5, "wall.bmp", YCFS_TYPE_FILE)
     docs_dirents = pack_dirent(4, "notes.txt", YCFS_TYPE_FILE)
@@ -156,6 +168,15 @@ def main():
                              wallpaper_direct, indirect=wallpaper_indirect)
         inode_table += inode5
         used_inodes.append(5)
+    else:
+        inode_table += pack_inode(0, 0, 0, 0, [])
+
+    inode6 = pack_inode(YCFS_TYPE_FILE, len(roottest_content), 1, 1,
+                         [roottest_block], uid=0, gid=0, perm=0o600)
+    inode7 = pack_inode(YCFS_TYPE_FILE, len(usertest_content), 1, 1,
+                         [usertest_block], uid=1, gid=1, perm=0o600)
+    inode_table += inode6 + inode7
+    used_inodes += [6, 7]
 
     inode_table += b'\x00' * (INODE_TABLE_BLOCKS * BLOCK_SIZE - len(inode_table))
 
@@ -176,15 +197,13 @@ def main():
         f.seek(YCFS_START + INODE_BITMAP_BLOCK * BLOCK_SIZE); f.write(inode_bitmap)
         f.seek(YCFS_START + BLOCK_BITMAP_BLOCK * BLOCK_SIZE); f.write(block_bitmap)
         f.seek(YCFS_START + INODE_TABLE_BLOCK * BLOCK_SIZE);  f.write(inode_table)
-        f.seek(YCFS_START + root_block  * BLOCK_SIZE);        f.write(pad_block(root_dirents))
-        f.seek(YCFS_START + docs_block  * BLOCK_SIZE);        f.write(pad_block(docs_dirents))
-        f.seek(YCFS_START + hello_block * BLOCK_SIZE);        f.write(pad_block(hello_content))
-        f.seek(YCFS_START + notes_block * BLOCK_SIZE);        f.write(pad_block(notes_content))
+        f.seek(YCFS_START + root_block     * BLOCK_SIZE);     f.write(pad_block(root_dirents))
+        f.seek(YCFS_START + docs_block     * BLOCK_SIZE);     f.write(pad_block(docs_dirents))
+        f.seek(YCFS_START + hello_block    * BLOCK_SIZE);     f.write(pad_block(hello_content))
+        f.seek(YCFS_START + notes_block    * BLOCK_SIZE);     f.write(pad_block(notes_content))
+        f.seek(YCFS_START + roottest_block * BLOCK_SIZE);     f.write(pad_block(roottest_content))
+        f.seek(YCFS_START + usertest_block * BLOCK_SIZE);     f.write(pad_block(usertest_content))
         if wallpaper_content:
-            for i, blk in enumerate(wallpaper_direct + [b for b in [] ]):
-                pass
-            all_wall_blocks = (wallpaper_direct +
-                                (wallpaper_direct_overflow if False else []))
             offset = 0
             all_data_blocks = wallpaper_direct + (overflow if wallpaper_indirect else [])
             for blk in all_data_blocks:
@@ -198,12 +217,14 @@ def main():
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
     print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
-    print(f"  root (inode 1) -> hello.txt, docs/" + (", wall.bmp" if wallpaper_content else ""))
+    print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt" + (", wall.bmp" if wallpaper_content else ""))
     print(f"  hello.txt (inode 2, {len(hello_content)} bytes)")
     print(f"  docs/ (inode 3) -> notes.txt")
     print(f"  notes.txt (inode 4, {len(notes_content)} bytes)")
     if wallpaper_content:
-        print(f"  wall.bmp (inode 5, {len(wallpaper_content)} bytes, {total_used_blocks - (DATA_START_BLOCK+4)} blocks)")
+        print(f"  wall.bmp (inode 5, {len(wallpaper_content)} bytes, {total_used_blocks - (DATA_START_BLOCK+6)} blocks)")
+    print(f"  roottest.txt (inode 6, uid=0 perm=0600, {len(roottest_content)} bytes)")
+    print(f"  usertest.txt (inode 7, uid=1 perm=0600, {len(usertest_content)} bytes)")
 
 
 if __name__ == '__main__':
