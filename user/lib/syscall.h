@@ -125,3 +125,6 @@ static inline int sys_readcrash(void* buf, unsigned int sz){
     return (int)_sc(SYS_READCRASH,(uint64_t)buf,(uint64_t)sz,0,0,0); }
 static inline int sys_readsyslog(void* buf, unsigned int sz){
     return (int)_sc(SYS_READSYSLOG,(uint64_t)buf,(uint64_t)sz,0,0,0); }
+#define SYS_SET_SESSION_UID 31
+static inline int sys_set_session_uid(unsigned int uid, unsigned int gid){
+    return (int)_sc(SYS_SET_SESSION_UID,(uint64_t)uid,(uint64_t)gid,0,0,0); }

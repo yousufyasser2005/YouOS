@@ -1,4 +1,5 @@
 #include <kernel/syscall.h>
+#include <kernel/session.h>
 #include <kernel/ipc.h>
 #include <kernel/syslog.h>
 #include <kernel/crash.h>
@@ -251,6 +252,12 @@ static uint64_t sys_savefile(uint64_t path_arg, uint64_t buf,
     fat16_close(fd);
     return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
 }
+static uint64_t sys_set_session_uid(uint64_t uid, uint64_t gid, uint64_t a3,
+                                     uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    session_set_uid((uint32_t)uid, (uint32_t)gid);
+    return 0;
+}
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
 static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -361,7 +368,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_readcrash,
     sys_readsyslog,
     sys_mousedbg,
-    sys_mousewheel
+    sys_mousewheel,
+    sys_set_session_uid
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

@@ -111,6 +111,10 @@ int64_t  ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf
 /* Phase 2: writes */
 int64_t  ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf);
 int      ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode);
+int      ycfs_check_access(uint32_t inode_num, int want);
+#define YCFS_WANT_R 0x4
+#define YCFS_WANT_W 0x2
+#define YCFS_WANT_X 0x1
 
 /* Same field layout as fat16_entry_t (char name[32]; uint32_t size;
  * uint8_t is_dir;) so listings look identical to callers regardless of

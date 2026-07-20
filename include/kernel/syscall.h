@@ -28,7 +28,8 @@
 #define SYS_READSYSLOG 28
 #define SYS_MOUSEDBG    29
 #define SYS_MOUSEWHEEL  30
-#define SYSCALL_COUNT  31
+#define SYS_SET_SESSION_UID 31
+#define SYSCALL_COUNT  32
 
 void syscall_init(void);
 #endif

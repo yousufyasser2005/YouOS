@@ -2675,6 +2675,7 @@ static int lock_screen_run(int is_logout){
                 if(auth_verify_password(AUTH_PATH,t.users[sel_idx].username,pw_buf,&uid)){
                     success=1;
                     current_uid=(s64)uid;
+                    sys_set_session_uid(uid,uid); /* private-group convention, uid == gid */
                     auth_copy_str(current_username,32,t.users[sel_idx].username);
                 } else {
                     auth_copy_str(pw_err,64,"Incorrect password");

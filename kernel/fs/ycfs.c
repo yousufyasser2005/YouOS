@@ -9,6 +9,7 @@
  */
 
 #include <kernel/ycfs.h>
+#include <kernel/session.h>
 #include <kernel/ata.h>
 #include <kernel/vga.h>
 
@@ -478,6 +479,16 @@ int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* o
     ni.size        = 0;
     ni.links_count = 1;
     ni.blocks_used = 0;
+    /* Owner/permission defaults — mirrors mkycfs.py's pack_inode defaults
+     * (0755 dirs / 0644 files) and assigns ownership to whoever is
+     * creating the file. Unknown session (pre-login bootstrap, e.g.
+     * first-time auth.dat creation) defaults to root ownership, matching
+     * how the seeded filesystem itself is entirely root-owned. */
+    uint32_t creator_uid = YCFS_ROOT_UID, creator_gid = YCFS_ROOT_GID;
+    session_lookup(&creator_uid, &creator_gid); /* leaves root defaults on failure */
+    ni.uid  = creator_uid;
+    ni.gid  = creator_gid;
+    ni.perm = (type == YCFS_TYPE_DIR) ? 0755 : 0644;
     if (write_inode(new_inode_num, &ni) != 0) { txn_commit(); return -1; }
 
     if (append_dirent(dir_inode, new_inode_num, name, type) != 0) { txn_commit(); return -1; }
@@ -517,6 +528,34 @@ static const char* strip_ycfs_prefix(const char* path) {
  * inode of the final component's parent directory and the component's
  * own name. This is what makes real nested-directory mkdir/unlink/rename
  * possible, unlike FAT16's single flat root_find(). */
+static int ycfs_perm_check(uint32_t inode_uid, uint32_t inode_gid,
+                            uint16_t perm, int want) {
+    uint32_t uid, gid;
+    if (session_lookup(&uid, &gid) != 0) {
+        /* No session recorded for this CR3 — either pre-login bootstrap
+         * code (e.g. first-time account setup, which must be able to
+         * write auth.dat before any login has happened) or a sys_exec'd
+         * process like shell/cat that never calls sys_set_session_uid.
+         * Since there's no code-signing/capability boundary yet (see
+         * session.h), restricting unknown sessions doesn't add real
+         * security — it only breaks legitimate pre-login writes. Default
+         * to root-equivalent instead, matching this OS's behavior before
+         * stage 3 existed (no checks at all) for anything that hasn't
+         * explicitly logged in. */
+        return 1;
+    }
+    if (uid == YCFS_ROOT_UID) return 1; /* root bypasses all checks */
+    if (uid == inode_uid) return (perm & (want << YCFS_PERM_OWNER_SHIFT)) != 0;
+    if (gid == inode_gid) return (perm & (want << YCFS_PERM_GROUP_SHIFT)) != 0;
+    return (perm & want) != 0;
+}
+
+int ycfs_check_access(uint32_t inode_num, int want) {
+    ycfs_inode_t inode;
+    if (read_inode(inode_num, &inode) != 0) return 0;
+    return ycfs_perm_check(inode.uid, inode.gid, inode.perm, want);
+}
+
 static int ycfs_resolve_parent(const char* raw_path, uint32_t* out_parent_inode, char* out_name) {
     const char* path = strip_ycfs_prefix(raw_path);
     uint32_t cur = sb.root_inode;
@@ -594,6 +633,7 @@ int ycfs_mkdir(const char* path) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
+    if (!ycfs_check_access(parent, YCFS_WANT_W)) return -1;
     uint32_t new_inode;
     return ycfs_create(parent, name, YCFS_TYPE_DIR, &new_inode);
 }
@@ -602,6 +642,7 @@ int ycfs_unlink(const char* path) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
+    if (!ycfs_check_access(parent, YCFS_WANT_W)) return -1;
 
     uint32_t target_inode, target_type; uint64_t target_size;
     if (ycfs_lookup(parent, name, &target_inode, &target_type, &target_size) != 0) return -1;
@@ -634,6 +675,8 @@ int ycfs_rename(const char* old_path, const char* new_path) {
     if (ycfs_resolve_parent(old_path, &old_parent, old_name) != 0) return -1;
     uint32_t new_parent; char new_name[56];
     if (ycfs_resolve_parent(new_path, &new_parent, new_name) != 0) return -1;
+    if (!ycfs_check_access(old_parent, YCFS_WANT_W)) return -1;
+    if (!ycfs_check_access(new_parent, YCFS_WANT_W)) return -1;
 
     uint32_t target_inode, target_type; uint64_t target_size;
     if (ycfs_lookup(old_parent, old_name, &target_inode, &target_type, &target_size) != 0) return -1;
@@ -663,6 +706,7 @@ int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries) {
     uint32_t dir_inode, dir_type; uint64_t dir_size_unused;
     if (ycfs_resolve(path, &dir_inode, &dir_type, &dir_size_unused) != 0) return -1;
     if (dir_type != YCFS_TYPE_DIR) return -1;
+    if (!ycfs_check_access(dir_inode, YCFS_WANT_R)) return -1;
 
     ycfs_inode_t dir;
     if (read_inode(dir_inode, &dir) != 0) return -1;
@@ -703,7 +747,10 @@ int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
 
     uint32_t inode, type; uint64_t existing_size;
     if (ycfs_lookup(parent, name, &inode, &type, &existing_size) != 0) {
+        if (!ycfs_check_access(parent, YCFS_WANT_W)) return -1;
         if (ycfs_create(parent, name, YCFS_TYPE_FILE, &inode) != 0) return -1;
+    } else {
+        if (!ycfs_check_access(inode, YCFS_WANT_W)) return -1;
     }
     return ycfs_write(inode, 0, size, buf);
 }

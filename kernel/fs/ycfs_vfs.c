@@ -15,6 +15,7 @@
 
 static uint64_t ycfs_vfs_read(vfs_node_t* node, uint64_t offset,
                                uint64_t size, uint8_t* buf) {
+    if (!ycfs_check_access((uint32_t)node->inode, YCFS_WANT_R)) return 0;
     int64_t n = ycfs_read((uint32_t)node->inode, offset, (uint32_t)size, buf);
     return (n < 0) ? 0 : (uint64_t)n;
 }
@@ -24,6 +25,7 @@ static void ycfs_vfs_close(vfs_node_t* node) {
 }
 
 static vfs_node_t* ycfs_vfs_finddir(vfs_node_t* dir, const char* name) {
+    if (!ycfs_check_access((uint32_t)dir->inode, YCFS_WANT_X)) return 0;
     uint32_t child_inode, child_type;
     uint64_t child_size;
     if (ycfs_lookup((uint32_t)dir->inode, name, &child_inode, &child_type, &child_size) != 0)
