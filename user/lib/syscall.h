@@ -128,3 +128,6 @@ static inline int sys_readsyslog(void* buf, unsigned int sz){
 #define SYS_SET_SESSION_UID 31
 static inline int sys_set_session_uid(unsigned int uid, unsigned int gid){
     return (int)_sc(SYS_SET_SESSION_UID,(uint64_t)uid,(uint64_t)gid,0,0,0); }
+#define SYS_YOUDO 32
+static inline int sys_youdo(int on){
+    return (int)_sc(SYS_YOUDO,(uint64_t)on,0,0,0,0); }

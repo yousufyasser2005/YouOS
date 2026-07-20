@@ -29,7 +29,8 @@
 #define SYS_MOUSEDBG    29
 #define SYS_MOUSEWHEEL  30
 #define SYS_SET_SESSION_UID 31
-#define SYSCALL_COUNT  32
+#define SYS_YOUDO 32
+#define SYSCALL_COUNT  33
 
 void syscall_init(void);
 #endif

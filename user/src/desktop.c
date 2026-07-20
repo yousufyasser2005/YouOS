@@ -1506,6 +1506,13 @@ static void cfg_set_accent(u32 c){
     cfg_save();
     notif_add("Settings","Accent color updated");
 }
+static void draw_masked(int x,int y,int len,u32 fg,u32 bg); /* forward decl — defined later, called from draw_settings_content */
+static int  youdo_open=0;
+static char youdo_pw[48];int youdo_pw_len=0;
+static char youdo_err[64];
+static int  youdo_show=0;
+static int  session_elevated=0;
+
 static void draw_settings_content(int wi){
     Win*w=&wins[wi];int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
     rect(x,y,cw,ch,0x0D1117);
@@ -1561,6 +1568,30 @@ static void draw_settings_content(int wi){
     cy+=36;
     hline(x+12,cy,cw-24,0x21262D);
     text_center(x+cw/2,cy+16,"YouOS v0.3.0",DIM,0x0D1117);
+
+    if(youdo_open){
+        int dw=280,dh=140,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
+        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,cfg_accent);
+        rect(dx,dy2,dw,24,0x13161B);hline(dx,dy2+24,dw,BORDER);
+        text_center(dx+dw/2,dy2+4,"youdo: root password required",TEXT,0x13161B);
+        int fbx=dx+16,fby=dy2+38,fbw=dw-32-56,fbh=26;
+        rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,cfg_accent);
+        if(youdo_show)text(fbx+8,fby+6,youdo_pw,TEXT,0x0D1117);
+        else draw_masked(fbx+8,fby+6,youdo_pw_len,TEXT,0x0D1117);
+        int eyex=fbx+fbw+8,eyey=fby,eyew=48,eyeh=fbh;
+        int hove=in_box(mouse_x,mouse_y,eyex,eyey,eyew,eyeh);
+        rect(eyex,eyey,eyew,eyeh,hove?0x21262D:0x161B22);outline(eyex,eyey,eyew,eyeh,BORDER);
+        text_center(eyex+eyew/2,eyey+6,youdo_show?"Hide":"Show",hove?TEXT:DIM,hove?0x21262D:0x161B22);
+        if(youdo_err[0])text(dx+16,dy2+70,youdo_err,RED,0x161B22);
+        int cbw=60,cbh=24,cbx=dx+dw-16-cbw,cby=dy2+dh-32;
+        int chov=in_box(mouse_x,mouse_y,cbx,cby,cbw,cbh);
+        rect(cbx,cby,cbw,cbh,chov?cfg_accent:0x21262D);outline(cbx,cby,cbw,cbh,cfg_accent);
+        text_center(cbx+cbw/2,cby+5,"Confirm",chov?BG:TEXT,chov?cfg_accent:0x21262D);
+        int xbw=60,xbh=24,xbx=cbx-8-xbw,xby=cby;
+        int xhov=in_box(mouse_x,mouse_y,xbx,xby,xbw,xbh);
+        rect(xbx,xby,xbw,xbh,xhov?0x21262D:0x161B22);outline(xbx,xby,xbw,xbh,BORDER);
+        text_center(xbx+xbw/2,xby+5,"Cancel",TEXT,xhov?0x21262D:0x161B22);
+    }
 }
 
 
@@ -2729,6 +2760,7 @@ static int lock_screen_run(int mode){
     return 1;
 }
 static void auth_do_logout(void){
+    sys_youdo(0);session_elevated=0;
     for(int i=0;i<win_count;i++){wins[i].visible=0;wins[i].minimized=0;}
     win_count=0;focused=-1;
     for(int k=0;k<MAX_WINDOWS;k++){np_states[k].text[0]=0;np_states[k].text_len=0;np_states[k].cursor=0;np_states[k].scroll=0;np_states[k].modified=0;np_states[k].filename[0]=0;np_states[k].mode=0;}
@@ -3153,6 +3185,32 @@ int main(void){
                     goto click_done;
                 }
                 /* settings window */
+                if(w->id==WIN_SETTINGS&&!w->minimized&&youdo_open){
+                    int dw=280,dh=140;
+                    int dx=w->x+(w->w-dw)/2;
+                    int dy2=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-dh)/2;
+                    int fbx=dx+16,fby=dy2+38,fbw=dw-32-56,fbh=26;
+                    int eyex=fbx+fbw+8,eyey=fby,eyew=48,eyeh=fbh;
+                    int cbw=60,cbh=24,cbx=dx+dw-16-cbw,cby=dy2+dh-32;
+                    int xbw=60,xbh=24,xbx=cbx-8-xbw,xby=cby;
+                    if(in_box(mouse_x,mouse_y,eyex,eyey,eyew,eyeh))youdo_show=!youdo_show;
+                    else if(in_box(mouse_x,mouse_y,xbx,xby,xbw,xbh)){youdo_open=0;youdo_pw_len=0;youdo_pw[0]=0;youdo_err[0]=0;}
+                    else if(in_box(mouse_x,mouse_y,cbx,cby,cbw,cbh)){
+                        UserTable ut;
+                        if(auth_table_load(AUTH_PATH,&ut)&&ut.count>0){
+                            u32 root_uid_check=0;
+                            if(auth_verify_password(AUTH_PATH,ut.users[0].username,youdo_pw,&root_uid_check)&&ut.users[0].uid==0){
+                                sys_youdo(1);session_elevated=1;
+                                youdo_open=0;youdo_pw_len=0;youdo_pw[0]=0;youdo_err[0]=0;
+                                acct_setup_run(0);
+                            } else {
+                                auth_copy_str(youdo_err,64,"Incorrect password");
+                                youdo_pw_len=0;youdo_pw[0]=0;
+                            }
+                        }
+                    }
+                    goto click_done;
+                }
                 if(w->id==WIN_SETTINGS&&!w->minimized){
                     int base=w->y+TITLEBAR_H;
                     for(int si=0;si<N_SW;si++){
@@ -3164,7 +3222,14 @@ int main(void){
                     if(in_box(mouse_x,mouse_y,w->x+88,base+144,64,24)){cfg_24h=0;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+16,base+210,64,24)){cfg_showsecs=1;cfg_save();goto click_done;}
                     if(in_box(mouse_x,mouse_y,w->x+88,base+210,64,24)){cfg_showsecs=0;cfg_save();goto click_done;}
-                    if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){acct_setup_run(0);goto click_done;}
+                    if(in_box(mouse_x,mouse_y,w->x+16,base+286,w->w-32,26)){
+                        if(current_uid!=0&&!session_elevated){
+                            youdo_open=1;youdo_pw_len=0;youdo_pw[0]=0;youdo_err[0]=0;youdo_show=0;
+                        } else {
+                            acct_setup_run(0);
+                        }
+                        goto click_done;
+                    }
                     if(in_box(mouse_x,mouse_y,w->x+16,base+322,w->w-32,26)){
                         if(wallpaper_loaded){wallpaper_loaded=0;}
                         else{wallpaper_loaded=load_wallpaper_bmp("/ycfs/wall.bmp");}
@@ -3398,6 +3463,7 @@ int main(void){
 
         /* keyboard */
         s64 ch=sys_keypoll();
+        if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch);}
         if(ch!=0&&menu_open){
             if(ch>0&&ch<256){
                 char sc=(char)ch;

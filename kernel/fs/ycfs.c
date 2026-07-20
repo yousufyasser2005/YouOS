@@ -545,6 +545,7 @@ static int ycfs_perm_check(uint32_t inode_uid, uint32_t inode_gid,
         return 1;
     }
     if (uid == YCFS_ROOT_UID) return 1; /* root bypasses all checks */
+    if (session_is_elevated()) return 1; /* youdo — session-scoped elevation */
     if (uid == inode_uid) return (perm & (want << YCFS_PERM_OWNER_SHIFT)) != 0;
     if (gid == inode_gid) return (perm & (want << YCFS_PERM_GROUP_SHIFT)) != 0;
     return (perm & want) != 0;

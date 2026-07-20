@@ -7,6 +7,7 @@ typedef struct {
     uint32_t uid;
     uint32_t gid;
     int      valid;
+    int      elevated;
 } session_entry_t;
 
 static session_entry_t sessions[MAX_SESSION_UIDS];
@@ -50,4 +51,27 @@ int session_lookup(uint32_t* uid_out, uint32_t* gid_out) {
         }
     }
     return -1;
+}
+
+void session_set_elevated(int on) {
+    uint64_t cr3 = read_cr3();
+    for (int i = 0; i < MAX_SESSION_UIDS; i++) {
+        if (sessions[i].valid && sessions[i].cr3 == cr3) {
+            sessions[i].elevated = on;
+            return;
+        }
+    }
+    /* No session entry yet (shouldn't happen in practice — youdo is only
+     * ever called from an already-logged-in desktop session, which has
+     * already called session_set_uid once). Silently ignore rather than
+     * create a rootless elevated entry. */
+}
+
+int session_is_elevated(void) {
+    uint64_t cr3 = read_cr3();
+    for (int i = 0; i < MAX_SESSION_UIDS; i++) {
+        if (sessions[i].valid && sessions[i].cr3 == cr3)
+            return sessions[i].elevated;
+    }
+    return 0;
 }

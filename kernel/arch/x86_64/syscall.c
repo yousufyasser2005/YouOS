@@ -258,6 +258,12 @@ static uint64_t sys_set_session_uid(uint64_t uid, uint64_t gid, uint64_t a3,
     session_set_uid((uint32_t)uid, (uint32_t)gid);
     return 0;
 }
+static uint64_t sys_youdo(uint64_t on, uint64_t a2, uint64_t a3,
+                           uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    session_set_elevated((int)on);
+    return 0;
+}
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
 static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -369,7 +375,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_readsyslog,
     sys_mousedbg,
     sys_mousewheel,
-    sys_set_session_uid
+    sys_set_session_uid,
+    sys_youdo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

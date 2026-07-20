@@ -18,3 +18,11 @@ void session_set_uid(uint32_t uid, uint32_t gid);
  * that as "no owner/group match possible," i.e. only world/other
  * permission bits apply. */
 int session_lookup(uint32_t* uid_out, uint32_t* gid_out);
+
+/* "youdo" — session-scoped elevation (sudo-shaped, not su-shaped). The
+ * calling CR3's uid/gid never change; this is a separate flag checked
+ * as an additional bypass in ycfs_perm_check, alongside the uid==0
+ * check. Persists until explicitly cleared (logout), NOT on lock,
+ * since lock preserves the whole session including this. */
+void session_set_elevated(int on);
+int  session_is_elevated(void);
