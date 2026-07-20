@@ -2582,8 +2582,12 @@ static void draw_login_power_buttons(int mx,int my,int*out_sd,int*out_rb){
 #define LOGIN_CARD_H     160
 #define LOGIN_CARD_GAP   30
 #define LOGIN_COLS       4
-static int lock_screen_run(int is_logout){
-    (void)is_logout;
+#define LOCK_MODE_BOOT   0  /* first boot / normal login: show full account grid */
+#define LOCK_MODE_LOGOUT 1  /* logout: session already reset, show full account grid */
+#define LOCK_MODE_LOCK   2  /* lock: everything stays as-is, skip straight to the
+                                current user's password prompt, no way back to
+                                the grid (that's the whole point vs logout) */
+static int lock_screen_run(int mode){
     UserTable t;int have_table=auth_table_load(AUTH_PATH,&t);
     int ucount=have_table?(int)t.count:0;
 
@@ -2604,6 +2608,11 @@ static int lock_screen_run(int is_logout){
             int m=1;for(int k=0;k<32;k++){if(t.users[i].username[k]!=current_username[k]){m=0;break;}if(current_username[k]==0)break;}
             if(m){pre_idx=i;break;}
         }
+    }
+
+    if(mode==LOCK_MODE_LOCK && pre_idx>=0){
+        sel_idx=pre_idx;
+        screen=1;
     }
 
     while(!success){
@@ -2665,7 +2674,7 @@ static int lock_screen_run(int is_logout){
             int fbx=pw_x+24,fby=pw_y+120,fbw=pw_w-48-eyew-8,fbh=30;
 
             if(click){
-                if(in_box(mx,my,backx,backy,backw,backh)){screen=0;sel_idx=-1;}
+                if(mode!=LOCK_MODE_LOCK && in_box(mx,my,backx,backy,backw,backh)){screen=0;sel_idx=-1;}
                 else if(in_box(mx,my,eyex,eyey,eyew,eyeh))show_pw=!show_pw;
             }
             text_input_key(pw_buf,&pw_len,48,ch);
@@ -2694,8 +2703,10 @@ static int lock_screen_run(int is_logout){
             rect_round_alpha(pw_x+3,pw_y+3,pw_w,pw_h,16,0x000000,90);
             rect_round_alpha(pw_x,pw_y,pw_w,pw_h,16,PANEL_BG,230);
             outline_round(pw_x,pw_y,pw_w,pw_h,16,BORDER);
-            {int hovb=in_box(mx,my,backx,backy,backw,backh);
-             text(backx,backy+4,"< Back",hovb?TEXT:DIM,PANEL_BG);}
+            if(mode!=LOCK_MODE_LOCK){
+                int hovb=in_box(mx,my,backx,backy,backw,backh);
+                text(backx,backy+4,"< Back",hovb?TEXT:DIM,PANEL_BG);
+            }
             if(sel_idx>=0){
                 draw_avatar(pw_x+pw_w/2,pw_y+70,32,t.users[sel_idx].username,cfg_accent);
                 text_center(pw_x+pw_w/2,pw_y+108,t.users[sel_idx].username,TEXT,PANEL_BG);
@@ -2800,7 +2811,7 @@ int main(void){
     cfg_load();
     draw_loading_splash(200);
     if(!auth_exists(AUTH_PATH)){acct_setup_run(1);}
-    if(auth_exists(AUTH_PATH)){lock_screen_run(0);}
+    if(auth_exists(AUTH_PATH)){lock_screen_run(LOCK_MODE_BOOT);}
     open_terminal();
     tprint("YouOS Desktop v0.3");
     tprint("File manager + Notepad ready");
@@ -2974,9 +2985,9 @@ int main(void){
                 int rb_x2=SM_X+20,sd_x2=rb_x2+pbw2+8,lk_x2=sd_x2+pbw2+8,lo_x2=lk_x2+pbw2+8;
                 if(in_box(mouse_x,mouse_y,rb_x2,pry2,pbw2,40)){menu_open=0;do_restart();goto click_done;}
                 if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;do_shutdown();goto click_done;}
-                if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(0);goto click_done;}
+                if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(LOCK_MODE_LOCK);goto click_done;}
                 if(in_box(mouse_x,mouse_y,lo_x2,pry2,pbw2,40)){
-                    menu_open=0;auth_do_logout();lock_screen_run(1);
+                    menu_open=0;auth_do_logout();lock_screen_run(LOCK_MODE_LOGOUT);
                     open_terminal();
                     tprint("YouOS Desktop v0.3");
                     tprint("File manager + Notepad ready");
