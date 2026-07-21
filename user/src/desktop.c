@@ -334,9 +334,20 @@ typedef struct{
     char paste_err[48];
     char path[200];int path_len;
     int  use_fat16;
+    /* Properties (dialog==4) state */
+    char prop_owner_buf[32];int prop_owner_len;
+    unsigned int prop_uid,prop_gid;
+    unsigned short prop_perm;
+    int  prop_field; /* 0=perm digits (dlg_buf), 1=owner username (prop_owner_buf) */
 }FMState;
 static FMState fm_states[MAX_WINDOWS];
 static int fm_current=-1;
+#define fm_prop_owner_buf (fm_states[fm_current].prop_owner_buf)
+#define fm_prop_owner_len (fm_states[fm_current].prop_owner_len)
+#define fm_prop_uid       (fm_states[fm_current].prop_uid)
+#define fm_prop_gid       (fm_states[fm_current].prop_gid)
+#define fm_prop_perm      (fm_states[fm_current].prop_perm)
+#define fm_prop_field     (fm_states[fm_current].prop_field)
 #define fm_ctx_open      (fm_states[fm_current].ctx_open)
 #define fm_ctx_x         (fm_states[fm_current].ctx_x)
 #define fm_ctx_y         (fm_states[fm_current].ctx_y)
@@ -748,10 +759,33 @@ static void draw_files_content(int wi){
         text_center(ddx+dw/2,ddy+78,"Create",ohov?BG:TEXT,ohov?cfg_accent:0x21262D);
         if(fm_dlg_has_err)text(ddx+8,ddy+dh-12,fm_dlg_err,RED,0x1C2128);
     }
+    if(fm_dialog==4){
+        int dw=320,dh=190,ddx=x+(cw-dw)/2,ddy=y+(ch-dh)/2;
+        rect(ddx,ddy,dw,dh,0x1C2128);outline(ddx,ddy,dw,dh,cfg_accent);
+        rect(ddx,ddy,dw,24,0x161B22);hline(ddx,ddy+24,dw,BORDER);
+        text_center(ddx+dw/2,ddy+4,"Properties",TEXT,0x161B22);
+        text(ddx+8,ddy+30,"Owner (username):",DIM,0x1C2128);
+        int ofx=ddx+8,ofy=ddy+46,ofw=dw-16,ofh=20;
+        rect(ofx,ofy,ofw,ofh,0x0D1117);outline(ofx,ofy,ofw,ofh,fm_prop_field==1?cfg_accent:BORDER);
+        text(ofx+4,ofy+2,fm_prop_owner_buf,TEXT,0x0D1117);
+        if(fm_prop_field==1&&cursor_blink<50)rect(ofx+4+fm_prop_owner_len*8,ofy+2,2,16,cfg_accent);
+        text(ddx+8,ddy+72,"Permissions (octal, e.g. 644):",DIM,0x1C2128);
+        int pfx2=ddx+8,pfy=ddy+88,pfw=60,pfh=20;
+        rect(pfx2,pfy,pfw,pfh,0x0D1117);outline(pfx2,pfy,pfw,pfh,fm_prop_field==0?cfg_accent:BORDER);
+        text(pfx2+4,pfy+2,fm_dlg_buf,TEXT,0x0D1117);
+        if(fm_prop_field==0&&cursor_blink<50)rect(pfx2+4+fm_dlg_len*8,pfy+2,2,16,cfg_accent);
+        int ohov=in_box(mouse_x,mouse_y,ddx+dw/2-64,ddy+dh-32,60,22);
+        rect(ddx+dw/2-64,ddy+dh-32,60,22,ohov?cfg_accent:0x21262D);
+        text_center(ddx+dw/2-34,ddy+dh-29,"Apply",ohov?BG:TEXT,ohov?cfg_accent:0x21262D);
+        int chov2=in_box(mouse_x,mouse_y,ddx+dw/2+4,ddy+dh-32,60,22);
+        rect(ddx+dw/2+4,ddy+dh-32,60,22,chov2?0x21262D:0x161B22);outline(ddx+dw/2+4,ddy+dh-32,60,22,BORDER);
+        text_center(ddx+dw/2+34,ddy+dh-29,"Cancel",TEXT,chov2?0x21262D:0x161B22);
+        if(fm_dlg_has_err)text(ddx+8,ddy+dh-52,fm_dlg_err,RED,0x1C2128);
+    }
     if(fm_ctx_open){
         int has_sel=(fm_selected>=0);
-        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
-        int n=7,iw=160,ih=22,sep=6;
+        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete","","Properties"};
+        int n=9,iw=160,ih=22,sep=6;
         int mh=2;for(int i=0;i<n;i++)mh+=items[i][0]?ih:sep;
         int mx2=fm_ctx_x,my2=fm_ctx_y;
         if(mx2+iw>w->x+cw)mx2=w->x+cw-iw;
@@ -764,7 +798,7 @@ static void draw_files_content(int wi){
             if(!items[i][0]){hline(mx2+6,iy2+3,iw-12,BORDER);iy2+=sep;continue;}
             int hov=(fm_ctx_hov==i);
             int grey=0;
-            if(i==2||i==3||i==5||i==6)grey=!has_sel;
+            if(i==2||i==3||i==5||i==6||i==8)grey=!has_sel;
             if(i==4)grey=!fm_has_clip;
             u32 fg2=grey?0x444444:TEXT;
             if(hov&&!grey)rect(mx2+1,iy2,iw-2,ih,cfg_accent);
@@ -3254,6 +3288,52 @@ int main(void){
                         } else fm_dialog=0;
                         goto click_done;
                     }
+                    /* dialog: properties (chmod/chown) */
+                    if(fm_dialog==4){
+                        int dw=320,dh=190;
+                        int ddx=w->x+(cw2-dw)/2;
+                        int ddy=(w->y+TITLEBAR_H)+(w->h-TITLEBAR_H-dh)/2;
+                        int ofx=ddx+8,ofy=ddy+46,ofw=dw-16,ofh=20;
+                        int pfx2=ddx+8,pfy=ddy+88,pfw=60,pfh=20;
+                        int abx=ddx+dw/2-64,aby=ddy+dh-32,abw=60,abh=22;
+                        int cbx=ddx+dw/2+4,cby=ddy+dh-32,cbw=60,cbh=22;
+                        if(in_box(mouse_x,mouse_y,ofx,ofy,ofw,ofh)){fm_prop_field=1;}
+                        else if(in_box(mouse_x,mouse_y,pfx2,pfy,pfw,pfh)){fm_prop_field=0;}
+                        else if(in_box(mouse_x,mouse_y,abx,aby,abw,abh)){
+                            if(fm_selected>=0&&fm_dlg_len==3&&
+                               fm_dlg_buf[0]>='0'&&fm_dlg_buf[0]<='7'&&
+                               fm_dlg_buf[1]>='0'&&fm_dlg_buf[1]<='7'&&
+                               fm_dlg_buf[2]>='0'&&fm_dlg_buf[2]<='7'){
+                                char ppath[220];
+                                fm_build_path(ppath,sizeof(ppath),fm_path,fm_entries[fm_selected].name);
+                                unsigned int newperm=(unsigned int)((fm_dlg_buf[0]-'0')*64+(fm_dlg_buf[1]-'0')*8+(fm_dlg_buf[2]-'0'));
+                                int ok=1;
+                                if(sys_chmod(ppath,newperm)<0)ok=0;
+                                UserTable owtab;
+                                if(ok&&auth_table_load(AUTH_PATH,&owtab)){
+                                    int owidx=auth_find_user(&owtab,fm_prop_owner_buf);
+                                    if(owidx>=0){
+                                        unsigned int newuid=(unsigned int)owtab.users[owidx].uid;
+                                        if(newuid!=fm_prop_uid){
+                                            if(sys_chown(ppath,newuid,newuid)<0)ok=0;
+                                        }
+                                    } else ok=0;
+                                }
+                                if(ok){fm_dialog=0;fm_dlg_has_err=0;fm_load();}
+                                else{
+                                    fm_dlg_has_err=1;
+                                    const char*em4="Denied or unknown user";
+                                    int ei4=0;while(em4[ei4]&&ei4<47){fm_dlg_err[ei4]=em4[ei4];ei4++;}fm_dlg_err[ei4]=0;
+                                }
+                            } else {
+                                fm_dlg_has_err=1;
+                                const char*em5="Perm must be 3 digits 0-7";
+                                int ei5=0;while(em5[ei5]&&ei5<47){fm_dlg_err[ei5]=em5[ei5];ei5++;}fm_dlg_err[ei5]=0;
+                            }
+                        } else if(in_box(mouse_x,mouse_y,cbx,cby,cbw,cbh)){fm_dialog=0;fm_dlg_has_err=0;}
+                        else if(!in_box(mouse_x,mouse_y,ddx,ddy,dw,dh)){fm_dialog=0;fm_dlg_has_err=0;}
+                        goto click_done;
+                    }
                     /* dialog: rename */
                     if(fm_dialog==2){
                         int dw=320,dh=106;
@@ -3293,8 +3373,8 @@ int main(void){
                     }
                     /* FM context menu clicks */
                     if(fm_ctx_open){
-                        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete"};
-                        int n=7,iw=160,ih=22,sep=6;
+                        const char*items[]={"New Folder","","Copy","Cut","Paste","Rename","Delete","","Properties"};
+                        int n=9,iw=160,ih=22,sep=6;
                         int mh=2;for(int i=0;i<n;i++)mh+=items[i][0]?ih:sep;
                         int mx2=fm_ctx_x,my2=fm_ctx_y;
                         if(mx2+iw>w->x+w->w)mx2=w->x+w->w-iw;
@@ -3306,6 +3386,29 @@ int main(void){
                             iy2+=ih;
                         }
                         fm_ctx_open=0;
+                        if(clicked==8&&fm_selected>=0){
+                            char ppath[220];
+                            fm_build_path(ppath,sizeof(ppath),fm_path,fm_entries[fm_selected].name);
+                            unsigned int puid=0,pgid=0;unsigned short pperm=0;
+                            if(sys_fileinfo(ppath,&puid,&pgid,&pperm)==0){
+                                fm_prop_uid=puid;fm_prop_gid=pgid;fm_prop_perm=pperm;
+                                UserTable ptab;fm_prop_owner_buf[0]=0;fm_prop_owner_len=0;
+                                if(auth_table_load(AUTH_PATH,&ptab)){
+                                    for(int pu=0;pu<(int)ptab.count;pu++){
+                                        if(ptab.users[pu].uid==puid){
+                                            auth_copy_str(fm_prop_owner_buf,32,ptab.users[pu].username);
+                                            fm_prop_owner_len=slen(ptab.users[pu].username);
+                                            break;
+                                        }
+                                    }
+                                }
+                                fm_dlg_buf[0]=(char)('0'+((pperm>>6)&7));
+                                fm_dlg_buf[1]=(char)('0'+((pperm>>3)&7));
+                                fm_dlg_buf[2]=(char)('0'+(pperm&7));
+                                fm_dlg_buf[3]=0;fm_dlg_len=3;
+                                fm_prop_field=0;fm_dlg_has_err=0;fm_dialog=4;
+                            }
+                        }
                         if(clicked==0){
                             fm_dialog=3;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
                         } else if(clicked==2&&fm_selected>=0){
@@ -3477,6 +3580,18 @@ int main(void){
                 if(c=='\n'||c=='\r'){tinput[tinput_len]=0;if(tinput_len>0)tcmd(tinput);tinput_len=0;tinput[0]=0;}
                 else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
                 else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
+            }
+            if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_current=focused,fm_dialog==4)){
+                if(ch>0&&ch<256){
+                    char fc=(char)ch;
+                    if(fm_prop_field==0){
+                        if(fc=='\b'||fc==127){if(fm_dlg_len>0){fm_dlg_buf[--fm_dlg_len]=0;fm_dlg_has_err=0;}}
+                        else if(fc>='0'&&fc<='7'&&fm_dlg_len<3){fm_dlg_buf[fm_dlg_len++]=fc;fm_dlg_buf[fm_dlg_len]=0;fm_dlg_has_err=0;}
+                    } else {
+                        if(fc=='\b'||fc==127){if(fm_prop_owner_len>0){fm_prop_owner_buf[--fm_prop_owner_len]=0;fm_dlg_has_err=0;}}
+                        else if(fc>=32&&fc<127&&fm_prop_owner_len<31){fm_prop_owner_buf[fm_prop_owner_len++]=fc;fm_prop_owner_buf[fm_prop_owner_len]=0;fm_dlg_has_err=0;}
+                    }
+                }
             }
             if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_current=focused,fm_dialog==2||fm_dialog==3)){
                 if(ch>0&&ch<256){

@@ -30,7 +30,10 @@
 #define SYS_MOUSEWHEEL  30
 #define SYS_SET_SESSION_UID 31
 #define SYS_YOUDO 32
-#define SYSCALL_COUNT  33
+#define SYS_CHMOD 33
+#define SYS_CHOWN 34
+#define SYS_FILEINFO 35
+#define SYSCALL_COUNT  36
 
 void syscall_init(void);
 #endif

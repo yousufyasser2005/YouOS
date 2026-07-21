@@ -112,6 +112,9 @@ int64_t  ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf
 int64_t  ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf);
 int      ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode);
 int      ycfs_check_access(uint32_t inode_num, int want);
+int      ycfs_get_owner(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint16_t* perm_out);
+int      ycfs_chmod(const char* path, uint16_t perm);
+int      ycfs_chown(const char* path, uint32_t new_uid, uint32_t new_gid);
 #define YCFS_WANT_R 0x4
 #define YCFS_WANT_W 0x2
 #define YCFS_WANT_X 0x1

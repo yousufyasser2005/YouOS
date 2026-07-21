@@ -131,3 +131,12 @@ static inline int sys_set_session_uid(unsigned int uid, unsigned int gid){
 #define SYS_YOUDO 32
 static inline int sys_youdo(int on){
     return (int)_sc(SYS_YOUDO,(uint64_t)on,0,0,0,0); }
+#define SYS_CHMOD 33
+#define SYS_CHOWN 34
+#define SYS_FILEINFO 35
+static inline int sys_chmod(const char* path, unsigned int perm){
+    return (int)_sc(SYS_CHMOD,(uint64_t)path,(uint64_t)perm,0,0,0); }
+static inline int sys_chown(const char* path, unsigned int uid, unsigned int gid){
+    return (int)_sc(SYS_CHOWN,(uint64_t)path,(uint64_t)uid,(uint64_t)gid,0,0); }
+static inline int sys_fileinfo(const char* path, unsigned int* uid, unsigned int* gid, unsigned short* perm){
+    return (int)_sc(SYS_FILEINFO,(uint64_t)path,(uint64_t)uid,(uint64_t)gid,(uint64_t)perm,0); }

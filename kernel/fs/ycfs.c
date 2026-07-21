@@ -693,6 +693,66 @@ int ycfs_rename(const char* old_path, const char* new_path) {
     return r;
 }
 
+/* Returns 0 and fills uid_out/gid_out/perm_out on success. */
+int ycfs_get_owner(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint16_t* perm_out) {
+    if (!initialized) return -1;
+    uint32_t inode, type; uint64_t size;
+    if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
+    ycfs_inode_t ti;
+    if (read_inode(inode, &ti) != 0) return -1;
+    if (uid_out)  *uid_out  = ti.uid;
+    if (gid_out)  *gid_out  = ti.gid;
+    if (perm_out) *perm_out = ti.perm;
+    return 0;
+}
+
+/* chmod — only the file's owner, root, or an elevated (youdo) session
+ * may change its permission bits. Matches real POSIX chmod semantics
+ * (owner-or-root), extended with youdo as a root-equivalent. */
+int ycfs_chmod(const char* path, uint16_t perm) {
+    if (!initialized) return -1;
+    uint32_t inode, type; uint64_t size;
+    if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
+    ycfs_inode_t ti;
+    if (read_inode(inode, &ti) != 0) return -1;
+
+    uint32_t caller_uid = YCFS_ROOT_UID, caller_gid = YCFS_ROOT_GID;
+    session_lookup(&caller_uid, &caller_gid); /* leaves root defaults on failure */
+    int allowed = (caller_uid == YCFS_ROOT_UID) || session_is_elevated() || (caller_uid == ti.uid);
+    if (!allowed) return -1;
+
+    ti.perm = perm & 0777;
+    txn_begin();
+    int r = write_inode(inode, &ti);
+    txn_commit();
+    return r;
+}
+
+/* chown — root or an elevated (youdo) session only. Real POSIX chown
+ * restricts this to root even for the file's own owner (prevents
+ * giving away files to dodge disk-quota accounting); no reason to be
+ * looser here. Sets both uid and gid together, matching this OS's
+ * uid==gid private-group convention (see mkycfs.py / auth_create_user). */
+int ycfs_chown(const char* path, uint32_t new_uid, uint32_t new_gid) {
+    if (!initialized) return -1;
+    uint32_t inode, type; uint64_t size;
+    if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
+
+    uint32_t caller_uid = YCFS_ROOT_UID, caller_gid = YCFS_ROOT_GID;
+    session_lookup(&caller_uid, &caller_gid);
+    int allowed = (caller_uid == YCFS_ROOT_UID) || session_is_elevated();
+    if (!allowed) return -1;
+
+    ycfs_inode_t ti;
+    if (read_inode(inode, &ti) != 0) return -1;
+    ti.uid = new_uid;
+    ti.gid = new_gid;
+    txn_begin();
+    int r = write_inode(inode, &ti);
+    txn_commit();
+    return r;
+}
+
 int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;

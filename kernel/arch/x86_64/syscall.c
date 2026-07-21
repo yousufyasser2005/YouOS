@@ -264,6 +264,25 @@ static uint64_t sys_youdo(uint64_t on, uint64_t a2, uint64_t a3,
     session_set_elevated((int)on);
     return 0;
 }
+static uint64_t sys_chmod(uint64_t path, uint64_t perm, uint64_t a3,
+                           uint64_t a4, uint64_t a5) {
+    (void)a3; (void)a4; (void)a5;
+    extern int ycfs_chmod(const char*, uint16_t);
+    return (uint64_t)(int64_t)ycfs_chmod((const char*)path, (uint16_t)perm);
+}
+static uint64_t sys_chown(uint64_t path, uint64_t uid, uint64_t gid,
+                           uint64_t a4, uint64_t a5) {
+    (void)a4; (void)a5;
+    extern int ycfs_chown(const char*, uint32_t, uint32_t);
+    return (uint64_t)(int64_t)ycfs_chown((const char*)path, (uint32_t)uid, (uint32_t)gid);
+}
+static uint64_t sys_fileinfo(uint64_t path, uint64_t uid_out, uint64_t gid_out,
+                              uint64_t perm_out, uint64_t a5) {
+    (void)a5;
+    extern int ycfs_get_owner(const char*, uint32_t*, uint32_t*, uint16_t*);
+    return (uint64_t)(int64_t)ycfs_get_owner((const char*)path, (uint32_t*)uid_out,
+                                              (uint32_t*)gid_out, (uint16_t*)perm_out);
+}
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
 static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -376,7 +395,10 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_mousedbg,
     sys_mousewheel,
     sys_set_session_uid,
-    sys_youdo
+    sys_youdo,
+    sys_chmod,
+    sys_chown,
+    sys_fileinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){
