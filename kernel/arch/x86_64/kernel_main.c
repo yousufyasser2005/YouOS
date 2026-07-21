@@ -20,6 +20,7 @@
 #include <kernel/kjmp.h>
 #include <kernel/fb.h>
 #include <kernel/pci.h>
+#include <kernel/rtl8139.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -142,6 +143,41 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     ipc_init();
     pci_init();
     uhci_init();
+    if (rtl8139_init()) {
+        /* Self-test: send a broadcast ARP request (who-has 10.0.2.2,
+         * QEMU user-mode networking's gateway) and check whether an RX
+         * interrupt fires within a short window — proof raw frames
+         * actually leave the NIC and something replies, without
+         * needing any ARP-reply parsing yet (that's a later stage). */
+        static const uint8_t arp_request[42] = {
+            0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,       /* dest: broadcast */
+            0x52,0x54,0x00,0x12,0x34,0x56,       /* src: our MAC (matches -device rtl8139 mac=) */
+            0x08,0x06,                            /* ethertype: ARP */
+            0x00,0x01,                            /* hw type: Ethernet */
+            0x08,0x00,                            /* proto type: IPv4 */
+            0x06,0x04,                            /* hw/proto addr lens */
+            0x00,0x01,                            /* opcode: request */
+            0x52,0x54,0x00,0x12,0x34,0x56,       /* sender MAC */
+            0x0A,0x00,0x02,0x0F,                  /* sender IP: 10.0.2.15 (QEMU user-mode default) */
+            0x00,0x00,0x00,0x00,0x00,0x00,       /* target MAC: unknown */
+            0x0A,0x00,0x02,0x02                   /* target IP: 10.0.2.2 (gateway) */
+        };
+        rtl8139_send(arp_request, sizeof(arp_request));
+        extern volatile int rx_irq_seen;
+        extern uint64_t irq_get_ticks(void);
+        uint64_t start_tick = irq_get_ticks();
+        /* Wait up to ~500ms of real elapsed time (timer IRQ presumably
+         * ~100Hz per the doc's TIMESLICE comment, so 50 ticks), not a
+         * raw busy-loop count — QEMU SLIRP's ARP round-trip latency can
+         * exceed what a tight loop completes in in an unpredictable,
+         * hardware-speed-dependent way. */
+        while (!rx_irq_seen && (irq_get_ticks() - start_tick) < 50) { }
+        if (rx_irq_seen) {
+            vga_puts_color("  [OK] RTL8139 self-test: RX interrupt fired\n", VGA_LIGHT_GREEN, VGA_BLACK);
+        } else {
+            vga_puts_color("  [!!] RTL8139 self-test: no RX interrupt (check -netdev flags)\n", VGA_YELLOW, VGA_BLACK);
+        }
+    }
     initrd_init();
     vfs_init();
     extern vfs_node_t* ramfs_init(void);
