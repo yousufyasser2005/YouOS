@@ -19,6 +19,7 @@
 #include <kernel/ata.h>
 #include <kernel/kjmp.h>
 #include <kernel/fb.h>
+#include <kernel/pci.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -139,6 +140,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     syslog_init();
     crash_init();
     ipc_init();
+    pci_init();
     uhci_init();
     initrd_init();
     vfs_init();

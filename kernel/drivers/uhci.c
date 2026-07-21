@@ -3,6 +3,7 @@
  * Polling via timer IRQ every 10 ticks (~100ms)
  */
 #include <stdint.h>
+#include <kernel/pci.h>
 #include <kernel/uhci.h>
 #include <kernel/keyboard.h>
 #include <kernel/mouse.h>
@@ -15,17 +16,7 @@ static inline uint8_t  inb (uint16_t p){uint8_t  v;__asm__ volatile("inb %1,%0":
 static inline uint16_t inw (uint16_t p){uint16_t v;__asm__ volatile("inw %1,%0":"=a"(v):"Nd"(p));return v;}
 static void udelay(int n){for(volatile int i=0;i<n*50;i++);}
 
-/* ── PCI config space ────────────────────────────────────────── */
-static uint32_t pci_r32(uint8_t b,uint8_t d,uint8_t f,uint8_t o){
-    uint32_t a=0x80000000|((uint32_t)b<<16)|((uint32_t)d<<11)|((uint32_t)f<<8)|(o&0xFC);
-    __asm__ volatile("outl %0, %1"::"a"(a),"Nd"((uint16_t)0xCF8));
-    uint32_t v;__asm__ volatile("inl %1,%0":"=a"(v):"Nd"((uint16_t)0xCFC));return v;
-}
-static void pci_w32(uint8_t b,uint8_t d,uint8_t f,uint8_t o,uint32_t v){
-    uint32_t a=0x80000000|((uint32_t)b<<16)|((uint32_t)d<<11)|((uint32_t)f<<8)|(o&0xFC);
-    __asm__ volatile("outl %0, %1"::"a"(a),"Nd"((uint16_t)0xCF8));
-    __asm__ volatile("outl %0, %1"::"a"(v),"Nd"((uint16_t)0xCFC));
-}
+/* PCI config-space access now provided by kernel/drivers/pci.c */
 
 /* ── UHCI register offsets ───────────────────────────────────── */
 #define UCMD    0x00u
@@ -115,17 +106,12 @@ static const uint8_t hmsh[256]={
     [0x33]=':',[0x34]='"',[0x35]='~',[0x36]='<',[0x37]='>',[0x38]='?',
 };
 
-/* ── Find UHCI via PCI class scan ────────────────────────────── */
+/* ── Find UHCI via shared PCI enumeration (kernel/drivers/pci.c) ── */
 static uint16_t find_uhci(void){
-    for(int b=0;b<8;b++)for(int d=0;d<32;d++)for(int f=0;f<8;f++){
-        if((pci_r32(b,d,f,0)&0xFFFF)==0xFFFF)continue;
-        uint32_t cl=pci_r32(b,d,f,8);
-        if(((cl>>24)&0xFF)==0x0C&&((cl>>16)&0xFF)==0x03&&((cl>>8)&0xFF)==0x00){
-            pci_w32(b,d,f,4,pci_r32(b,d,f,4)|0x05); /* I/O + bus master */
-            return(uint16_t)(pci_r32(b,d,f,0x20)&0xFFFC);
-        }
-    }
-    return 0;
+    pci_device_t dev;
+    if(!pci_find_by_class(0x0C,0x03,0x00,&dev)) return 0;
+    pci_enable_device(&dev); /* I/O + memory + bus master */
+    return (uint16_t)pci_bar_addr(&dev,4);
 }
 
 /* ── Synchronous control transfer ────────────────────────────── */
