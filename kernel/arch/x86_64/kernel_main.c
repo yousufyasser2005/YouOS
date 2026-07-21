@@ -21,6 +21,7 @@
 #include <kernel/fb.h>
 #include <kernel/pci.h>
 #include <kernel/rtl8139.h>
+#include <kernel/arp.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -144,38 +145,25 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     pci_init();
     uhci_init();
     if (rtl8139_init()) {
-        /* Self-test: send a broadcast ARP request (who-has 10.0.2.2,
-         * QEMU user-mode networking's gateway) and check whether an RX
-         * interrupt fires within a short window — proof raw frames
-         * actually leave the NIC and something replies, without
-         * needing any ARP-reply parsing yet (that's a later stage). */
-        static const uint8_t arp_request[42] = {
-            0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,       /* dest: broadcast */
-            0x52,0x54,0x00,0x12,0x34,0x56,       /* src: our MAC (matches -device rtl8139 mac=) */
-            0x08,0x06,                            /* ethertype: ARP */
-            0x00,0x01,                            /* hw type: Ethernet */
-            0x08,0x00,                            /* proto type: IPv4 */
-            0x06,0x04,                            /* hw/proto addr lens */
-            0x00,0x01,                            /* opcode: request */
-            0x52,0x54,0x00,0x12,0x34,0x56,       /* sender MAC */
-            0x0A,0x00,0x02,0x0F,                  /* sender IP: 10.0.2.15 (QEMU user-mode default) */
-            0x00,0x00,0x00,0x00,0x00,0x00,       /* target MAC: unknown */
-            0x0A,0x00,0x02,0x02                   /* target IP: 10.0.2.2 (gateway) */
-        };
-        rtl8139_send(arp_request, sizeof(arp_request));
-        extern volatile int rx_irq_seen;
+        arp_init();
+        /* Self-test: ARP-probe the QEMU user-mode gateway (10.0.2.2)
+         * and confirm the reply actually gets parsed into the ARP
+         * cache — a real test of stage 2's parsing, not just "an
+         * interrupt fired" (stage 1's weaker self-test). */
+        static const uint8_t gateway_ip[4] = {10,0,2,2};
+        arp_request(gateway_ip);
         extern uint64_t irq_get_ticks(void);
         uint64_t start_tick = irq_get_ticks();
-        /* Wait up to ~500ms of real elapsed time (timer IRQ presumably
-         * ~100Hz per the doc's TIMESLICE comment, so 50 ticks), not a
-         * raw busy-loop count — QEMU SLIRP's ARP round-trip latency can
-         * exceed what a tight loop completes in in an unpredictable,
-         * hardware-speed-dependent way. */
-        while (!rx_irq_seen && (irq_get_ticks() - start_tick) < 50) { }
-        if (rx_irq_seen) {
-            vga_puts_color("  [OK] RTL8139 self-test: RX interrupt fired\n", VGA_LIGHT_GREEN, VGA_BLACK);
+        uint8_t mac_out[6];
+        int resolved = 0;
+        while ((irq_get_ticks() - start_tick) < 50) {
+            net_poll();
+            if (arp_resolve(gateway_ip, mac_out)) { resolved = 1; break; }
+        }
+        if (resolved) {
+            vga_puts_color("  [OK] RTL8139/ARP self-test: gateway resolved\n", VGA_LIGHT_GREEN, VGA_BLACK);
         } else {
-            vga_puts_color("  [!!] RTL8139 self-test: no RX interrupt (check -netdev flags)\n", VGA_YELLOW, VGA_BLACK);
+            vga_puts_color("  [!!] RTL8139/ARP self-test: no reply parsed (check -netdev flags)\n", VGA_YELLOW, VGA_BLACK);
         }
     }
     initrd_init();
