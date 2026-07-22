@@ -1,6 +1,7 @@
 #include <kernel/arp.h>
 #include <kernel/rtl8139.h>
 #include <kernel/syslog.h>
+#include <kernel/ip.h>
 
 /* ── Ethernet header (14 bytes) ─────────────────────────────────── */
 typedef struct __attribute__((packed)) {
@@ -35,6 +36,7 @@ typedef struct {
 
 static arp_cache_entry_t cache[ARP_CACHE_SIZE];
 static uint8_t our_mac[6];
+static uint8_t our_ip[4];
 
 /* Manual big-endian 16-bit swap — avoids pulling in any htons()
  * dependency that may not exist in this freestanding environment. */
@@ -79,9 +81,39 @@ int arp_resolve(const uint8_t ip[4], uint8_t mac_out[6]) {
     return 0;
 }
 
-void arp_init(void) {
+void arp_init(const uint8_t ip[4]) {
     rtl8139_get_mac(our_mac);
+    for (int i = 0; i < 4; i++) our_ip[i] = ip[i];
     for (int i = 0; i < ARP_CACHE_SIZE; i++) cache[i].valid = 0;
+}
+
+/* Sends an ARP reply (not a request) directly back to whoever asked,
+ * unicast rather than broadcast, in response to a request targeting
+ * our own IP. Every real IP host must do this — without it, peers can
+ * send US packets (they resolve US fine if we ever spoke first) but
+ * can never resolve us if THEY speak first, which is exactly what
+ * blocked the ICMP self-test: the gateway had to ARP us to route its
+ * echo reply back, and we were silently ignoring that request. */
+static void send_arp_reply(const uint8_t dest_mac[6], const uint8_t dest_ip[4]) {
+    uint8_t frame[sizeof(eth_hdr_t) + sizeof(arp_hdr_t)];
+    eth_hdr_t* eth = (eth_hdr_t*)frame;
+    arp_hdr_t* arp = (arp_hdr_t*)(frame + sizeof(eth_hdr_t));
+
+    for (int i = 0; i < 6; i++) eth->dst_mac[i] = dest_mac[i];
+    for (int i = 0; i < 6; i++) eth->src_mac[i] = our_mac[i];
+    eth->ethertype = swap16(ETHERTYPE_ARP);
+
+    arp->htype = swap16(1);
+    arp->ptype = swap16(0x0800);
+    arp->hlen = 6;
+    arp->plen = 4;
+    arp->oper = swap16(ARP_OP_REPLY);
+    for (int i = 0; i < 6; i++) arp->sender_mac[i] = our_mac[i];
+    for (int i = 0; i < 4; i++) arp->sender_ip[i] = our_ip[i];
+    for (int i = 0; i < 6; i++) arp->target_mac[i] = dest_mac[i];
+    for (int i = 0; i < 4; i++) arp->target_ip[i] = dest_ip[i];
+
+    rtl8139_send(frame, sizeof(frame));
 }
 
 void arp_request(const uint8_t ip[4]) {
@@ -112,7 +144,12 @@ void arp_request(const uint8_t ip[4]) {
 }
 
 static void handle_arp(const arp_hdr_t* arp) {
-    if (swap16(arp->oper) != ARP_OP_REPLY) return; /* stage 2: replies only, no request-answering yet */
+    if (swap16(arp->oper) == ARP_OP_REQUEST) {
+        if (ip_eq(arp->target_ip, our_ip))
+            send_arp_reply(arp->sender_mac, arp->sender_ip);
+        return; /* requests don't populate our cache — only replies do */
+    }
+    if (swap16(arp->oper) != ARP_OP_REPLY) return;
     cache_insert(arp->sender_ip, arp->sender_mac);
 
     /* Log what we learned — the only real user-visible proof this
@@ -148,9 +185,8 @@ void net_poll(void) {
         if (swap16(eth->ethertype) == ETHERTYPE_ARP) {
             if (len < sizeof(eth_hdr_t) + sizeof(arp_hdr_t)) continue;
             handle_arp((arp_hdr_t*)(frame + sizeof(eth_hdr_t)));
+        } else if (swap16(eth->ethertype) == 0x0800) {
+            ip_handle_frame(frame + sizeof(eth_hdr_t), (uint16_t)(len - sizeof(eth_hdr_t)));
         }
-        /* Non-ARP frames silently discarded — no IP layer yet to hand
-         * them to. This is where EtherType 0x0800 (IPv4) dispatch will
-         * be added in the next stage. */
     }
 }

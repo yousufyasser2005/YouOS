@@ -22,6 +22,7 @@
 #include <kernel/pci.h>
 #include <kernel/rtl8139.h>
 #include <kernel/arp.h>
+#include <kernel/ip.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -145,7 +146,12 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     pci_init();
     uhci_init();
     if (rtl8139_init()) {
-        arp_init();
+        /* Static placeholder — QEMU user-net's default guest address.
+         * Real DHCP is a future stage; nothing here negotiates this.
+         * Single shared source of truth, passed to both arp_init() and
+         * ip_init() rather than each module guessing its own copy. */
+        static const uint8_t our_static_ip[4] = {10, 0, 2, 15};
+        arp_init(our_static_ip);
         /* Self-test: ARP-probe the QEMU user-mode gateway (10.0.2.2)
          * and confirm the reply actually gets parsed into the ARP
          * cache — a real test of stage 2's parsing, not just "an
@@ -162,6 +168,47 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
         }
         if (resolved) {
             vga_puts_color("  [OK] RTL8139/ARP self-test: gateway resolved\n", VGA_LIGHT_GREEN, VGA_BLACK);
+
+            /* IP/ICMP self-test — reuses the gateway MAC just resolved
+             * above, no extra ARP round-trip needed. Sends a real ICMP
+             * echo request and waits for the actual reply to come back
+             * through ip_handle_frame(), same "prove it end-to-end"
+             * standard stage 2 used for ARP. */
+            ip_init(our_static_ip);
+            uint8_t icmp_pkt[12];
+            icmp_pkt[0] = 8;  /* type: echo request */
+            icmp_pkt[1] = 0;  /* code */
+            icmp_pkt[2] = 0; icmp_pkt[3] = 0; /* checksum, filled below */
+            icmp_pkt[4] = 0; icmp_pkt[5] = 1; /* id = 1 */
+            icmp_pkt[6] = 0; icmp_pkt[7] = 1; /* seq = 1 */
+            icmp_pkt[8]='P'; icmp_pkt[9]='I'; icmp_pkt[10]='N'; icmp_pkt[11]='G';
+            /* Internet checksum over the whole ICMP packet, checksum field zeroed */
+            {
+                uint32_t sum = 0;
+                for (int i = 0; i < 12; i += 2) {
+                    uint16_t word = (uint16_t)((icmp_pkt[i] << 8) | (i+1<12 ? icmp_pkt[i+1] : 0));
+                    sum += word;
+                }
+                while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+                uint16_t csum = (uint16_t)~sum;
+                icmp_pkt[2] = (uint8_t)(csum >> 8);
+                icmp_pkt[3] = (uint8_t)(csum & 0xFF);
+            }
+            static const uint8_t gw2[4] = {10,0,2,2};
+            ip_send(gw2, IP_PROTO_ICMP, icmp_pkt, sizeof(icmp_pkt));
+
+            extern volatile int icmp_echo_reply_seen;
+            uint64_t ping_start = irq_get_ticks();
+            int ping_ok = 0;
+            while ((irq_get_ticks() - ping_start) < 50) {
+                net_poll();
+                if (icmp_echo_reply_seen) { ping_ok = 1; break; }
+            }
+            if (ping_ok) {
+                vga_puts_color("  [OK] IP/ICMP self-test: ping reply received\n", VGA_LIGHT_GREEN, VGA_BLACK);
+            } else {
+                vga_puts_color("  [!!] IP/ICMP self-test: no ping reply\n", VGA_YELLOW, VGA_BLACK);
+            }
         } else {
             vga_puts_color("  [!!] RTL8139/ARP self-test: no reply parsed (check -netdev flags)\n", VGA_YELLOW, VGA_BLACK);
         }

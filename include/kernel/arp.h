@@ -15,7 +15,7 @@
 #define ARP_CACHE_SIZE 8
 
 /* Call once at boot, after rtl8139_init() succeeds. */
-void arp_init(void);
+void arp_init(const uint8_t our_ip[4]);
 
 /* Drain any pending received frames (via rtl8139_recv()) and process
  * them — call periodically, same pattern as uhci_poll(). Currently
