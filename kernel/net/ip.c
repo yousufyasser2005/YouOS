@@ -2,6 +2,7 @@
 #include <kernel/arp.h>
 #include <kernel/rtl8139.h>
 #include <kernel/syslog.h>
+#include <kernel/udp.h>
 
 typedef struct __attribute__((packed)) {
     uint8_t  dst_mac[6];
@@ -61,6 +62,10 @@ static uint16_t checksum16(const void* data, int len) {
 void ip_init(const uint8_t ip[4]) {
     rtl8139_get_mac(our_mac);
     for (int i = 0; i < 4; i++) our_ip[i] = ip[i];
+}
+
+void ip_get_our_ip(uint8_t out[4]) {
+    for (int i = 0; i < 4; i++) out[i] = our_ip[i];
 }
 
 int ip_send(const uint8_t dest_ip[4], uint8_t protocol, const void* payload, uint16_t payload_len) {
@@ -159,5 +164,6 @@ void ip_handle_frame(const uint8_t* data, uint16_t len) {
     uint16_t body_len = (uint16_t)(total_len - ihl_bytes);
 
     if (ip->protocol == IP_PROTO_ICMP) handle_icmp(ip, body, body_len);
-    /* UDP/TCP dispatch: future stages. */
+    else if (ip->protocol == IP_PROTO_UDP) udp_handle_packet(ip->src_ip, body, body_len);
+    /* TCP dispatch: future stage. */
 }

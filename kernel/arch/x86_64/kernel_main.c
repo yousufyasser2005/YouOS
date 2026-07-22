@@ -23,6 +23,7 @@
 #include <kernel/rtl8139.h>
 #include <kernel/arp.h>
 #include <kernel/ip.h>
+#include <kernel/udp.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -208,6 +209,50 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [OK] IP/ICMP self-test: ping reply received\n", VGA_LIGHT_GREEN, VGA_BLACK);
             } else {
                 vga_puts_color("  [!!] IP/ICMP self-test: no ping reply\n", VGA_YELLOW, VGA_BLACK);
+            }
+
+            if (ping_ok) {
+                /* UDP self-test: a minimal, real DNS query to QEMU
+                 * SLIRP's built-in DNS proxy (10.0.2.3:53) — this is
+                 * a genuine external UDP service, same "real wire
+                 * round-trip" standard as the ARP/ICMP self-tests, not
+                 * a loopback trick. Doesn't parse the DNS answer at
+                 * all, just proves the round trip: our checksum was
+                 * accepted, the reply's source/dest ports line up,
+                 * and udp_handle_packet() correctly dispatches it. */
+                static const uint8_t dns_proxy_ip[4] = {10, 0, 2, 3};
+                uint8_t dns_query[29] = {
+                    0x12, 0x34,             /* transaction id */
+                    0x01, 0x00,             /* flags: standard query, recursion desired */
+                    0x00, 0x01,             /* qdcount = 1 */
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /* an/ns/ar counts = 0 */
+                    7,'e','x','a','m','p','l','e',
+                    3,'c','o','m',
+                    0,                       /* end of QNAME */
+                    0x00, 0x01,             /* qtype: A */
+                    0x00, 0x01              /* qclass: IN */
+                };
+                extern volatile int udp_packet_seen;
+                uint64_t udp_start = irq_get_ticks();
+                int udp_ok = 0;
+                int udp_sent = (udp_send(dns_proxy_ip, 53, 5353, dns_query, sizeof(dns_query)) == 0);
+                while ((irq_get_ticks() - udp_start) < 50) {
+                    net_poll();
+                    /* Destination MAC likely wasn't cached on the first
+                     * call (unlike the gateway, already resolved by the
+                     * earlier ARP self-test) — ip_send() returns -1 and
+                     * fires an arp_request() as a side effect in that
+                     * case; retry the actual send once resolution has
+                     * had a chance to land via the net_poll() above. */
+                    if (!udp_sent)
+                        udp_sent = (udp_send(dns_proxy_ip, 53, 5353, dns_query, sizeof(dns_query)) == 0);
+                    if (udp_packet_seen) { udp_ok = 1; break; }
+                }
+                if (udp_ok) {
+                    vga_puts_color("  [OK] UDP self-test: DNS reply received\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                } else {
+                    vga_puts_color("  [!!] UDP self-test: no DNS reply\n", VGA_YELLOW, VGA_BLACK);
+                }
             }
         } else {
             vga_puts_color("  [!!] RTL8139/ARP self-test: no reply parsed (check -netdev flags)\n", VGA_YELLOW, VGA_BLACK);
