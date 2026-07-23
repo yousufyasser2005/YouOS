@@ -19,6 +19,9 @@ typedef enum {
     TCP_FIN_WAIT_1,
     TCP_FIN_WAIT_2,
     TCP_TIME_WAIT,
+    TCP_LAST_ACK, /* passive close: remote sent FIN first (e.g. HTTP
+                     server closing after its response) — we ACK it,
+                     send our own FIN, and wait for the final ACK. */
 } tcp_state_t;
 
 void tcp_init(void);
@@ -32,6 +35,16 @@ int tcp_connect(const uint8_t dest_ip[4], uint16_t dest_port);
 /* Starts a graceful close (sends FIN) from ESTABLISHED. No-op if not
  * currently ESTABLISHED. */
 void tcp_close(void);
+
+/* Sends data on the established connection. Returns 0 on success, -1
+ * if not currently ESTABLISHED. Does not wait for the remote's ACK —
+ * no retransmission in this stage; fine for a controlled self-test
+ * against a reliable host, a real gap for production use. */
+int tcp_send(const void* data, uint16_t len);
+
+/* Non-blocking: copies any newly-received data into buf (up to
+ * max_len), returns the number of bytes copied, 0 if nothing new. */
+uint16_t tcp_recv(void* buf, uint16_t max_len);
 
 tcp_state_t tcp_get_state(void);
 

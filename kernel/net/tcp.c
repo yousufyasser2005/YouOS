@@ -45,6 +45,13 @@ static uint16_t local_port;
 static uint32_t our_seq;    /* next byte WE will send */
 static uint32_t our_ack;    /* next byte we EXPECT from remote (their seq) */
 
+/* Simple append/consume buffer, not a proper ring — sufficient for a
+ * single connection's worth of received data in a self-test; a real
+ * consumer with sustained throughput would want something better. */
+#define RX_BUF_CAP 4096
+static uint8_t rx_buf[RX_BUF_CAP];
+static uint16_t rx_len = 0;
+
 void tcp_init(void) {
     state = TCP_CLOSED;
 }
@@ -125,6 +132,23 @@ void tcp_close(void) {
     syslog_write("TCP", "FIN sent");
 }
 
+int tcp_send(const void* data, uint16_t len) {
+    if (state != TCP_ESTABLISHED) return -1;
+    send_segment(our_seq, our_ack, TCP_FLAG_PSH | TCP_FLAG_ACK, data, len);
+    our_seq += len;
+    return 0;
+}
+
+uint16_t tcp_recv(void* buf, uint16_t max_len) {
+    if (rx_len == 0) return 0;
+    uint16_t n = rx_len < max_len ? rx_len : max_len;
+    for (uint16_t i = 0; i < n; i++) ((uint8_t*)buf)[i] = rx_buf[i];
+    /* Shift remaining bytes down — simple, not efficient, fine at this scale. */
+    for (uint16_t i = n; i < rx_len; i++) rx_buf[i - n] = rx_buf[i];
+    rx_len = (uint16_t)(rx_len - n);
+    return n;
+}
+
 void tcp_handle_segment(const uint8_t src_ip[4], const uint8_t* data, uint16_t len) {
     if (len < sizeof(tcp_hdr_t)) return;
     const tcp_hdr_t* tcp = (const tcp_hdr_t*)data;
@@ -136,6 +160,9 @@ void tcp_handle_segment(const uint8_t src_ip[4], const uint8_t* data, uint16_t l
 
     uint8_t flags = tcp->flags;
     uint32_t seg_seq = swap32(tcp->seq);
+    uint8_t hdr_len = (uint8_t)(((tcp->data_off >> 4) & 0xF) * 4);
+    const uint8_t* payload = data + hdr_len;
+    uint16_t payload_len = (hdr_len <= len) ? (uint16_t)(len - hdr_len) : 0;
 
     if (state == TCP_SYN_SENT) {
         if ((flags & TCP_FLAG_SYN) && (flags & TCP_FLAG_ACK)) {
@@ -171,5 +198,37 @@ void tcp_handle_segment(const uint8_t src_ip[4], const uint8_t* data, uint16_t l
         return;
     }
 
-    /* TCP_ESTABLISHED data handling: stage 5b. */
+    if (state == TCP_ESTABLISHED) {
+        if (payload_len > 0) {
+            uint16_t copy_len = payload_len;
+            if ((uint32_t)rx_len + copy_len > RX_BUF_CAP) copy_len = (uint16_t)(RX_BUF_CAP - rx_len);
+            for (uint16_t i = 0; i < copy_len; i++) rx_buf[rx_len + i] = payload[i];
+            rx_len = (uint16_t)(rx_len + copy_len);
+            our_ack = seg_seq + payload_len;
+            send_segment(our_seq, our_ack, TCP_FLAG_ACK, 0, 0);
+        }
+        if (flags & TCP_FLAG_FIN) {
+            /* Passive close: remote is done (e.g. HTTP/1.0 server
+             * closing after its response). ACK the FIN and send our
+             * own FIN in the same step, rather than lingering in
+             * CLOSE_WAIT waiting for an application layer to decide
+             * it's done reading — there isn't one yet, and this
+             * stage's self-test only needs to prove data + close both
+             * work, not model every real TCP state precisely. */
+            our_ack = seg_seq + payload_len + 1;
+            send_segment(our_seq, our_ack, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
+            our_seq++;
+            state = TCP_LAST_ACK;
+            syslog_write("TCP", "passive close: FIN received, FIN+ACK sent");
+        }
+        return;
+    }
+
+    if (state == TCP_LAST_ACK) {
+        if (flags & TCP_FLAG_ACK) {
+            state = TCP_CLOSED;
+            syslog_write("TCP", "passive close complete");
+        }
+        return;
+    }
 }

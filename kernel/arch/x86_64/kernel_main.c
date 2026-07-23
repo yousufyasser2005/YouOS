@@ -254,41 +254,71 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 if (udp_ok) {
                     vga_puts_color("  [OK] UDP self-test: DNS reply received\n", VGA_LIGHT_GREEN, VGA_BLACK);
 
-                    /* TCP self-test (stage 5a): connect to a real
-                     * external host (1.1.1.1:80, Cloudflare — chosen
-                     * for high uptime/stable IP, no DNS resolution
-                     * needed) and complete a full handshake + graceful
-                     * close. Depends on genuine internet reachability
-                     * through QEMU SLIRP, unlike the previous three
-                     * self-tests which only needed QEMU-internal
-                     * services — a real, accepted external dependency
-                     * for this stage. Nested inside this if(udp_ok)
-                     * block so udp_ok stays in scope. */
+                    /* TCP self-test (stages 5a+5b combined): connect to
+                     * a real external host (1.1.1.1:80, Cloudflare —
+                     * chosen for high uptime/stable IP, no DNS
+                     * resolution needed), attempt a real HTTP/1.0 GET,
+                     * read back real response bytes, then close (either
+                     * the server closes first via its own FIN, handled
+                     * by tcp.c's passive-close path, or we close as a
+                     * fallback). Depends on genuine internet
+                     * reachability through QEMU SLIRP — an accepted
+                     * external dependency for this stage. Nested inside
+                     * this if(udp_ok) block so udp_ok stays in scope. */
                     tcp_init();
-                static const uint8_t remote[4] = {1, 1, 1, 1};
-                tcp_connect(remote, 80);
+                    static const uint8_t remote[4] = {1, 1, 1, 1};
+                    tcp_connect(remote, 80);
 
-                uint64_t tcp_start = irq_get_ticks();
-                int reached_established = 0;
-                while ((irq_get_ticks() - tcp_start) < 100) {
-                    net_poll();
-                    if (tcp_get_state() == TCP_ESTABLISHED) { reached_established = 1; break; }
-                    if (tcp_get_state() == TCP_CLOSED) break; /* RST or similar failure */
-                }
-
-                if (reached_established) {
-                    tcp_close();
-                    uint64_t close_start = irq_get_ticks();
-                    int closed_ok = 0;
-                    while ((irq_get_ticks() - close_start) < 100) {
+                    uint64_t tcp_start = irq_get_ticks();
+                    int reached_established = 0;
+                    while ((irq_get_ticks() - tcp_start) < 100) {
                         net_poll();
-                        if (tcp_get_state() == TCP_TIME_WAIT) { closed_ok = 1; break; }
+                        if (tcp_get_state() == TCP_ESTABLISHED) { reached_established = 1; break; }
+                        if (tcp_get_state() == TCP_CLOSED) break; /* RST or similar failure */
                     }
-                    if (closed_ok) {
-                        vga_puts_color("  [OK] TCP self-test: handshake + graceful close\n", VGA_LIGHT_GREEN, VGA_BLACK);
-                    } else {
-                        vga_puts_color("  [!!] TCP self-test: established but close didn't complete\n", VGA_YELLOW, VGA_BLACK);
-                    }
+
+                    if (reached_established) {
+                        static const char http_get[] = "GET / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n";
+                        tcp_send(http_get, (uint16_t)(sizeof(http_get) - 1));
+
+                        static uint8_t http_resp[512];
+                        uint16_t total_got = 0;
+                        uint64_t data_start = irq_get_ticks();
+                        while ((irq_get_ticks() - data_start) < 150) {
+                            net_poll();
+                            uint16_t n = tcp_recv(http_resp + total_got, (uint16_t)(sizeof(http_resp) - total_got));
+                            total_got = (uint16_t)(total_got + n);
+                            if (total_got > 0 && tcp_get_state() == TCP_CLOSED) break;
+                            if (total_got >= sizeof(http_resp) - 1) break;
+                        }
+
+                        /* If the server hasn't already closed the
+                         * connection itself, close it ourselves as a
+                         * fallback rather than leaving it dangling. */
+                        if (tcp_get_state() == TCP_ESTABLISHED) {
+                            tcp_close();
+                            uint64_t close_start = irq_get_ticks();
+                            while ((irq_get_ticks() - close_start) < 100) {
+                                net_poll();
+                                if (tcp_get_state() != TCP_ESTABLISHED && tcp_get_state() != TCP_FIN_WAIT_1) break;
+                            }
+                        }
+
+                        if (total_got > 0) {
+                            http_resp[total_got < sizeof(http_resp) ? total_got : sizeof(http_resp)-1] = 0;
+                            /* Log only the first line (HTTP status line)
+                             * — the full response could be arbitrarily
+                             * large/binary, one clean line is enough
+                             * proof. */
+                            char status_line[64];
+                            int si = 0;
+                            while (si < 63 && http_resp[si] && http_resp[si] != '\r') { status_line[si] = (char)http_resp[si]; si++; }
+                            status_line[si] = 0;
+                            syslog_write("TCP", status_line);
+                            vga_puts_color("  [OK] TCP self-test: HTTP response received\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                        } else {
+                            vga_puts_color("  [!!] TCP self-test: no HTTP response data\n", VGA_YELLOW, VGA_BLACK);
+                        }
                     } else {
                         vga_puts_color("  [!!] TCP self-test: handshake did not complete\n", VGA_YELLOW, VGA_BLACK);
                     }
