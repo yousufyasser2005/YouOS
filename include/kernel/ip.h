@@ -20,7 +20,7 @@
 #define IP_PROTO_UDP  17
 #define IP_PROTO_TCP  6
 
-void ip_init(const uint8_t our_ip[4]);
+void ip_init(const uint8_t our_ip[4], const uint8_t netmask[4], const uint8_t gateway_ip[4]);
 void ip_get_our_ip(uint8_t out[4]);
 
 /* Called from net.c's Ethernet-level dispatch (EtherType 0x0800) with

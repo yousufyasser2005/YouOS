@@ -24,6 +24,7 @@
 #include <kernel/arp.h>
 #include <kernel/ip.h>
 #include <kernel/udp.h>
+#include <kernel/tcp.h>
 #include <kernel/uhci.h>
 #include <kernel/ipc.h>
 #include <kernel/crash.h>
@@ -152,6 +153,8 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
          * Single shared source of truth, passed to both arp_init() and
          * ip_init() rather than each module guessing its own copy. */
         static const uint8_t our_static_ip[4] = {10, 0, 2, 15};
+        static const uint8_t our_netmask[4]   = {255, 255, 255, 0};
+        static const uint8_t our_gateway[4]   = {10, 0, 2, 2};
         arp_init(our_static_ip);
         /* Self-test: ARP-probe the QEMU user-mode gateway (10.0.2.2)
          * and confirm the reply actually gets parsed into the ARP
@@ -175,7 +178,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
              * echo request and waits for the actual reply to come back
              * through ip_handle_frame(), same "prove it end-to-end"
              * standard stage 2 used for ARP. */
-            ip_init(our_static_ip);
+            ip_init(our_static_ip, our_netmask, our_gateway);
             uint8_t icmp_pkt[12];
             icmp_pkt[0] = 8;  /* type: echo request */
             icmp_pkt[1] = 0;  /* code */
@@ -250,6 +253,45 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 }
                 if (udp_ok) {
                     vga_puts_color("  [OK] UDP self-test: DNS reply received\n", VGA_LIGHT_GREEN, VGA_BLACK);
+
+                    /* TCP self-test (stage 5a): connect to a real
+                     * external host (1.1.1.1:80, Cloudflare — chosen
+                     * for high uptime/stable IP, no DNS resolution
+                     * needed) and complete a full handshake + graceful
+                     * close. Depends on genuine internet reachability
+                     * through QEMU SLIRP, unlike the previous three
+                     * self-tests which only needed QEMU-internal
+                     * services — a real, accepted external dependency
+                     * for this stage. Nested inside this if(udp_ok)
+                     * block so udp_ok stays in scope. */
+                    tcp_init();
+                static const uint8_t remote[4] = {1, 1, 1, 1};
+                tcp_connect(remote, 80);
+
+                uint64_t tcp_start = irq_get_ticks();
+                int reached_established = 0;
+                while ((irq_get_ticks() - tcp_start) < 100) {
+                    net_poll();
+                    if (tcp_get_state() == TCP_ESTABLISHED) { reached_established = 1; break; }
+                    if (tcp_get_state() == TCP_CLOSED) break; /* RST or similar failure */
+                }
+
+                if (reached_established) {
+                    tcp_close();
+                    uint64_t close_start = irq_get_ticks();
+                    int closed_ok = 0;
+                    while ((irq_get_ticks() - close_start) < 100) {
+                        net_poll();
+                        if (tcp_get_state() == TCP_TIME_WAIT) { closed_ok = 1; break; }
+                    }
+                    if (closed_ok) {
+                        vga_puts_color("  [OK] TCP self-test: handshake + graceful close\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                    } else {
+                        vga_puts_color("  [!!] TCP self-test: established but close didn't complete\n", VGA_YELLOW, VGA_BLACK);
+                    }
+                    } else {
+                        vga_puts_color("  [!!] TCP self-test: handshake did not complete\n", VGA_YELLOW, VGA_BLACK);
+                    }
                 } else {
                     vga_puts_color("  [!!] UDP self-test: no DNS reply\n", VGA_YELLOW, VGA_BLACK);
                 }

@@ -3,6 +3,7 @@
 #include <kernel/rtl8139.h>
 #include <kernel/syslog.h>
 #include <kernel/udp.h>
+#include <kernel/tcp.h>
 
 typedef struct __attribute__((packed)) {
     uint8_t  dst_mac[6];
@@ -37,8 +38,25 @@ typedef struct __attribute__((packed)) {
 #define ICMP_ECHO_REPLY   0
 
 static uint8_t our_ip[4];
+static uint8_t netmask[4];
+static uint8_t gateway_ip[4];
 static uint8_t our_mac[6];
 static uint16_t ip_id_counter = 1;
+
+/* Real routing decision: is dest_ip on our local subnet (compare
+ * against our_ip under netmask), or does it need to go via the
+ * default gateway? Without this, ip_send() tried to ARP-resolve the
+ * FINAL destination directly for every packet — works by coincidence
+ * for on-subnet targets (which is all every self-test before TCP
+ * happened to use: the gateway itself, and QEMU's DNS proxy, both
+ * within 10.0.2.0/24), but silently fails for anything genuinely
+ * off-link, since no real router answers ARP for an address that
+ * isn't its own. */
+static int is_on_link(const uint8_t dest_ip[4]) {
+    for (int i = 0; i < 4; i++)
+        if ((our_ip[i] & netmask[i]) != (dest_ip[i] & netmask[i])) return 0;
+    return 1;
+}
 
 /* Set by ip_handle_frame() when an ICMP echo reply arrives — read by
  * the boot self-test in kernel_main.c, same pattern as stage 1's
@@ -59,9 +77,11 @@ static uint16_t checksum16(const void* data, int len) {
     return (uint16_t)~sum;
 }
 
-void ip_init(const uint8_t ip[4]) {
+void ip_init(const uint8_t ip[4], const uint8_t mask[4], const uint8_t gw[4]) {
     rtl8139_get_mac(our_mac);
     for (int i = 0; i < 4; i++) our_ip[i] = ip[i];
+    for (int i = 0; i < 4; i++) netmask[i] = mask[i];
+    for (int i = 0; i < 4; i++) gateway_ip[i] = gw[i];
 }
 
 void ip_get_our_ip(uint8_t out[4]) {
@@ -69,9 +89,14 @@ void ip_get_our_ip(uint8_t out[4]) {
 }
 
 int ip_send(const uint8_t dest_ip[4], uint8_t protocol, const void* payload, uint16_t payload_len) {
+    /* Resolve whichever MAC we actually need on the wire: the real
+     * destination if on-link, otherwise the gateway's — the IP header
+     * itself always carries the true dest_ip regardless, only the
+     * Ethernet-layer destination MAC changes. */
+    const uint8_t* arp_target = is_on_link(dest_ip) ? dest_ip : gateway_ip;
     uint8_t dest_mac[6];
-    if (!arp_resolve(dest_ip, dest_mac)) {
-        arp_request(dest_ip); /* kick off resolution; caller must poll + retry */
+    if (!arp_resolve(arp_target, dest_mac)) {
+        arp_request(arp_target); /* kick off resolution; caller must poll + retry */
         return -1;
     }
 
@@ -165,5 +190,5 @@ void ip_handle_frame(const uint8_t* data, uint16_t len) {
 
     if (ip->protocol == IP_PROTO_ICMP) handle_icmp(ip, body, body_len);
     else if (ip->protocol == IP_PROTO_UDP) udp_handle_packet(ip->src_ip, body, body_len);
-    /* TCP dispatch: future stage. */
+    else if (ip->protocol == IP_PROTO_TCP) tcp_handle_segment(ip->src_ip, body, body_len);
 }
