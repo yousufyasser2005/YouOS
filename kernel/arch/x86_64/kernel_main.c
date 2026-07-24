@@ -21,6 +21,7 @@
 #include <kernel/fb.h>
 #include <kernel/pci.h>
 #include <kernel/rtl8139.h>
+#include <kernel/ac97.h>
 #include <kernel/arp.h>
 #include <kernel/ip.h>
 #include <kernel/udp.h>
@@ -147,6 +148,30 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     ipc_init();
     pci_init();
     uhci_init();
+    if (ac97_init()) {
+        /* Self-test: synthesize a short, quiet square-wave tone and
+         * play it, then confirm the completion interrupt actually
+         * fires within a timeout — proof DMA + IRQ genuinely work,
+         * same standard as RTL8139's stage-1 self-test. Doesn't (and
+         * can't, in an automated boot log) confirm audible correctness
+         * — that's a manual listening check, not something to gate
+         * the self-test's pass/fail on. */
+        static int16_t tone[800];
+        for (int i = 0; i < 800; i++) tone[i] = (int16_t)((i / 20) % 2 ? 3000 : -3000);
+        extern uint64_t irq_get_ticks(void);
+        extern volatile int last_playback_done;
+        ac97_play_pcm(tone, 800, 44100, 1);
+        uint64_t tone_start = irq_get_ticks();
+        int tone_ok = 0;
+        while ((irq_get_ticks() - tone_start) < 100) {
+            if (last_playback_done) { tone_ok = 1; break; }
+        }
+        if (tone_ok) {
+            vga_puts_color("  [OK] AC97 self-test: playback interrupt fired\n", VGA_LIGHT_GREEN, VGA_BLACK);
+        } else {
+            vga_puts_color("  [!!] AC97 self-test: no playback interrupt\n", VGA_YELLOW, VGA_BLACK);
+        }
+    }
     if (rtl8139_init()) {
         /* Static placeholder — QEMU user-net's default guest address.
          * Real DHCP is a future stage; nothing here negotiates this.
