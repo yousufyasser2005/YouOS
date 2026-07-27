@@ -33,7 +33,10 @@
 #define SYS_CHMOD 33
 #define SYS_CHOWN 34
 #define SYS_FILEINFO 35
-#define SYSCALL_COUNT  36
+#define SYS_PLAY_PCM 36
+#define SYS_PCM_DONE 37
+#define SYS_AC97_DEBUG 38
+#define SYSCALL_COUNT  39
 
 void syscall_init(void);
 #endif

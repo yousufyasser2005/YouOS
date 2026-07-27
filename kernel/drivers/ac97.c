@@ -29,7 +29,15 @@ static inline uint16_t inw(uint16_t p){ uint16_t v; __asm__ volatile("inw %1,%0"
 #define NABM_GLOB_CNT   0x2C /* global control, u32 */
 
 #define CR_RPBM  0x01 /* run/pause bus master */
+#define CR_RR    0x02 /* reset registers (self-clearing) — resets
+                          CIV/LVI/SR/PICB back to a known state; this
+                          is the real, documented AC97 mechanism for
+                          restarting a halted channel, not just
+                          toggling RPBM (which was tried first and
+                          didn't work — RPBM alone doesn't reset the
+                          hardware's internal CIV tracking). */
 #define CR_IOCE  0x10 /* interrupt on completion enable */
+#define SR_DCH   0x01 /* DMA controller halted */
 #define SR_BCIS  0x08 /* buffer completion interrupt status */
 
 static uint16_t nam_base = 0, nabm_base = 0;
@@ -46,11 +54,42 @@ typedef struct __attribute__((packed)) {
 static uint64_t bdl_phys = 0;
 volatile int last_playback_done = 0;
 
+/* AC97's CIV/LVI registers are 5-bit fields — the BDL wraps at 32
+ * entries max. Reusing the same slot index every submission doesn't
+ * work: the controller only detects "new work available" when LVI
+ * actually CHANGES value. Writing the same LVI twice in a row is not
+ * a meaningful edge/trigger, so after the DMA engine finishes
+ * processing one entry and halts (CIV==LVI, nothing further queued),
+ * re-submitting into that same slot with the same LVI value silently
+ * does nothing — this was the bug behind "only the first chunk of a
+ * multi-chunk WAV ever plays." Real drivers rotate through the ring;
+ * this does the same. */
+
+
+static volatile uint32_t irq_fire_count = 0;
+static volatile uint32_t irq_bcis_count = 0;
+static volatile uint16_t last_sr_raw = 0;
+static volatile uint8_t  last_civ = 0, last_piv = 0;
+
 static void ac97_irq(registers_t* regs) {
     (void)regs;
+    irq_fire_count++;
     uint16_t sr = inw(nabm_base + NABM_PO_SR);
-    if (sr & SR_BCIS) last_playback_done = 1;
+    last_sr_raw = sr;
+    last_civ = inb(nabm_base + NABM_PO_CIV);
+    if (sr & SR_BCIS) { last_playback_done = 1; irq_bcis_count++; }
     outw(nabm_base + NABM_PO_SR, sr); /* ack by writing back what was read */
+}
+
+uint32_t ac97_debug_irq_fire_count(void) { return irq_fire_count; }
+uint32_t ac97_debug_irq_bcis_count(void) { return irq_bcis_count; }
+uint32_t ac97_debug_last_sr(void) { return last_sr_raw; }
+uint32_t ac97_debug_last_civ(void) { return last_civ; }
+uint32_t ac97_debug_current_civ_lvi(void) {
+    uint8_t civ = inb(nabm_base + NABM_PO_CIV);
+    uint8_t lvi = inb(nabm_base + NABM_PO_LVI);
+    uint16_t sr = inw(nabm_base + NABM_PO_SR);
+    return ((uint32_t)civ << 24) | ((uint32_t)lvi << 16) | sr;
 }
 
 int ac97_init(void) {
@@ -120,14 +159,45 @@ int ac97_play_pcm(const int16_t* samples, uint32_t sample_count,
     int16_t* buf = (int16_t*)audio_buf_phys;
     for (uint32_t i = 0; i < sample_count; i++) buf[i] = samples[i];
 
+    /* Strategy change after several failed "keep the ring running
+     * continuously" attempts (plain RPBM toggle, then a forced 0->1
+     * transition on detected halt — neither actually restarted a
+     * genuinely halted channel; CIV/LVI/SR evidence showed the
+     * hardware correctly halting at CIV==LVI==4 and simply never
+     * resuming). Instead: full stop -> RR (Reset Registers, the real
+     * documented AC97 restart mechanism) -> reconfigure -> start,
+     * for EVERY chunk, always using BDL slot 0. This exactly repeats
+     * the one sequence already proven to work correctly on the very
+     * first try (the original boot self-test's clean one-shot start).
+     * Trades perfectly gapless playback for actually working. */
+
+    /* Stop, if running, and wait for a real halt. */
+    outb(nabm_base + NABM_PO_CR, 0);
+    for (volatile int i = 0; i < 10000; i++) {
+        if (inw(nabm_base + NABM_PO_SR) & SR_DCH) break;
+    }
+
+    /* Reset registers — self-clearing, resets CIV/LVI/SR/PICB. */
+    outb(nabm_base + NABM_PO_CR, CR_RR);
+    for (volatile int i = 0; i < 10000; i++) {
+        if (!(inb(nabm_base + NABM_PO_CR) & CR_RR)) break;
+    }
+
+    /* Reconfigure from a known-clean state — always slot 0, matching
+     * where RR just reset CIV/LVI to. */
+    outl_(nabm_base + NABM_PO_BDBAR, (uint32_t)bdl_phys);
     ac97_bdl_entry_t* bdl = (ac97_bdl_entry_t*)bdl_phys;
     bdl[0].ptr = (uint32_t)audio_buf_phys;
     bdl[0].samples = (uint16_t)(sample_count / channels * channels); /* keep frame-aligned */
     bdl[0].ctrl = BDL_CTRL_IOC;
 
     last_playback_done = 0;
-    outb(nabm_base + NABM_PO_LVI, 0); /* one valid entry: index 0 */
+    outb(nabm_base + NABM_PO_LVI, 0);
     outb(nabm_base + NABM_PO_CR, CR_RPBM | CR_IOCE);
 
     return 0;
+}
+
+int ac97_is_done(void) {
+    return last_playback_done;
 }

@@ -283,6 +283,29 @@ static uint64_t sys_fileinfo(uint64_t path, uint64_t uid_out, uint64_t gid_out,
     return (uint64_t)(int64_t)ycfs_get_owner((const char*)path, (uint32_t*)uid_out,
                                               (uint32_t*)gid_out, (uint16_t*)perm_out);
 }
+static uint64_t sys_play_pcm(uint64_t ptr, uint64_t count, uint64_t rate,
+                              uint64_t channels, uint64_t a5) {
+    (void)a5;
+    extern int ac97_play_pcm(const int16_t*, uint32_t, uint32_t, uint8_t);
+    return (uint64_t)(int64_t)ac97_play_pcm((const int16_t*)ptr, (uint32_t)count,
+                                             (uint32_t)rate, (uint8_t)channels);
+}
+static uint64_t sys_pcm_done(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1; (void)a2; (void)a3; (void)a4; (void)a5;
+    extern int ac97_is_done(void);
+    return (uint64_t)ac97_is_done();
+}
+static uint64_t sys_ac97_debug(uint64_t which, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2; (void)a3; (void)a4; (void)a5;
+    extern uint32_t ac97_debug_irq_fire_count(void);
+    extern uint32_t ac97_debug_irq_bcis_count(void);
+    extern uint32_t ac97_debug_last_sr(void);
+    extern uint32_t ac97_debug_current_civ_lvi(void);
+    if (which == 0) return ac97_debug_irq_fire_count();
+    if (which == 1) return ac97_debug_irq_bcis_count();
+    if (which == 2) return ac97_debug_last_sr();
+    return ac97_debug_current_civ_lvi();
+}
 typedef uint64_t (*syscall_fn_t)(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);
 
 static uint64_t sys_readcrash(uint64_t buf,uint64_t sz,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -398,7 +421,10 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_youdo,
     sys_chmod,
     sys_chown,
-    sys_fileinfo
+    sys_fileinfo,
+    sys_play_pcm,
+    sys_pcm_done,
+    sys_ac97_debug
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

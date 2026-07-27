@@ -19,10 +19,10 @@ Also seeds two permission-test files for exercising Phase 3.5 item #4
   /ycfs/usertest.txt  — uid 1 (first non-root user created via
                          auth_create_user, e.g. via Settings > Add
                          Account), perm 0600 (owner rw only)
-These let you verify that a non-root user can read/write usertest.txt
-but is denied on roottest.txt, and vice versa for root on usertest.txt
-(root bypasses all checks, so root should be able to read/write both —
-the real test is that a non-root user is denied on roottest.txt).
+
+Also seeds a test WAV file for the media-support effort's audio driver
+work, read from an external path on the host (not part of the repo):
+  /ycfs/ding.wav
 """
 import struct, sys, os
 
@@ -43,9 +43,14 @@ INODE_TABLE_BLOCK  = 3
 INODE_SIZE = 128
 INODE_TABLE_BLOCKS = (TOTAL_INODES * INODE_SIZE + BLOCK_SIZE - 1) // BLOCK_SIZE
 JOURNAL_START_BLOCK = INODE_TABLE_BLOCK + INODE_TABLE_BLOCKS
-JOURNAL_BLOCKS = 128   # 512KB — room for ~42 two-block journal entries + commits
+JOURNAL_BLOCKS = 128
 DATA_START_BLOCK = JOURNAL_START_BLOCK + JOURNAL_BLOCKS
 ROOT_INODE = 1
+
+# External asset — not part of the repo, read from the host filesystem
+# at format time. If missing, ding.wav is simply skipped (mkycfs.py
+# still works fine without it, same as wall.bmp's optional handling).
+DING_WAV_PATH = "/home/yousuf/codes/os/assets/sounds/ding.wav"
 
 
 def pack_superblock(free_blocks, free_inodes):
@@ -87,6 +92,49 @@ def make_bitmap(used_indices, total_bits):
     return bytes(bm) + b'\x00' * (BLOCK_SIZE - len(bm))
 
 
+def allocate_indirect_file(content, next_block):
+    if not content:
+        return [], 0, b"", next_block, 0
+    nblocks = (len(content) + BLOCK_SIZE - 1) // BLOCK_SIZE
+    blocks = list(range(next_block, next_block + nblocks))
+    next_block += nblocks
+    direct = blocks[:12]
+    overflow = blocks[12:]
+    indirect_block = 0
+    indirect_ptrs = b""
+    if overflow:
+        indirect_block = next_block
+        next_block += 1
+        ptrs_per_block = BLOCK_SIZE // 4
+        assert len(overflow) <= ptrs_per_block, \
+            f"file too large: needs {len(overflow)} indirect pointers, max {ptrs_per_block}"
+        ptrs = overflow + [0] * (ptrs_per_block - len(overflow))
+        indirect_ptrs = struct.pack(f'<{ptrs_per_block}I', *ptrs)
+    blocks_used = len(direct) + (1 if indirect_block else 0)
+    return direct, indirect_block, indirect_ptrs, next_block, blocks_used
+
+
+def write_indirect_file(f, direct, indirect_block, indirect_ptrs, content):
+    offset = 0
+    for blk in direct:
+        chunk = content[offset:offset+BLOCK_SIZE]
+        f.seek(YCFS_START + blk * BLOCK_SIZE)
+        f.write(pad_block(chunk))
+        offset += BLOCK_SIZE
+    if indirect_block:
+        ptrs_per_block = BLOCK_SIZE // 4
+        overflow_blocks = struct.unpack(f'<{ptrs_per_block}I', indirect_ptrs)
+        for blk in overflow_blocks:
+            if blk == 0:
+                break
+            chunk = content[offset:offset+BLOCK_SIZE]
+            f.seek(YCFS_START + blk * BLOCK_SIZE)
+            f.write(pad_block(chunk))
+            offset += BLOCK_SIZE
+        f.seek(YCFS_START + indirect_block * BLOCK_SIZE)
+        f.write(indirect_ptrs)
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: mkycfs.py disk.img")
@@ -116,6 +164,11 @@ def main():
         with open(wallpaper_path, "rb") as wf:
             wallpaper_content = wf.read()
 
+    ding_content = b""
+    if os.path.exists(DING_WAV_PATH):
+        with open(DING_WAV_PATH, "rb") as df:
+            ding_content = df.read()
+
     root_block     = DATA_START_BLOCK + 0
     docs_block     = DATA_START_BLOCK + 1
     hello_block    = DATA_START_BLOCK + 2
@@ -124,24 +177,11 @@ def main():
     usertest_block = DATA_START_BLOCK + 5
     next_block     = DATA_START_BLOCK + 6
 
-    wallpaper_direct   = []
-    wallpaper_indirect = 0
-    wallpaper_indirect_ptrs = b""
-    overflow = []
-    if wallpaper_content:
-        nblocks = (len(wallpaper_content) + BLOCK_SIZE - 1) // BLOCK_SIZE
-        wallpaper_blocks = list(range(next_block, next_block + nblocks))
-        next_block += nblocks
-        wallpaper_direct = wallpaper_blocks[:12]
-        overflow = wallpaper_blocks[12:]
-        if overflow:
-            wallpaper_indirect = next_block
-            next_block += 1
-            ptrs_per_block = BLOCK_SIZE // 4
-            assert len(overflow) <= ptrs_per_block, \
-                f"wallpaper too large: needs {len(overflow)} indirect pointers, max {ptrs_per_block}"
-            ptrs = overflow + [0] * (ptrs_per_block - len(overflow))
-            wallpaper_indirect_ptrs = struct.pack(f'<{ptrs_per_block}I', *ptrs)
+    wallpaper_direct, wallpaper_indirect, wallpaper_ptrs, next_block, wallpaper_blocks_used = \
+        allocate_indirect_file(wallpaper_content, next_block)
+
+    ding_direct, ding_indirect, ding_ptrs, next_block, ding_blocks_used = \
+        allocate_indirect_file(ding_content, next_block)
 
     total_used_blocks = next_block
 
@@ -151,6 +191,8 @@ def main():
                      pack_dirent(7, "usertest.txt", YCFS_TYPE_FILE))
     if wallpaper_content:
         root_dirents += pack_dirent(5, "wall.bmp", YCFS_TYPE_FILE)
+    if ding_content:
+        root_dirents += pack_dirent(8, "ding.wav", YCFS_TYPE_FILE)
     docs_dirents = pack_dirent(4, "notes.txt", YCFS_TYPE_FILE)
 
     inode0 = pack_inode(0, 0, 0, 0, [])
@@ -163,8 +205,7 @@ def main():
     used_inodes = [0, 1, 2, 3, 4]
 
     if wallpaper_content:
-        blocks_used = len(wallpaper_direct) + (1 if wallpaper_indirect else 0)
-        inode5 = pack_inode(YCFS_TYPE_FILE, len(wallpaper_content), 1, blocks_used,
+        inode5 = pack_inode(YCFS_TYPE_FILE, len(wallpaper_content), 1, wallpaper_blocks_used,
                              wallpaper_direct, indirect=wallpaper_indirect)
         inode_table += inode5
         used_inodes.append(5)
@@ -177,6 +218,14 @@ def main():
                          [usertest_block], uid=1, gid=1, perm=0o600)
     inode_table += inode6 + inode7
     used_inodes += [6, 7]
+
+    if ding_content:
+        inode8 = pack_inode(YCFS_TYPE_FILE, len(ding_content), 1, ding_blocks_used,
+                             ding_direct, indirect=ding_indirect)
+        inode_table += inode8
+        used_inodes.append(8)
+    else:
+        inode_table += pack_inode(0, 0, 0, 0, [])
 
     inode_table += b'\x00' * (INODE_TABLE_BLOCKS * BLOCK_SIZE - len(inode_table))
 
@@ -204,27 +253,25 @@ def main():
         f.seek(YCFS_START + roottest_block * BLOCK_SIZE);     f.write(pad_block(roottest_content))
         f.seek(YCFS_START + usertest_block * BLOCK_SIZE);     f.write(pad_block(usertest_content))
         if wallpaper_content:
-            offset = 0
-            all_data_blocks = wallpaper_direct + (overflow if wallpaper_indirect else [])
-            for blk in all_data_blocks:
-                chunk = wallpaper_content[offset:offset+BLOCK_SIZE]
-                f.seek(YCFS_START + blk * BLOCK_SIZE)
-                f.write(pad_block(chunk))
-                offset += BLOCK_SIZE
-            if wallpaper_indirect:
-                f.seek(YCFS_START + wallpaper_indirect * BLOCK_SIZE)
-                f.write(wallpaper_indirect_ptrs)
+            write_indirect_file(f, wallpaper_direct, wallpaper_indirect, wallpaper_ptrs, wallpaper_content)
+        if ding_content:
+            write_indirect_file(f, ding_direct, ding_indirect, ding_ptrs, ding_content)
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
     print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
-    print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt" + (", wall.bmp" if wallpaper_content else ""))
+    print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt" +
+          (", wall.bmp" if wallpaper_content else "") + (", ding.wav" if ding_content else ""))
     print(f"  hello.txt (inode 2, {len(hello_content)} bytes)")
     print(f"  docs/ (inode 3) -> notes.txt")
     print(f"  notes.txt (inode 4, {len(notes_content)} bytes)")
     if wallpaper_content:
-        print(f"  wall.bmp (inode 5, {len(wallpaper_content)} bytes, {total_used_blocks - (DATA_START_BLOCK+6)} blocks)")
+        print(f"  wall.bmp (inode 5, {len(wallpaper_content)} bytes, {wallpaper_blocks_used} blocks)")
     print(f"  roottest.txt (inode 6, uid=0 perm=0600, {len(roottest_content)} bytes)")
     print(f"  usertest.txt (inode 7, uid=1 perm=0600, {len(usertest_content)} bytes)")
+    if ding_content:
+        print(f"  ding.wav (inode 8, {len(ding_content)} bytes, {ding_blocks_used} blocks)")
+    elif not os.path.exists(DING_WAV_PATH):
+        print(f"  ding.wav skipped (not found at {DING_WAV_PATH})")
 
 
 if __name__ == '__main__':

@@ -140,3 +140,12 @@ static inline int sys_chown(const char* path, unsigned int uid, unsigned int gid
     return (int)_sc(SYS_CHOWN,(uint64_t)path,(uint64_t)uid,(uint64_t)gid,0,0); }
 static inline int sys_fileinfo(const char* path, unsigned int* uid, unsigned int* gid, unsigned short* perm){
     return (int)_sc(SYS_FILEINFO,(uint64_t)path,(uint64_t)uid,(uint64_t)gid,(uint64_t)perm,0); }
+#define SYS_PLAY_PCM 36
+#define SYS_PCM_DONE 37
+static inline int sys_play_pcm(const short* samples, unsigned int count, unsigned int rate, unsigned int channels){
+    return (int)_sc(SYS_PLAY_PCM,(uint64_t)samples,(uint64_t)count,(uint64_t)rate,(uint64_t)channels,0); }
+static inline int sys_pcm_done(void){
+    return (int)_sc(SYS_PCM_DONE,0,0,0,0,0); }
+#define SYS_AC97_DEBUG 38
+static inline unsigned int sys_ac97_debug(unsigned int which){
+    return (unsigned int)_sc(SYS_AC97_DEBUG,(uint64_t)which,0,0,0,0); }

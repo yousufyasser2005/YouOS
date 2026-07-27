@@ -25,3 +25,6 @@ int ac97_init(void);
  * queueing yet, one buffer at a time. Returns 0 on success. */
 int ac97_play_pcm(const int16_t* samples, uint32_t sample_count,
                    uint32_t sample_rate, uint8_t channels);
+
+/* Non-blocking: 1 if the last submitted buffer has finished playing. */
+int ac97_is_done(void);

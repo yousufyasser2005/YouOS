@@ -875,6 +875,96 @@ static void np_load(const char*path,const char*shortname){
     np.cursor=0;np.scroll=0;np.modified=0;
     int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
 }
+#define WAV_CHUNK_SAMPLES 2048
+/* Non-blocking playback state — advanced a little each frame from
+ * wav_poll() (called from the main loop, same place uhci_poll()/
+ * net_poll() equivalents would run), never blocking the desktop. An
+ * earlier version of this function played the whole file inline with
+ * a tight while(!sys_pcm_done()){} spin per chunk, which froze the
+ * entire UI (mouse/keyboard/redraw all stall) for the file's whole
+ * duration — a real usability bug, not acceptable even for a first
+ * pass. Single active playback at a time, matching the "one thing at
+ * a time" shape most of this codebase's driver-facing state already
+ * has (fm_current, np_current, etc.). */
+static u64  wav_fd=0;
+static int  wav_playing=0;
+static u32  wav_channels=0,wav_sample_rate=0;
+static u32  wav_samples_total=0,wav_samples_read=0;
+static short wav_chunk[WAV_CHUNK_SAMPLES];
+
+static void play_wav_file(const char*path){
+    tprint("WAV: play_wav_file called");
+    if(wav_playing){tprint("WAV: already playing, ignored");return;}
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0){tprint("WAV: sys_open failed");return;}
+    tprint("WAV: file opened OK");
+
+    u8 riff_hdr[12];
+    if(sys_fread(fd,riff_hdr,12)!=12||riff_hdr[0]!='R'||riff_hdr[1]!='I'||riff_hdr[2]!='F'||riff_hdr[3]!='F'||
+       riff_hdr[8]!='W'||riff_hdr[9]!='A'||riff_hdr[10]!='V'||riff_hdr[11]!='E'){tprint("WAV: bad RIFF header");sys_close(fd);return;}
+
+    /* Walk chunks until 'fmt ' and 'data' are both found — a real WAV
+     * can have other chunks (e.g. LIST/INFO metadata) before 'data',
+     * so this can't assume a fixed layout the way the BMP loader does
+     * with its one simple known header. */
+    u16 channels=0,bits_per_sample=0;u32 sample_rate=0;
+    int have_fmt=0;
+    u32 data_size=0;
+    int have_data=0;
+    while(!have_data){
+        u8 chdr[8];
+        if(sys_fread(fd,chdr,8)!=8)break;
+        u32 csize=(u32)chdr[4]|((u32)chdr[5]<<8)|((u32)chdr[6]<<16)|((u32)chdr[7]<<24);
+        if(chdr[0]=='f'&&chdr[1]=='m'&&chdr[2]=='t'&&chdr[3]==' '){
+            u8 fmt[16];
+            u32 to_read=csize<16?csize:16;
+            if(sys_fread(fd,fmt,to_read)!=(s64)to_read){sys_close(fd);return;}
+            channels=(u16)fmt[2]|((u16)fmt[3]<<8);
+            sample_rate=(u32)fmt[4]|((u32)fmt[5]<<8)|((u32)fmt[6]<<16)|((u32)fmt[7]<<24);
+            bits_per_sample=(u16)fmt[14]|((u16)fmt[15]<<8);
+            have_fmt=1;
+            if(csize>16){u8 skip[64];u32 rem=csize-16;while(rem>0){u32 c=rem>64?64:rem;sys_fread(fd,skip,c);rem-=c;}}
+        } else if(chdr[0]=='d'&&chdr[1]=='a'&&chdr[2]=='t'&&chdr[3]=='a'){
+            data_size=csize;have_data=1;
+        } else {
+            u8 skip[64];u32 rem=csize;while(rem>0){u32 c=rem>64?64:rem;if(sys_fread(fd,skip,c)!=(s64)c){sys_close(fd);return;}rem-=c;}
+        }
+    }
+    if(!have_fmt||!have_data||bits_per_sample!=16||channels<1||channels>2){tprint("WAV: format validation failed");sys_close(fd);return;}
+    tprint("WAV: format OK, starting playback");
+
+    wav_fd=fd;
+    wav_channels=(u32)channels;
+    wav_sample_rate=sample_rate;
+    wav_samples_total=data_size/2;
+    wav_samples_read=0;
+    wav_playing=1;
+    /* Submit the first chunk now; subsequent chunks come from wav_poll(). */
+    u32 want=wav_samples_total<WAV_CHUNK_SAMPLES?wav_samples_total:WAV_CHUNK_SAMPLES;
+    s64 got=sys_fread(wav_fd,wav_chunk,(u64)want*2);
+    if(got<=0){sys_close(wav_fd);wav_playing=0;return;}
+    u32 got_samples=(u32)got/2;
+    sys_play_pcm(wav_chunk,got_samples,wav_sample_rate,wav_channels);
+    wav_samples_read+=got_samples;
+}
+
+static void wav_poll(void){
+    if(!wav_playing)return;
+    if(!sys_pcm_done())return; /* hardware still playing the last chunk */
+    if(wav_samples_read>=wav_samples_total){
+        sys_close(wav_fd);
+        wav_playing=0;
+        tprint("WAV: playback finished");
+        return;
+    }
+    u32 want=wav_samples_total-wav_samples_read;
+    if(want>WAV_CHUNK_SAMPLES)want=WAV_CHUNK_SAMPLES;
+    s64 got=sys_fread(wav_fd,wav_chunk,(u64)want*2);
+    if(got<=0){sys_close(wav_fd);wav_playing=0;return;}
+    u32 got_samples=(u32)got/2;
+    sys_play_pcm(wav_chunk,got_samples,wav_sample_rate,wav_channels);
+    wav_samples_read+=got_samples;
+}
 static void np_do_save(void){
     char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
     int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
@@ -3519,6 +3609,11 @@ int main(void){
                                     char*n=fm_entries[fi].name;int nl=slen(n);
                                     if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
                                         open_notepad(n);
+                                    else if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='w'&&n[nl-2]=='a'&&n[nl-1]=='v'){
+                                        char wpath[220];
+                                        fm_build_path(wpath,sizeof(wpath),fm_path,n);
+                                        play_wav_file(wpath);
+                                    }
                                 }
                             } else {
                                 fm_selected=fi;fm_last_fi=fi;fm_last_tick=ticks;
@@ -3792,6 +3887,7 @@ int main(void){
             }
         }
         draw_cursor(mouse_x,mouse_y);
+        wav_poll();
         flush();sys_yield();
     }
     return 0;
