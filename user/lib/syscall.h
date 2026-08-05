@@ -147,5 +147,16 @@ static inline int sys_play_pcm(const short* samples, unsigned int count, unsigne
 static inline int sys_pcm_done(void){
     return (int)_sc(SYS_PCM_DONE,0,0,0,0,0); }
 #define SYS_AC97_DEBUG 38
+#define SYS_PCM_CAN_SUBMIT 39
+static inline int sys_pcm_can_submit(void){
+    return (int)_sc(SYS_PCM_CAN_SUBMIT,0,0,0,0,0); }
+static inline unsigned int sys_ac97_debug_idx(unsigned int which, unsigned int idx){
+    return (unsigned int)_sc(SYS_AC97_DEBUG,(uint64_t)which,(uint64_t)idx,0,0,0); }
+#define SYS_PLAY_STREAM 40
+#define SYS_STREAM_ACTIVE 41
+static inline int sys_play_stream(const short* samples, unsigned int count, unsigned int rate, unsigned int channels){
+    return (int)_sc(SYS_PLAY_STREAM,(uint64_t)samples,(uint64_t)count,(uint64_t)rate,(uint64_t)channels,0); }
+static inline int sys_stream_active(void){
+    return (int)_sc(SYS_STREAM_ACTIVE,0,0,0,0,0); }
 static inline unsigned int sys_ac97_debug(unsigned int which){
     return (unsigned int)_sc(SYS_AC97_DEBUG,(uint64_t)which,0,0,0,0); }

@@ -36,7 +36,10 @@
 #define SYS_PLAY_PCM 36
 #define SYS_PCM_DONE 37
 #define SYS_AC97_DEBUG 38
-#define SYSCALL_COUNT  39
+#define SYS_PCM_CAN_SUBMIT 39
+#define SYS_PLAY_STREAM 40
+#define SYS_STREAM_ACTIVE 41
+#define SYSCALL_COUNT  42
 
 void syscall_init(void);
 #endif

@@ -7,6 +7,9 @@ typedef unsigned short u16;
 typedef unsigned char  u8;
 typedef signed long    s64;
 
+#include "inflate.h"
+#include "png_decoder.h"
+
 static u64 FB_W,FB_H;
 #define MAX_FB_W 1920
 #define MAX_FB_H 1080
@@ -262,8 +265,9 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_NOTEPAD  3
 #define WIN_SETTINGS 4
 #define WIN_CALC     5
-static const int win_glyph_map[6]={0,2,1,3,5,4};
-static int win_glyph_idx(int wid){if(wid<0||wid>5)return 0;return win_glyph_map[wid];}
+#define WIN_IMGVIEW  6
+static const int win_glyph_map[7]={0,2,1,3,5,4,1};
+static int win_glyph_idx(int wid){if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
 #define NOTIF_MAX 20
 #define NOTIF_POPUP_TICKS 500
 static char notif_title[NOTIF_MAX][32];
@@ -467,28 +471,40 @@ static int wm_draw_frame(int i){
 static char tlines[32][128];
 static int  trow=0,tinput_len=0,cursor_blink=0;
 static char tinput[128];
+static int u32_append_dec(char*buf,int bi,unsigned int v){
+    if(v==0){buf[bi++]='0';return bi;}
+    char tmp[10];int ti=0;
+    while(v){tmp[ti++]=(char)('0'+(v%10));v/=10;}
+    while(ti>0)buf[bi++]=tmp[--ti];
+    return bi;
+}
 static void tprint(const char*s){
     if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;}
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
 }
 static void do_shutdown(void);
 static void do_restart(void);
+static void wav_debug_print(void);
+static void wav_scan_file(const char*path);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1;
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
     for(int k=0;sll[k]||cmd[k];k++)if(sll[k]!=cmd[k]){msll=0;break;}
     for(int k=0;mdb[k]||cmd[k];k++)if(mdb[k]!=cmd[k]){mmdb=0;break;}
+    for(int k=0;wvd[k]||cmd[k];k++)if(wvd[k]!=cmd[k]){mwvd=0;break;}
+    for(int k=0;rsl[k]||cmd[k];k++)if(rsl[k]!=cmd[k]){mrsl=0;break;}
+    for(int k=0;wsc[k]||cmd[k];k++)if(wsc[k]!=cmd[k]){mwsc=0;break;}
     for(int k=0;clr[k]||cmd[k];k++) if(clr[k]!=cmd[k]) {mc=0;break;}
     for(int k=0;abt[k]||cmd[k];k++) if(abt[k]!=cmd[k]) {ma=0;break;}
     for(int k=0;sd[k]||cmd[k];k++)  if(sd[k]!=cmd[k])  {ms=0;break;}
     for(int k=0;rb[k]||cmd[k];k++)  if(rb[k]!=cmd[k])  {mrb=0;break;}
     for(int k=0;shl[k]||cmd[k];k++) if(shl[k]!=cmd[k]) {msh=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell ipc crashlog syslog mousedbg");
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell ipc crashlog syslog mousedbg wavdbg restartlog");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop");
@@ -547,6 +563,96 @@ static void tcmd(const char*cmd){
         out2[oi2++]='0'+(dlt%10);
         out2[oi2]=0;
         tprint(out2);
+    }
+    else if(mwvd){
+        unsigned int a=sys_ac97_debug(3); /* civ<<24 | lvi<<16 | sr */
+        unsigned int civ=(a>>24)&0xFF, lvi=(a>>16)&0xFF, sr=a&0xFFFF;
+        unsigned int b=sys_ac97_debug(4); /* submitted<<16 | completed */
+        unsigned int sub=(b>>16)&0xFFFF, comp=b&0xFFFF;
+        unsigned int c=sys_ac97_debug(5); /* restarts<<16 | fastpath */
+        unsigned int rst=(c>>16)&0xFFFF, fp=c&0xFFFF;
+        char l1[64];int i1=0;
+        const char*p1="civ=";int j1=0;while(p1[j1])l1[i1++]=p1[j1++];
+        i1=u32_append_dec(l1,i1,civ);
+        const char*p2=" lvi=";j1=0;while(p2[j1])l1[i1++]=p2[j1++];
+        i1=u32_append_dec(l1,i1,lvi);
+        const char*p3=" sr=";j1=0;while(p3[j1])l1[i1++]=p3[j1++];
+        i1=u32_append_dec(l1,i1,sr);
+        l1[i1]=0;tprint(l1);
+        char l2[64];int i2=0;
+        const char*p4="submitted=";j1=0;while(p4[j1])l2[i2++]=p4[j1++];
+        i2=u32_append_dec(l2,i2,sub);
+        const char*p5=" completed=";j1=0;while(p5[j1])l2[i2++]=p5[j1++];
+        i2=u32_append_dec(l2,i2,comp);
+        l2[i2]=0;tprint(l2);
+        char l3[64];int i3=0;
+        const char*p6="restarts=";j1=0;while(p6[j1])l3[i3++]=p6[j1++];
+        i3=u32_append_dec(l3,i3,rst);
+        const char*p7=" fastpath=";j1=0;while(p7[j1])l3[i3++]=p7[j1++];
+        i3=u32_append_dec(l3,i3,fp);
+        l3[i3]=0;tprint(l3);
+        unsigned int irqfire=sys_ac97_debug(0), irqbcis=sys_ac97_debug(1);
+        char l4[64];int i4=0;
+        const char*p8="irq_fire=";int j4=0;while(p8[j4])l4[i4++]=p8[j4++];
+        i4=u32_append_dec(l4,i4,irqfire);
+        const char*p9=" irq_bcis=";j4=0;while(p9[j4])l4[i4++]=p9[j4++];
+        i4=u32_append_dec(l4,i4,irqbcis);
+        l4[i4]=0;tprint(l4);
+        unsigned int csd=sys_ac97_debug(8);
+        char l5[48];int i5=0;
+        const char*p10="cold_start_ticks=";int j5=0;while(p10[j5])l5[i5++]=p10[j5++];
+        i5=u32_append_dec(l5,i5,csd);
+        l5[i5]=0;tprint(l5);
+        unsigned int afp=sys_ac97_debug(9);
+        char l6[48];int i6=0;
+        const char*p11="last_alloc_fail_pages=";int j6=0;while(p11[j6])l6[i6++]=p11[j6++];
+        i6=u32_append_dec(l6,i6,afp);
+        l6[i6]=0;tprint(l6);
+        unsigned int fa=sys_ac97_debug(10), fb=sys_ac97_debug(11);
+        unsigned int loop_iters=fa>>16, phys_fail=fa&0xFFFF;
+        char l7[64];int i7=0;
+        const char*p12="feed_iters=";int j7=0;while(p12[j7])l7[i7++]=p12[j7++];
+        i7=u32_append_dec(l7,i7,loop_iters);
+        const char*p13=" phys_fail=";j7=0;while(p13[j7])l7[i7++]=p13[j7++];
+        i7=u32_append_dec(l7,i7,phys_fail);
+        const char*p14=" submit_fail=";j7=0;while(p14[j7])l7[i7++]=p14[j7++];
+        i7=u32_append_dec(l7,i7,fb);
+        l7[i7]=0;tprint(l7);
+        unsigned int fv=sys_ac97_debug(12), fpv=sys_ac97_debug(13), av=sys_ac97_debug(14);
+        char l8[80];int i8=0;
+        const char*p15="alloc_virt=0x";int j8=0;while(p15[j8])l8[i8++]=p15[j8++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(av>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l8[i8++]=hx[hk++];}
+        const char*p16=" fail_virt=0x";j8=0;while(p16[j8])l8[i8++]=p16[j8++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(fv>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l8[i8++]=hx[hk++];}
+        const char*p17=" fail_pagevirt=0x";j8=0;while(p17[j8])l8[i8++]=p17[j8++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(fpv>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l8[i8++]=hx[hk++];}
+        l8[i8]=0;tprint(l8);
+        unsigned int fvh=sys_ac97_debug(15), avh=sys_ac97_debug(16), pml4=sys_ac97_debug(17);
+        char l9[80];int i9=0;
+        const char*p18="alloc_hi=0x";int j9=0;while(p18[j9])l9[i9++]=p18[j9++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(avh>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l9[i9++]=hx[hk++];}
+        const char*p19=" fail_hi=0x";j9=0;while(p19[j9])l9[i9++]=p19[j9++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(fvh>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l9[i9++]=hx[hk++];}
+        const char*p20=" pml4=0x";j9=0;while(p20[j9])l9[i9++]=p20[j9++];
+        {char hx[9];for(int k=7;k>=0;k--){unsigned int nib=(pml4>>(k*4))&0xF;hx[7-k]=nib<10?('0'+nib):('A'+nib-10);}hx[8]=0;int hk=0;while(hx[hk])l9[i9++]=hx[hk++];}
+        l9[i9]=0;tprint(l9);
+        wav_debug_print();
+    }
+    else if(mrsl){
+        int any=0;
+        for(unsigned int idx=0;idx<16;idx++){
+            unsigned int v=sys_ac97_debug_idx(7,idx);
+            if(v==0xFFFFFFFFu)break;
+            any=1;
+            char l[48];int li=0;
+            const char*p1="restart at chunk #";int j1=0;while(p1[j1])l[li++]=p1[j1++];
+            li=u32_append_dec(l,li,v);
+            l[li]=0;tprint(l);
+        }
+        if(!any)tprint("No mid-stream restarts logged.");
+    }
+    else if(mwsc){
+        wav_scan_file("/ycfs/ding.wav");
     }
     else if(mi){
         char msg[32]="hello from desktop";
@@ -875,23 +981,38 @@ static void np_load(const char*path,const char*shortname){
     np.cursor=0;np.scroll=0;np.modified=0;
     int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
 }
-#define WAV_CHUNK_SAMPLES 2048
-/* Non-blocking playback state — advanced a little each frame from
- * wav_poll() (called from the main loop, same place uhci_poll()/
- * net_poll() equivalents would run), never blocking the desktop. An
- * earlier version of this function played the whole file inline with
- * a tight while(!sys_pcm_done()){} spin per chunk, which froze the
- * entire UI (mouse/keyboard/redraw all stall) for the file's whole
- * duration — a real usability bug, not acceptable even for a first
- * pass. Single active playback at a time, matching the "one thing at
- * a time" shape most of this codebase's driver-facing state already
- * has (fm_current, np_current, etc.). */
-static u64  wav_fd=0;
+/* ═══ WAV PLAYBACK (streaming-engine redesign) ═══════════════════
+ * Previous architecture: chunked userspace polling, one
+ * ac97_play_pcm() call per WAV_CHUNK_SAMPLES, paced from the main
+ * loop's wav_poll(). Real evidence this session (DMA output captured
+ * via QEMU's -audiodev wav backend) proved this fundamentally could
+ * not deliver continuous audio, however the ring/restart/pacing
+ * logic was tuned — the userspace poll loop cannot be paced
+ * precisely enough against real wall-clock audio timing under KVM.
+ *
+ * New architecture: read the ENTIRE WAV file into memory here, then
+ * hand it to the kernel in ONE call (sys_play_stream). The kernel
+ * copies it and refills the AC97 ring directly from its own
+ * completion interrupt handler — see kernel/drivers/ac97.c for the
+ * real fix. wav_poll() now just checks sys_stream_active(). */
+#define WAV_MAX_SAMPLES 307200 /* 600KB static buffer; covers ding.wav
+ * (102622 samples) with real headroom. Real limitation: files larger
+ * than this cap are not supported yet — a true arbitrary-length
+ * streaming path would need the kernel-timer-driven chunked refill
+ * approach instead of "load whole file", future work if ever needed. */
+static short wav_full_buf[WAV_MAX_SAMPLES];
 static int  wav_playing=0;
 static u32  wav_channels=0,wav_sample_rate=0;
-static u32  wav_samples_total=0,wav_samples_read=0;
-static short wav_chunk[WAV_CHUNK_SAMPLES];
+static u32  wav_samples_total=0;
 
+static void wav_debug_print(void){
+    char l[64];int i=0;
+    const char*p1="wav_playing=";int j=0;while(p1[j])l[i++]=p1[j++];
+    l[i++]=wav_playing?'1':'0';
+    const char*p2=" total=";j=0;while(p2[j])l[i++]=p2[j++];
+    i=u32_append_dec(l,i,wav_samples_total);
+    l[i]=0;tprint(l);
+}
 static void play_wav_file(const char*path){
     tprint("WAV: play_wav_file called");
     if(wav_playing){tprint("WAV: already playing, ignored");return;}
@@ -903,10 +1024,6 @@ static void play_wav_file(const char*path){
     if(sys_fread(fd,riff_hdr,12)!=12||riff_hdr[0]!='R'||riff_hdr[1]!='I'||riff_hdr[2]!='F'||riff_hdr[3]!='F'||
        riff_hdr[8]!='W'||riff_hdr[9]!='A'||riff_hdr[10]!='V'||riff_hdr[11]!='E'){tprint("WAV: bad RIFF header");sys_close(fd);return;}
 
-    /* Walk chunks until 'fmt ' and 'data' are both found — a real WAV
-     * can have other chunks (e.g. LIST/INFO metadata) before 'data',
-     * so this can't assume a fixed layout the way the BMP loader does
-     * with its one simple known header. */
     u16 channels=0,bits_per_sample=0;u32 sample_rate=0;
     int have_fmt=0;
     u32 data_size=0;
@@ -931,39 +1048,117 @@ static void play_wav_file(const char*path){
         }
     }
     if(!have_fmt||!have_data||bits_per_sample!=16||channels<1||channels>2){tprint("WAV: format validation failed");sys_close(fd);return;}
-    tprint("WAV: format OK, starting playback");
+    {
+        char fb[64];int fi=0;
+        const char*fp1="WAV: channels=";int fj=0;while(fp1[fj])fb[fi++]=fp1[fj++];
+        fi=u32_append_dec(fb,fi,channels);
+        const char*fp2=" rate=";fj=0;while(fp2[fj])fb[fi++]=fp2[fj++];
+        fi=u32_append_dec(fb,fi,sample_rate);
+        fb[fi]=0;tprint(fb);
+    }
 
-    wav_fd=fd;
+    u32 total_samples=data_size/2;
+    if(total_samples>WAV_MAX_SAMPLES){
+        tprint("WAV: file too large for static buffer, truncating");
+        total_samples=WAV_MAX_SAMPLES;
+    }
+    u32 read_so_far=0;
+    while(read_so_far<total_samples){
+        u32 want=total_samples-read_so_far;
+        s64 got=sys_fread(fd,wav_full_buf+read_so_far,(u64)want*2);
+        if(got<=0)break;
+        read_so_far+=(u32)got/2;
+    }
+    sys_close(fd);
+    if(read_so_far==0){tprint("WAV: read failed, no data");return;}
+
+    tprint("WAV: whole file read, starting stream playback");
+    sys_ac97_debug(6); /* reset restart-position log for this playback */
     wav_channels=(u32)channels;
     wav_sample_rate=sample_rate;
-    wav_samples_total=data_size/2;
-    wav_samples_read=0;
+    wav_samples_total=read_so_far;
     wav_playing=1;
-    /* Submit the first chunk now; subsequent chunks come from wav_poll(). */
-    u32 want=wav_samples_total<WAV_CHUNK_SAMPLES?wav_samples_total:WAV_CHUNK_SAMPLES;
-    s64 got=sys_fread(wav_fd,wav_chunk,(u64)want*2);
-    if(got<=0){sys_close(wav_fd);wav_playing=0;return;}
-    u32 got_samples=(u32)got/2;
-    sys_play_pcm(wav_chunk,got_samples,wav_sample_rate,wav_channels);
-    wav_samples_read+=got_samples;
+    if(sys_play_stream(wav_full_buf,read_so_far,sample_rate,(u32)channels)!=0){
+        tprint("WAV: sys_play_stream failed");
+        wav_playing=0;
+    }
+}
+/* Whole-file amplitude/nonzero scan — separate from the streaming
+ * playback path, reads the file independently start-to-finish to
+ * answer one question directly: is there real, nonzero PCM data
+ * anywhere in this file, or is it silence/garbage throughout? The
+ * first-8-samples dump alone can't answer this (many short UI dings
+ * legitimately start with some silence). */
+static void wav_scan_file(const char*path){
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0){tprint("SCAN: open failed");return;}
+    u8 riff_hdr[12];
+    if(sys_fread(fd,riff_hdr,12)!=12){tprint("SCAN: bad header");sys_close(fd);return;}
+    u32 data_size=0;int have_data=0;
+    while(!have_data){
+        u8 chdr[8];
+        if(sys_fread(fd,chdr,8)!=8)break;
+        u32 csize=(u32)chdr[4]|((u32)chdr[5]<<8)|((u32)chdr[6]<<16)|((u32)chdr[7]<<24);
+        if(chdr[0]=='f'&&chdr[1]=='m'&&chdr[2]=='t'&&chdr[3]==' '){
+            u8 skip[64];u32 rem=csize;while(rem>0){u32 c=rem>64?64:rem;sys_fread(fd,skip,c);rem-=c;}
+        } else if(chdr[0]=='d'&&chdr[1]=='a'&&chdr[2]=='t'&&chdr[3]=='a'){
+            data_size=csize;have_data=1;
+        } else {
+            u8 skip[64];u32 rem=csize;while(rem>0){u32 c=rem>64?64:rem;if(sys_fread(fd,skip,c)!=(s64)c){sys_close(fd);return;}rem-=c;}
+        }
+    }
+    if(!have_data){tprint("SCAN: no data chunk");sys_close(fd);return;}
+    u32 total_samples=data_size/2;
+    u32 nonzero=0;int maxabs=0;u32 firstnz=0xFFFFFFFF;
+    short buf[1024];u32 read_so_far=0;
+    while(read_so_far<total_samples){
+        u32 want=total_samples-read_so_far;
+        if(want>1024)want=1024;
+        s64 got=sys_fread(fd,buf,(u64)want*2);
+        if(got<=0)break;
+        u32 gs=(u32)got/2;
+        for(u32 i=0;i<gs;i++){
+            int v=buf[i];
+            if(v!=0){
+                nonzero++;
+                if(firstnz==0xFFFFFFFF)firstnz=read_so_far+i;
+                int av=v<0?-v:v;
+                if(av>maxabs)maxabs=av;
+            }
+        }
+        read_so_far+=gs;
+    }
+    sys_close(fd);
+    char l[80];int li=0;
+    const char*p1="SCAN: total=";int j=0;while(p1[j])l[li++]=p1[j++];
+    li=u32_append_dec(l,li,total_samples);
+    const char*p2=" nonzero=";j=0;while(p2[j])l[li++]=p2[j++];
+    li=u32_append_dec(l,li,nonzero);
+    const char*p3=" maxabs=";j=0;while(p3[j])l[li++]=p3[j++];
+    li=u32_append_dec(l,li,(unsigned int)maxabs);
+    l[li]=0;tprint(l);
+    char l2[64];int li2=0;
+    const char*p4="SCAN: first_nonzero_at=";j=0;while(p4[j])l2[li2++]=p4[j++];
+    li2=u32_append_dec(l2,li2,firstnz==0xFFFFFFFF?0:firstnz);
+    l2[li2]=0;tprint(l2);
 }
 
 static void wav_poll(void){
     if(!wav_playing)return;
-    if(!sys_pcm_done())return; /* hardware still playing the last chunk */
-    if(wav_samples_read>=wav_samples_total){
-        sys_close(wav_fd);
-        wav_playing=0;
-        tprint("WAV: playback finished");
-        return;
+    if(sys_stream_active())return; /* kernel is still IRQ-feeding the ring */
+    wav_playing=0;
+    tprint("WAV: playback finished");
+    {
+        unsigned int pc=sys_ac97_debug(5);
+        unsigned int restarts=pc>>16, fastpath=pc&0xFFFF;
+        char buf[64];int bi=0;
+        const char*lbl="WAV: restarts=";int li=0;while(lbl[li])buf[bi++]=lbl[li++];
+        bi=u32_append_dec(buf,bi,restarts);
+        const char*lbl2=" fastpath=";li=0;while(lbl2[li])buf[bi++]=lbl2[li++];
+        bi=u32_append_dec(buf,bi,fastpath);
+        buf[bi]=0;
+        tprint(buf);
     }
-    u32 want=wav_samples_total-wav_samples_read;
-    if(want>WAV_CHUNK_SAMPLES)want=WAV_CHUNK_SAMPLES;
-    s64 got=sys_fread(wav_fd,wav_chunk,(u64)want*2);
-    if(got<=0){sys_close(wav_fd);wav_playing=0;return;}
-    u32 got_samples=(u32)got/2;
-    sys_play_pcm(wav_chunk,got_samples,wav_sample_rate,wav_channels);
-    wav_samples_read+=got_samples;
 }
 static void np_do_save(void){
     char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
@@ -2000,6 +2195,80 @@ static void open_notepad(const char*fn){
         int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
         np_load(path,fn);
         j=0;while(fn[j]&&j<39){wins[i].title[j]=fn[j];j++;}wins[i].title[j]=0;
+    }
+}
+
+/* ═══ IMAGE VIEWER (PNG) ═══════════════════════════════════════════
+ * Single active image buffer, like WAV's single active playback —
+ * a full RGBA buffer is large (~3MB at the max supported size), so
+ * per-window copies for all 12 possible windows would be prohibitive.
+ * Opening a new PNG reuses the existing viewer window if one's
+ * already open, rather than creating a second one. */
+static u8  img_file_buf[2*1024*1024]; /* raw file bytes, read whole */
+static u8  img_rgba[PNG_MAX_W*PNG_MAX_H*4];
+static u8  img_scratch[PNG_MAX_W*PNG_MAX_H*4 + PNG_MAX_H];
+static int imgview_win=-1;
+static u32 imgview_w=0, imgview_h=0;
+
+static void open_imgview(const char*path, const char*shortname){
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0){tprint("PNG: open failed");return;}
+    u32 got=0;
+    for(;;){
+        if(got>=sizeof(img_file_buf))break;
+        u64 want=sizeof(img_file_buf)-got;
+        s64 r=sys_fread(fd,img_file_buf+got,want);
+        if(r<=0)break;
+        got+=(u32)r;
+    }
+    sys_close(fd);
+    if(got==0){tprint("PNG: read failed, no data");return;}
+
+    png_info_t info=png_decode(img_file_buf,got,img_rgba,img_scratch,sizeof(img_scratch));
+    if(info.error!=PNG_OK){
+        char eb[80];int ei=0;
+        const char*p1="PNG: ";int j=0;while(p1[j])eb[ei++]=p1[j++];
+        const char*msg=png_error_str(info.error);j=0;while(msg[j]&&ei<78)eb[ei++]=msg[j++];
+        eb[ei]=0;tprint(eb);
+        return;
+    }
+
+    imgview_w=info.width; imgview_h=info.height;
+
+    /* Window size = image size, clamped to fit the screen with room
+     * for the titlebar/margins. Larger images display cropped
+     * top-left for now — real scrolling not implemented in this
+     * first version, matching "get it working, iterate later". */
+    int max_w=(int)FB_W-60, max_h=(int)FB_H-TITLEBAR_H-60;
+    int ww=(int)imgview_w<max_w?(int)imgview_w:max_w;
+    int wh=(int)imgview_h+TITLEBAR_H<max_h?(int)imgview_h+TITLEBAR_H:max_h;
+
+    if(imgview_win>=0 && imgview_win<win_count && wins[imgview_win].visible){
+        wins[imgview_win].w=ww; wins[imgview_win].h=wh;
+        wins[imgview_win].minimized=0;
+        focused=imgview_win;
+    } else {
+        int i=wm_new(WIN_IMGVIEW,180,90,ww,wh,"Image Viewer",PURPLE);
+        if(i<0){tprint("PNG: too many windows open");return;}
+        imgview_win=i;
+    }
+    int j=0;while(shortname[j]&&j<39){wins[imgview_win].title[j]=shortname[j];j++;}
+    wins[imgview_win].title[j]=0;
+}
+
+static void draw_imgview_content(int wi){
+    Win*w=&wins[wi];
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+    u32 drawn_w=(u32)cw<imgview_w?(u32)cw:imgview_w;
+    u32 drawn_h=(u32)ch<imgview_h?(u32)ch:imgview_h;
+    for(u32 iy=0;iy<drawn_h;iy++){
+        const u8* row=img_rgba+(u64)iy*imgview_w*4;
+        for(u32 ix=0;ix<drawn_w;ix++){
+            const u8* p=row+ix*4;
+            u32 color=((u32)p[0]<<16)|((u32)p[1]<<8)|(u32)p[2]; /* alpha ignored, no blending yet */
+            px(x+(int)ix,y+(int)iy,color);
+        }
     }
 }
 
@@ -3614,6 +3883,11 @@ int main(void){
                                         fm_build_path(wpath,sizeof(wpath),fm_path,n);
                                         play_wav_file(wpath);
                                     }
+                                    else if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='p'&&n[nl-2]=='n'&&n[nl-1]=='g'){
+                                        char ipath[220];
+                                        fm_build_path(ipath,sizeof(ipath),fm_path,n);
+                                        open_imgview(ipath,n);
+                                    }
                                 }
                             } else {
                                 fm_selected=fi;fm_last_fi=fi;fm_last_tick=ticks;
@@ -3872,6 +4146,7 @@ int main(void){
             else if(wins[i].id==WIN_NOTEPAD){np_current=i;draw_notepad_content(i);}
             else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
+            else if(wins[i].id==WIN_IMGVIEW)draw_imgview_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);

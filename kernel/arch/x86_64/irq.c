@@ -32,6 +32,8 @@ void irq_common_handler(registers_t* regs)
         scheduler_tick();
         if(ticks%10==0)uhci_poll();
         if(ticks%20==0)net_poll();
+        extern void ac97_stream_tick(void);
+        ac97_stream_tick();
         return;
     }
 

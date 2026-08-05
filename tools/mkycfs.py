@@ -52,6 +52,10 @@ ROOT_INODE = 1
 # still works fine without it, same as wall.bmp's optional handling).
 DING_WAV_PATH = "/home/yousuf/codes/os/assets/sounds/ding.wav"
 
+# Same pattern: external asset, not part of the repo, read at format
+# time. If missing, test.png is simply skipped.
+TEST_PNG_PATH = "/home/yousuf/Pictures/Screenshots/Screenshot from 2026-01-13 10-28-37.png"
+
 
 def pack_superblock(free_blocks, free_inodes):
     fields = struct.pack('<15I',
@@ -169,6 +173,11 @@ def main():
         with open(DING_WAV_PATH, "rb") as df:
             ding_content = df.read()
 
+    png_content = b""
+    if os.path.exists(TEST_PNG_PATH):
+        with open(TEST_PNG_PATH, "rb") as pf:
+            png_content = pf.read()
+
     root_block     = DATA_START_BLOCK + 0
     docs_block     = DATA_START_BLOCK + 1
     hello_block    = DATA_START_BLOCK + 2
@@ -183,6 +192,9 @@ def main():
     ding_direct, ding_indirect, ding_ptrs, next_block, ding_blocks_used = \
         allocate_indirect_file(ding_content, next_block)
 
+    png_direct, png_indirect, png_ptrs, next_block, png_blocks_used = \
+        allocate_indirect_file(png_content, next_block)
+
     total_used_blocks = next_block
 
     root_dirents = (pack_dirent(2, "hello.txt", YCFS_TYPE_FILE) +
@@ -193,6 +205,8 @@ def main():
         root_dirents += pack_dirent(5, "wall.bmp", YCFS_TYPE_FILE)
     if ding_content:
         root_dirents += pack_dirent(8, "ding.wav", YCFS_TYPE_FILE)
+    if png_content:
+        root_dirents += pack_dirent(9, "test.png", YCFS_TYPE_FILE)
     docs_dirents = pack_dirent(4, "notes.txt", YCFS_TYPE_FILE)
 
     inode0 = pack_inode(0, 0, 0, 0, [])
@@ -227,6 +241,14 @@ def main():
     else:
         inode_table += pack_inode(0, 0, 0, 0, [])
 
+    if png_content:
+        inode9 = pack_inode(YCFS_TYPE_FILE, len(png_content), 1, png_blocks_used,
+                             png_direct, indirect=png_indirect)
+        inode_table += inode9
+        used_inodes.append(9)
+    else:
+        inode_table += pack_inode(0, 0, 0, 0, [])
+
     inode_table += b'\x00' * (INODE_TABLE_BLOCKS * BLOCK_SIZE - len(inode_table))
 
     inode_bitmap = make_bitmap(used_inodes, TOTAL_INODES)
@@ -256,11 +278,14 @@ def main():
             write_indirect_file(f, wallpaper_direct, wallpaper_indirect, wallpaper_ptrs, wallpaper_content)
         if ding_content:
             write_indirect_file(f, ding_direct, ding_indirect, ding_ptrs, ding_content)
+        if png_content:
+            write_indirect_file(f, png_direct, png_indirect, png_ptrs, png_content)
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
     print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
     print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt" +
-          (", wall.bmp" if wallpaper_content else "") + (", ding.wav" if ding_content else ""))
+          (", wall.bmp" if wallpaper_content else "") + (", ding.wav" if ding_content else "") +
+          (", test.png" if png_content else ""))
     print(f"  hello.txt (inode 2, {len(hello_content)} bytes)")
     print(f"  docs/ (inode 3) -> notes.txt")
     print(f"  notes.txt (inode 4, {len(notes_content)} bytes)")
@@ -272,6 +297,10 @@ def main():
         print(f"  ding.wav (inode 8, {len(ding_content)} bytes, {ding_blocks_used} blocks)")
     elif not os.path.exists(DING_WAV_PATH):
         print(f"  ding.wav skipped (not found at {DING_WAV_PATH})")
+    if png_content:
+        print(f"  test.png (inode 9, {len(png_content)} bytes, {png_blocks_used} blocks)")
+    elif not os.path.exists(TEST_PNG_PATH):
+        print(f"  test.png skipped (not found at {TEST_PNG_PATH})")
 
 
 if __name__ == '__main__':
