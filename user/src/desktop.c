@@ -10,6 +10,7 @@ typedef signed long    s64;
 #include "inflate.h"
 #include "png_decoder.h"
 
+#include "jpeg_decoder.h"
 static u64 FB_W,FB_H;
 #define MAX_FB_W 1920
 #define MAX_FB_H 1080
@@ -2198,21 +2199,29 @@ static void open_notepad(const char*fn){
     }
 }
 
-/* ═══ IMAGE VIEWER (PNG) ═══════════════════════════════════════════
+/* ═══ IMAGE VIEWER (PNG/JPEG) ═══════════════════════════════════════
  * Single active image buffer, like WAV's single active playback —
  * a full RGBA buffer is large (~3MB at the max supported size), so
  * per-window copies for all 12 possible windows would be prohibitive.
- * Opening a new PNG reuses the existing viewer window if one's
- * already open, rather than creating a second one. */
+ * Opening a new image reuses the existing viewer window if one's
+ * already open, rather than creating a second one. Format (PNG vs
+ * JPEG) is picked by file extension in open_imgview(); both decoders
+ * write into the same img_rgba/img_scratch buffers and share this
+ * one draw routine, since draw_imgview_content() only cares about
+ * RGBA pixels + dimensions, not where they came from. */
 static u8  img_file_buf[2*1024*1024]; /* raw file bytes, read whole */
 static u8  img_rgba[PNG_MAX_W*PNG_MAX_H*4];
-static u8  img_scratch[PNG_MAX_W*PNG_MAX_H*4 + PNG_MAX_H];
+/* Sized for whichever decoder needs more: JPEG's chroma-upsampling
+ * scratch (JPEG_SCRATCH_BYTES, ~3.75MB worst case) exceeds PNG's
+ * inflate scratch (~3.00MB) at these same PNG_MAX_W/H==JPEG_MAX_W/H
+ * dimensions, so this sizes to the larger of the two. */
+static u8  img_scratch[JPEG_SCRATCH_BYTES > (PNG_MAX_W*PNG_MAX_H*4+PNG_MAX_H) ? JPEG_SCRATCH_BYTES : (PNG_MAX_W*PNG_MAX_H*4+PNG_MAX_H)];
 static int imgview_win=-1;
 static u32 imgview_w=0, imgview_h=0;
 
 static void open_imgview(const char*path, const char*shortname){
     u64 fd=sys_open(path,0);
-    if((s64)fd<0){tprint("PNG: open failed");return;}
+    if((s64)fd<0){tprint("IMG: open failed");return;}
     u32 got=0;
     for(;;){
         if(got>=sizeof(img_file_buf))break;
@@ -2222,18 +2231,31 @@ static void open_imgview(const char*path, const char*shortname){
         got+=(u32)r;
     }
     sys_close(fd);
-    if(got==0){tprint("PNG: read failed, no data");return;}
+    if(got==0){tprint("IMG: read failed, no data");return;}
 
-    png_info_t info=png_decode(img_file_buf,got,img_rgba,img_scratch,sizeof(img_scratch));
-    if(info.error!=PNG_OK){
+    int nl=slen(shortname);
+    int is_jpeg=(nl>4&&shortname[nl-4]=='.'&&shortname[nl-3]=='j'&&shortname[nl-2]=='p'&&shortname[nl-1]=='g')
+              ||(nl>5&&shortname[nl-5]=='.'&&shortname[nl-4]=='j'&&shortname[nl-3]=='p'&&shortname[nl-2]=='e'&&shortname[nl-1]=='g');
+
+    u32 iw=0,ih=0; u8 ierr=0; const char* errmsg=0;
+    if(is_jpeg){
+        jpeg_info_t info=jpeg_decode(img_file_buf,got,img_rgba,img_scratch,sizeof(img_scratch));
+        iw=info.width; ih=info.height; ierr=info.error;
+        if(ierr!=JPEG_OK) errmsg=jpeg_error_str(ierr);
+    } else {
+        png_info_t info=png_decode(img_file_buf,got,img_rgba,img_scratch,sizeof(img_scratch));
+        iw=info.width; ih=info.height; ierr=info.error;
+        if(ierr!=PNG_OK) errmsg=png_error_str(ierr);
+    }
+    if(errmsg){
         char eb[80];int ei=0;
-        const char*p1="PNG: ";int j=0;while(p1[j])eb[ei++]=p1[j++];
-        const char*msg=png_error_str(info.error);j=0;while(msg[j]&&ei<78)eb[ei++]=msg[j++];
+        const char*p1="IMG: ";int j=0;while(p1[j])eb[ei++]=p1[j++];
+        j=0;while(errmsg[j]&&ei<78)eb[ei++]=errmsg[j++];
         eb[ei]=0;tprint(eb);
         return;
     }
 
-    imgview_w=info.width; imgview_h=info.height;
+    imgview_w=iw; imgview_h=ih;
 
     /* Window size = image size, clamped to fit the screen with room
      * for the titlebar/margins. Larger images display cropped
@@ -3884,6 +3906,12 @@ int main(void){
                                         play_wav_file(wpath);
                                     }
                                     else if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='p'&&n[nl-2]=='n'&&n[nl-1]=='g'){
+                                        char ipath[220];
+                                        fm_build_path(ipath,sizeof(ipath),fm_path,n);
+                                        open_imgview(ipath,n);
+                                    }
+                                    else if((nl>4&&n[nl-4]=='.'&&n[nl-3]=='j'&&n[nl-2]=='p'&&n[nl-1]=='g')
+                                          ||(nl>5&&n[nl-5]=='.'&&n[nl-4]=='j'&&n[nl-3]=='p'&&n[nl-2]=='e'&&n[nl-1]=='g')){
                                         char ipath[220];
                                         fm_build_path(ipath,sizeof(ipath),fm_path,n);
                                         open_imgview(ipath,n);
