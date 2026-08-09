@@ -60,6 +60,10 @@ TEST_PNG_PATH = "/home/yousuf/Pictures/Screenshots/Screenshot from 2026-01-13 10
 # format time. If missing, test.jpg is simply skipped.
 TEST_JPG_PATH = "/home/yousuf/Pictures/Screenshots/test_for_youos.jpg"
 
+# Same pattern again: external asset, not part of the repo, read at
+# format time. If missing, test.ymjp is simply skipped.
+TEST_YMJP_PATH = "/home/yousuf/Pictures/Screenshots/test_for_youos.ymjp"
+
 
 def pack_superblock(free_blocks, free_inodes):
     fields = struct.pack('<15I',
@@ -187,6 +191,11 @@ def main():
         with open(TEST_JPG_PATH, "rb") as jf:
             jpg_content = jf.read()
 
+    ymjp_content = b""
+    if os.path.exists(TEST_YMJP_PATH):
+        with open(TEST_YMJP_PATH, "rb") as yf:
+            ymjp_content = yf.read()
+
     root_block     = DATA_START_BLOCK + 0
     docs_block     = DATA_START_BLOCK + 1
     hello_block    = DATA_START_BLOCK + 2
@@ -207,6 +216,9 @@ def main():
     jpg_direct, jpg_indirect, jpg_ptrs, next_block, jpg_blocks_used = \
         allocate_indirect_file(jpg_content, next_block)
 
+    ymjp_direct, ymjp_indirect, ymjp_ptrs, next_block, ymjp_blocks_used = \
+        allocate_indirect_file(ymjp_content, next_block)
+
     total_used_blocks = next_block
 
     root_dirents = (pack_dirent(2, "hello.txt", YCFS_TYPE_FILE) +
@@ -221,6 +233,8 @@ def main():
         root_dirents += pack_dirent(9, "test.png", YCFS_TYPE_FILE)
     if jpg_content:
         root_dirents += pack_dirent(10, "test.jpg", YCFS_TYPE_FILE)
+    if ymjp_content:
+        root_dirents += pack_dirent(11, "test.ymjp", YCFS_TYPE_FILE)
     docs_dirents = pack_dirent(4, "notes.txt", YCFS_TYPE_FILE)
 
     inode0 = pack_inode(0, 0, 0, 0, [])
@@ -271,6 +285,14 @@ def main():
     else:
         inode_table += pack_inode(0, 0, 0, 0, [])
 
+    if ymjp_content:
+        inode11 = pack_inode(YCFS_TYPE_FILE, len(ymjp_content), 1, ymjp_blocks_used,
+                              ymjp_direct, indirect=ymjp_indirect)
+        inode_table += inode11
+        used_inodes.append(11)
+    else:
+        inode_table += pack_inode(0, 0, 0, 0, [])
+
     inode_table += b'\x00' * (INODE_TABLE_BLOCKS * BLOCK_SIZE - len(inode_table))
 
     inode_bitmap = make_bitmap(used_inodes, TOTAL_INODES)
@@ -304,12 +326,15 @@ def main():
             write_indirect_file(f, png_direct, png_indirect, png_ptrs, png_content)
         if jpg_content:
             write_indirect_file(f, jpg_direct, jpg_indirect, jpg_ptrs, jpg_content)
+        if ymjp_content:
+            write_indirect_file(f, ymjp_direct, ymjp_indirect, ymjp_ptrs, ymjp_content)
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
     print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
     print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt" +
           (", wall.bmp" if wallpaper_content else "") + (", ding.wav" if ding_content else "") +
-          (", test.png" if png_content else "") + (", test.jpg" if jpg_content else ""))
+          (", test.png" if png_content else "") + (", test.jpg" if jpg_content else "") +
+          (", test.ymjp" if ymjp_content else ""))
     print(f"  hello.txt (inode 2, {len(hello_content)} bytes)")
     print(f"  docs/ (inode 3) -> notes.txt")
     print(f"  notes.txt (inode 4, {len(notes_content)} bytes)")
@@ -329,6 +354,10 @@ def main():
         print(f"  test.jpg (inode 10, {len(jpg_content)} bytes, {jpg_blocks_used} blocks)")
     elif not os.path.exists(TEST_JPG_PATH):
         print(f"  test.jpg skipped (not found at {TEST_JPG_PATH})")
+    if ymjp_content:
+        print(f"  test.ymjp (inode 11, {len(ymjp_content)} bytes, {ymjp_blocks_used} blocks)")
+    elif not os.path.exists(TEST_YMJP_PATH):
+        print(f"  test.ymjp skipped (not found at {TEST_YMJP_PATH})")
 
 
 if __name__ == '__main__':

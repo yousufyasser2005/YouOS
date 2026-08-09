@@ -11,6 +11,7 @@ typedef signed long    s64;
 #include "png_decoder.h"
 
 #include "jpeg_decoder.h"
+#include "mjpeg_container.h"
 static u64 FB_W,FB_H;
 #define MAX_FB_W 1920
 #define MAX_FB_H 1080
@@ -267,6 +268,7 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_SETTINGS 4
 #define WIN_CALC     5
 #define WIN_IMGVIEW  6
+#define WIN_VIDEOPLAYER 7
 static const int win_glyph_map[7]={0,2,1,3,5,4,1};
 static int win_glyph_idx(int wid){if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
 #define NOTIF_MAX 20
@@ -2294,6 +2296,143 @@ static void draw_imgview_content(int wi){
     }
 }
 
+/* ═══ VIDEO PLAYER (Motion JPEG / .ymjp) ═══════════════════════════
+ * Same "single active buffer" pattern as the image viewer and WAV
+ * playback — one video plays at a time, reusing fixed static buffers
+ * rather than per-window allocation. Playback is ordinary userspace
+ * polling of sys_ticks() (100Hz PIT, confirmed in kernel_main.c, so
+ * 10ms/tick) from draw_videoplayer_content(), called every redraw —
+ * no IRQ hook needed, unlike WAV's sample-accurate AC97 feed, since
+ * ~10ms of video-frame jitter is imperceptible where audio glitches
+ * are not.
+ *
+ * No sys_fseek/sys_lseek syscall exists (checked) — only sequential
+ * sys_open/sys_fread/sys_close — so, like the image viewer, this
+ * reads the whole file into a static buffer up front rather than
+ * streaming frames from disk. 16MB gives generous headroom (at the
+ * test clip's ~100KB/s, that's well over two minutes of video) while
+ * staying small next to the 249MB free RAM confirmed at boot.
+ *
+ * Decoding happens at most once per *target frame index* change, not
+ * once per redraw tick — draw_videoplayer_content() compares against
+ * vid_last_decoded_frame and skips the (relatively expensive, ~2-3ms)
+ * JPEG decode entirely on ticks where the same frame is still showing.
+ * At the end of the clip, playback holds on the last frame rather than
+ * looping (mjpeg_frame_for_elapsed() clamps) — real loop/replay control
+ * is a later iteration, same spirit as "no scrolling yet" on images. */
+static u8  vid_file_buf[16*1024*1024]; /* raw .ymjp bytes, read whole */
+static u8  vid_rgba[JPEG_MAX_W*JPEG_MAX_H*4];
+static u8  vid_scratch[JPEG_SCRATCH_BYTES]; /* separate from img_scratch:
+                                              * an image viewer and video
+                                              * player window can be open
+                                              * and visible simultaneously */
+static mjpeg_info_t vid_info;
+static int vid_win=-1;
+static u64 vid_start_tick=0;
+static u32 vid_last_decoded_frame=0xFFFFFFFFu; /* sentinel: nothing decoded yet */
+static int vid_paused=0;
+static u64 vid_pause_tick=0; /* tick value when paused; only meaningful while vid_paused */
+
+static void open_videoplayer(const char*path, const char*shortname){
+    u64 fd=sys_open(path,0);
+    if((s64)fd<0){tprint("VID: open failed");return;}
+    u32 got=0;
+    for(;;){
+        if(got>=sizeof(vid_file_buf))break;
+        u64 want=sizeof(vid_file_buf)-got;
+        s64 r=sys_fread(fd,vid_file_buf+got,want);
+        if(r<=0)break;
+        got+=(u32)r;
+    }
+    sys_close(fd);
+    if(got==0){tprint("VID: read failed, no data");return;}
+
+    u8 rc=mjpeg_open(vid_file_buf,got,&vid_info);
+    if(rc!=MJPEG_OK){
+        char eb[80];int ei=0;
+        const char*p1="VID: ";int j=0;while(p1[j])eb[ei++]=p1[j++];
+        const char*em=mjpeg_error_str(rc);
+        j=0;while(em[j]&&ei<78)eb[ei++]=em[j++];
+        eb[ei]=0;tprint(eb);
+        return;
+    }
+    if(vid_info.width==0||vid_info.height==0||vid_info.frame_count==0||
+       vid_info.width>JPEG_MAX_W||vid_info.height>JPEG_MAX_H){
+        tprint("VID: invalid or empty clip");
+        return;
+    }
+
+    int max_w=(int)FB_W-60, max_h=(int)FB_H-TITLEBAR_H-60;
+    int ww=(int)vid_info.width<max_w?(int)vid_info.width:max_w;
+    int wh=(int)vid_info.height+TITLEBAR_H<max_h?(int)vid_info.height+TITLEBAR_H:max_h;
+
+    if(vid_win>=0 && vid_win<win_count && wins[vid_win].visible){
+        wins[vid_win].w=ww; wins[vid_win].h=wh;
+        wins[vid_win].minimized=0;
+        focused=vid_win;
+    } else {
+        int i=wm_new(WIN_VIDEOPLAYER,180,90,ww,wh,"Video Player",PURPLE);
+        if(i<0){tprint("VID: too many windows open");return;}
+        vid_win=i;
+    }
+    int j=0;while(shortname[j]&&j<39){wins[vid_win].title[j]=shortname[j];j++;}
+    wins[vid_win].title[j]=0;
+
+    vid_start_tick=sys_ticks();
+    vid_last_decoded_frame=0xFFFFFFFFu; /* force first-frame decode below */
+    vid_paused=0;
+}
+
+static void draw_videoplayer_content(int wi){
+    Win*w=&wins[wi];
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+
+    /* Loops rather than holding the last frame — a nicer default for
+     * a video player than freezing, now that playback has a pause
+     * control to actually stop it. Pausing freezes elapsed-time
+     * accounting (not just the redraw): vid_start_tick is shifted
+     * forward by the paused duration on resume (see the click
+     * handler), so resuming doesn't "jump" to where playback would
+     * have been had it never paused. */
+    if(!vid_paused){
+        u64 now=sys_ticks();
+        u32 elapsed_ms=(u32)((now-vid_start_tick)*10); /* 100Hz PIT -> 10ms/tick */
+        u32 total_ms=vid_info.frame_count*vid_info.frame_duration_ms;
+        if(total_ms>0) elapsed_ms%=total_ms;
+        u32 frame_idx=mjpeg_frame_for_elapsed(&vid_info,elapsed_ms);
+
+        if(frame_idx!=vid_last_decoded_frame){
+            u32 flen;
+            const u8* fdata=mjpeg_get_frame(&vid_info,frame_idx,&flen);
+            if(fdata){
+                jpeg_info_t jinfo=jpeg_decode(fdata,flen,vid_rgba,vid_scratch,sizeof(vid_scratch));
+                if(jinfo.error==JPEG_OK) vid_last_decoded_frame=frame_idx;
+            }
+        }
+    }
+
+    u32 drawn_w=(u32)cw<vid_info.width?(u32)cw:vid_info.width;
+    u32 drawn_h=(u32)ch<vid_info.height?(u32)ch:vid_info.height;
+    for(u32 iy=0;iy<drawn_h;iy++){
+        const u8* row=vid_rgba+(u64)iy*vid_info.width*4;
+        for(u32 ix=0;ix<drawn_w;ix++){
+            const u8* p=row+ix*4;
+            u32 color=((u32)p[0]<<16)|((u32)p[1]<<8)|(u32)p[2];
+            px(x+(int)ix,y+(int)iy,color);
+        }
+    }
+
+    /* play/pause button overlay, bottom-left of the frame. Rect must
+     * match the click-handling check near the rbtn_down FM
+     * context-menu block exactly — same manual draw/click coordinate
+     * duplication the File Manager's Reload/Up buttons already use. */
+    int bx=x+6,by=y+ch-26,bw=52,bh=20;
+    int bhov=in_box(mouse_x,mouse_y,bx,by,bw,bh);
+    rect(bx,by,bw,bh,bhov?0x21262D:0x161B22);outline(bx,by,bw,bh,BORDER);
+    text(bx+4,by+2,vid_paused?"Play":"Pause",bhov?TEXT:DIM,bhov?0x21262D:0x161B22);
+}
+
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
 typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;int icon_x[N_ICONS];int icon_y[N_ICONS];u32 wallpaper_on;}CfgBlob;
 #define CFG_MAGIC 0xC0DE5E17U
@@ -3332,6 +3471,18 @@ int main(void){
                 wm_focus(fmi);goto click_done;
             }
         }
+        /* video player: play/pause button click (rect matches the one
+         * drawn in draw_videoplayer_content — see comment there) */
+        if(btn_down&&vid_win>=0&&vid_win<win_count&&wins[vid_win].visible&&!wins[vid_win].minimized){
+            Win*vw=&wins[vid_win];
+            int vx=vw->x,vy=vw->y+TITLEBAR_H,vch=vw->h-TITLEBAR_H;
+            int bx=vx+6,by=vy+vch-26,bw=52,bh=20;
+            if(in_box(mouse_x,mouse_y,bx,by,bw,bh)){
+                if(!vid_paused){ vid_paused=1; vid_pause_tick=sys_ticks(); }
+                else { u64 rnow=sys_ticks(); vid_start_tick+=(rnow-vid_pause_tick); vid_paused=0; }
+                goto click_done;
+            }
+        }
         /* right-click: open context menu */
         if(rbtn_down&&drag_win<0){
             rctx_x=mouse_x;rctx_y=mouse_y;rctx_hov=-1;
@@ -3916,6 +4067,11 @@ int main(void){
                                         fm_build_path(ipath,sizeof(ipath),fm_path,n);
                                         open_imgview(ipath,n);
                                     }
+                                    else if(nl>5&&n[nl-5]=='.'&&n[nl-4]=='y'&&n[nl-3]=='m'&&n[nl-2]=='j'&&n[nl-1]=='p'){
+                                        char vpath[220];
+                                        fm_build_path(vpath,sizeof(vpath),fm_path,n);
+                                        open_videoplayer(vpath,n);
+                                    }
                                 }
                             } else {
                                 fm_selected=fi;fm_last_fi=fi;fm_last_tick=ticks;
@@ -4175,6 +4331,7 @@ int main(void){
             else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
             else if(wins[i].id==WIN_IMGVIEW)draw_imgview_content(i);
+            else if(wins[i].id==WIN_VIDEOPLAYER)draw_videoplayer_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
