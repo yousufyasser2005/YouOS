@@ -326,6 +326,8 @@ static uint64_t sys_ac97_debug(uint64_t which, uint64_t a2, uint64_t a3, uint64_
     extern uint32_t ac97_debug_last_alloc_fail_pages(void);
     extern uint32_t ac97_debug_feed_counts_a(void);
     extern uint32_t ac97_debug_feed_counts_b(void);
+    extern uint32_t ac97_stream_played_samples(void);
+    if (which == 12) return ac97_stream_played_samples();
     if (which == 0) return ac97_debug_irq_fire_count();
     if (which == 1) return ac97_debug_irq_bcis_count();
     if (which == 2) return ac97_debug_last_sr();

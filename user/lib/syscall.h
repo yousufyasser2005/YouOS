@@ -160,3 +160,5 @@ static inline int sys_stream_active(void){
     return (int)_sc(SYS_STREAM_ACTIVE,0,0,0,0,0); }
 static inline unsigned int sys_ac97_debug(unsigned int which){
     return (unsigned int)_sc(SYS_AC97_DEBUG,(uint64_t)which,0,0,0,0); }
+static inline unsigned int sys_stream_played_samples(void){
+    return sys_ac97_debug(12); }
