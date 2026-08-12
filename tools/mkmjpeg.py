@@ -6,34 +6,50 @@ baseline JPEG frames, each self-contained (own quant/Huffman tables),
 so the existing jpeg_decode() can decode any frame with no persistent
 state between frames — matches the "get it working, iterate later"
 spirit of the rest of the media effort (no B/P-frame prediction, no
-audio track, no seeking beyond linear frame index — YouOS's own
-sys_fread has no seek syscall either, so this matches what the
-freestanding side can actually do).
+seeking beyond linear frame index).
 
-Usage: python3 tools/mkmjpeg.py input.mp4 output.ymjp [--fps 15] [--width 320] [--height 240] [--quality 5]
+v2 adds an optional embedded mono PCM audio track, muxed automatically
+if the source has an audio stream (use --no-audio to force silent).
+Audio drives playback as the sync master on-device (see
+mjpeg_frame_for_played_samples() in mjpeg_container.h) — video frame
+selection is derived from actual audio playback position, not a
+separate wall-clock timer, so it can't drift.
+
+Usage: python3 tools/mkmjpeg.py input.mp4 output.ymjp [--fps 15] [--width 320] [--height 240] [--quality 5] [--audio-rate 16000] [--no-audio]
 
 Container format (all integers little-endian):
-  Header (24 bytes):
-    char[4]  magic            "YMJP"
-    u8       version          1
-    u8[3]    reserved         0
+  Header (36 bytes):
+    char[4]  magic              "YMJP"
+    u8       version             2
+    u8[3]    reserved            0
     u32      width
     u32      height
     u32      frame_count
     u32      frame_duration_ms   (1000/fps, fixed rate)
-  Then frame_count entries, each:
+    u32      audio_sample_rate   (0 if no audio track)
+    u8       audio_channels      (0 if no audio, else 1 — mono only)
+    u8[3]    reserved
+    u32      audio_sample_count  (0 if no audio track)
+  Then audio_sample_count*2 bytes of raw s16le PCM (absent if 0),
+  then frame_count entries, each:
     u32      frame_len
-    u8[frame_len]  jpeg_data   (baseline SOF0, self-contained)
+    u8[frame_len]  jpeg_data     (baseline SOF0, self-contained)
 
 Requires ffmpeg on PATH. width/height must fit within JPEG_MAX_W/H
 (1024x768) — same bound as the image viewer's still-JPEG support.
+Audio is capped at MJPEG_AC97_MAX_SAMPLES (122880 samples — the
+freestanding AC97 driver's ac97_stream_start() hard limit); mono at a
+modest sample rate (16kHz default) is what makes several seconds of
+audio fit at all. A clip whose audio would exceed the cap fails
+loudly here at pack time rather than misbehaving on-device.
 """
 import struct, sys, os, subprocess, tempfile, shutil, argparse
 
 MAGIC = b"YMJP"
-VERSION = 1
+VERSION = 2
 JPEG_MAX_W = 1024
 JPEG_MAX_H = 768
+AC97_MAX_SAMPLES = 122880
 
 
 def extract_frames(input_path, tmpdir, fps, width, height, quality):
@@ -51,6 +67,33 @@ def extract_frames(input_path, tmpdir, fps, width, height, quality):
     if not files:
         raise RuntimeError("ffmpeg produced no frames — check input path/codec support")
     return [os.path.join(tmpdir, f) for f in files]
+
+
+def probe_has_audio(input_path):
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "a",
+           "-show_entries", "stream=index", "-of", "csv=p=0", input_path]
+    try:
+        out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+        return len(out.strip()) > 0
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False  # no ffprobe, or it errored — treat as "no audio", not fatal
+
+
+def extract_audio(input_path, tmpdir, sample_rate):
+    """Raw s16le mono PCM at the given sample rate. Returns bytes, or
+    b"" if the source has no audio track (checked via ffprobe first,
+    so this doesn't fail the whole pack for a silent source)."""
+    if not probe_has_audio(input_path):
+        return b""
+    out_path = os.path.join(tmpdir, "audio.raw")
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-vn", "-ac", "1", "-ar", str(sample_rate), "-f", "s16le",
+        out_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+    with open(out_path, "rb") as f:
+        return f.read()
 
 
 def verify_baseline(jpeg_bytes, frame_idx):
@@ -80,14 +123,20 @@ def verify_baseline(jpeg_bytes, frame_idx):
     raise RuntimeError(f"frame {frame_idx}: no SOF0 marker found (corrupt frame?)")
 
 
-def pack(frame_paths, width, height, fps, out_path):
+def pack(frame_paths, width, height, fps, audio_bytes, audio_rate, out_path):
     frame_duration_ms = round(1000 / fps)
-    header = struct.pack("<4sBBBBIII", MAGIC, VERSION, 0, 0, 0, width, height, len(frame_paths))
-    header += struct.pack("<I", frame_duration_ms)
-    assert len(header) == 24, f"header size drifted: {len(header)}"
+    audio_sample_count = len(audio_bytes) // 2
+    audio_channels = 1 if audio_sample_count > 0 else 0
+    effective_rate = audio_rate if audio_sample_count > 0 else 0
+
+    header = struct.pack("<4sBBBBIIII", MAGIC, VERSION, 0, 0, 0,
+                          width, height, len(frame_paths), frame_duration_ms)
+    header += struct.pack("<IBBBBI", effective_rate, audio_channels, 0, 0, 0, audio_sample_count)
+    assert len(header) == 36, f"header size drifted: {len(header)}"
 
     with open(out_path, "wb") as out:
         out.write(header)
+        out.write(audio_bytes)
         total_jpeg_bytes = 0
         for idx, fp in enumerate(frame_paths):
             with open(fp, "rb") as f:
@@ -97,7 +146,7 @@ def pack(frame_paths, width, height, fps, out_path):
             out.write(data)
             total_jpeg_bytes += len(data)
 
-    return frame_duration_ms, total_jpeg_bytes
+    return frame_duration_ms, total_jpeg_bytes, audio_sample_count, effective_rate
 
 
 def main():
@@ -108,6 +157,8 @@ def main():
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument("--height", type=int, default=240)
     ap.add_argument("--quality", type=int, default=5, help="ffmpeg -q:v (2=best/largest .. 31=worst/smallest)")
+    ap.add_argument("--audio-rate", type=int, default=16000, help="mono PCM sample rate for the embedded audio track")
+    ap.add_argument("--no-audio", action="store_true", help="force a silent .ymjp even if the source has audio")
     args = ap.parse_args()
 
     if args.width > JPEG_MAX_W or args.height > JPEG_MAX_H:
@@ -120,10 +171,25 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix="mkmjpeg_")
     try:
         frames = extract_frames(args.input, tmpdir, args.fps, args.width, args.height, args.quality)
-        frame_duration_ms, total_jpeg_bytes = pack(frames, args.width, args.height, args.fps, args.output)
+
+        audio_bytes = b"" if args.no_audio else extract_audio(args.input, tmpdir, args.audio_rate)
+        audio_sample_count = len(audio_bytes) // 2
+        if audio_sample_count > AC97_MAX_SAMPLES:
+            max_secs = AC97_MAX_SAMPLES / args.audio_rate
+            got_secs = audio_sample_count / args.audio_rate
+            print(f"error: audio track is {got_secs:.2f}s ({audio_sample_count} samples at "
+                  f"{args.audio_rate}Hz mono), exceeds the AC97 driver's hard cap of "
+                  f"{AC97_MAX_SAMPLES} samples ({max_secs:.2f}s max). Trim the source, lower "
+                  f"--audio-rate, or pass --no-audio for a silent clip.", file=sys.stderr)
+            sys.exit(1)
+
+        frame_duration_ms, total_jpeg_bytes, asc, arate = pack(
+            frames, args.width, args.height, args.fps, audio_bytes, args.audio_rate, args.output)
         out_size = os.path.getsize(args.output)
+        audio_desc = f"{asc} samples @ {arate}Hz mono ({asc/arate:.2f}s)" if asc > 0 else "none (silent)"
         print(f"wrote {args.output}: {len(frames)} frames, {args.width}x{args.height} @ {args.fps}fps "
-              f"({frame_duration_ms}ms/frame), {out_size} bytes total ({total_jpeg_bytes} bytes of JPEG data)")
+              f"({frame_duration_ms}ms/frame), audio: {audio_desc}, {out_size} bytes total "
+              f"({total_jpeg_bytes} bytes JPEG, {len(audio_bytes)} bytes audio)")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

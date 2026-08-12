@@ -2332,6 +2332,12 @@ static u64 vid_start_tick=0;
 static u32 vid_last_decoded_frame=0xFFFFFFFFu; /* sentinel: nothing decoded yet */
 static int vid_paused=0;
 static u64 vid_pause_tick=0; /* tick value when paused; only meaningful while vid_paused */
+static int vid_has_audio=0; /* true only if THIS clip has an embedded
+                              * audio track AND sys_play_stream()
+                              * succeeded — audio-sync mode: frame
+                              * timing derives from actual audio
+                              * position, no pause (see comments in
+                              * draw_videoplayer_content). */
 
 static void open_videoplayer(const char*path, const char*shortname){
     u64 fd=sys_open(path,0);
@@ -2381,6 +2387,23 @@ static void open_videoplayer(const char*path, const char*shortname){
     vid_start_tick=sys_ticks();
     vid_last_decoded_frame=0xFFFFFFFFu; /* force first-frame decode below */
     vid_paused=0;
+
+    /* Audio-sync mode: start playback via the same sys_play_stream()
+     * play_wav_file() already relies on (proven reliable), then drive
+     * video frame timing off the actual played-sample position
+     * instead of sys_ticks(). No pause for these clips — see the
+     * comment on vid_has_audio. If audio fails to start (e.g. clip
+     * somehow exceeds the AC97 cap despite mkmjpeg.py's pack-time
+     * check, or no AC97 hardware), falls back to silent tick-based
+     * playback rather than failing to open the clip at all. */
+    vid_has_audio=0;
+    if(vid_info.audio_sample_rate>0 && vid_info.audio_sample_count>0){
+        int prc=sys_play_stream((const short*)vid_info.audio_data,
+                                 vid_info.audio_sample_count,
+                                 vid_info.audio_sample_rate,1);
+        if(prc==0) vid_has_audio=1;
+        else tprint("VID: audio start failed, playing silently");
+    }
 }
 
 static void draw_videoplayer_content(int wi){
@@ -2388,27 +2411,38 @@ static void draw_videoplayer_content(int wi){
     int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
     rect(x,y,cw,ch,0x0D1117);
 
-    /* Loops rather than holding the last frame — a nicer default for
-     * a video player than freezing, now that playback has a pause
-     * control to actually stop it. Pausing freezes elapsed-time
-     * accounting (not just the redraw): vid_start_tick is shifted
-     * forward by the paused duration on resume (see the click
-     * handler), so resuming doesn't "jump" to where playback would
-     * have been had it never paused. */
-    if(!vid_paused){
+    /* Two pacing modes. Clips with an embedded audio track derive the
+     * target frame directly from actual audio playback position
+     * (sys_stream_played_samples() — a read-only AC97 register query,
+     * see mjpeg_frame_for_played_samples()), so video can't drift
+     * relative to audio the way two independent clocks could. These
+     * play start-to-finish with no pause: pausing would mean pausing
+     * AC97 mid-stream, which caused a real hang and then real audio
+     * data loss in two separate attempts, and was deliberately
+     * dropped from scope rather than kept fragile. Silent clips keep
+     * the original tick-based pacing, with looping (elapsed_ms modulo
+     * total duration) and pause freezing elapsed-time accounting
+     * (vid_start_tick shifts forward by the paused duration on
+     * resume, so resuming doesn't jump ahead) exactly as before. */
+    u32 frame_idx;
+    if(vid_has_audio){
+        frame_idx=mjpeg_frame_for_played_samples(&vid_info,sys_stream_played_samples());
+    } else if(!vid_paused){
         u64 now=sys_ticks();
         u32 elapsed_ms=(u32)((now-vid_start_tick)*10); /* 100Hz PIT -> 10ms/tick */
         u32 total_ms=vid_info.frame_count*vid_info.frame_duration_ms;
         if(total_ms>0) elapsed_ms%=total_ms;
-        u32 frame_idx=mjpeg_frame_for_elapsed(&vid_info,elapsed_ms);
+        frame_idx=mjpeg_frame_for_elapsed(&vid_info,elapsed_ms);
+    } else {
+        frame_idx=vid_last_decoded_frame; /* paused: keep showing current frame */
+    }
 
-        if(frame_idx!=vid_last_decoded_frame){
-            u32 flen;
-            const u8* fdata=mjpeg_get_frame(&vid_info,frame_idx,&flen);
-            if(fdata){
-                jpeg_info_t jinfo=jpeg_decode(fdata,flen,vid_rgba,vid_scratch,sizeof(vid_scratch));
-                if(jinfo.error==JPEG_OK) vid_last_decoded_frame=frame_idx;
-            }
+    if(frame_idx!=vid_last_decoded_frame){
+        u32 flen;
+        const u8* fdata=mjpeg_get_frame(&vid_info,frame_idx,&flen);
+        if(fdata){
+            jpeg_info_t jinfo=jpeg_decode(fdata,flen,vid_rgba,vid_scratch,sizeof(vid_scratch));
+            if(jinfo.error==JPEG_OK) vid_last_decoded_frame=frame_idx;
         }
     }
 
@@ -2423,14 +2457,17 @@ static void draw_videoplayer_content(int wi){
         }
     }
 
-    /* play/pause button overlay, bottom-left of the frame. Rect must
-     * match the click-handling check near the rbtn_down FM
-     * context-menu block exactly — same manual draw/click coordinate
-     * duplication the File Manager's Reload/Up buttons already use. */
-    int bx=x+6,by=y+ch-26,bw=52,bh=20;
-    int bhov=in_box(mouse_x,mouse_y,bx,by,bw,bh);
-    rect(bx,by,bw,bh,bhov?0x21262D:0x161B22);outline(bx,by,bw,bh,BORDER);
-    text(bx+4,by+2,vid_paused?"Play":"Pause",bhov?TEXT:DIM,bhov?0x21262D:0x161B22);
+    /* play/pause button: only for clips without audio-sync (see
+     * comment above). Rect must match the click-handling check near
+     * the rbtn_down FM context-menu block exactly — same manual
+     * draw/click coordinate duplication the File Manager's Reload/Up
+     * buttons already use. */
+    if(!vid_has_audio){
+        int bx=x+6,by=y+ch-26,bw=52,bh=20;
+        int bhov=in_box(mouse_x,mouse_y,bx,by,bw,bh);
+        rect(bx,by,bw,bh,bhov?0x21262D:0x161B22);outline(bx,by,bw,bh,BORDER);
+        text(bx+4,by+2,vid_paused?"Play":"Pause",bhov?TEXT:DIM,bhov?0x21262D:0x161B22);
+    }
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
@@ -3473,7 +3510,7 @@ int main(void){
         }
         /* video player: play/pause button click (rect matches the one
          * drawn in draw_videoplayer_content — see comment there) */
-        if(btn_down&&vid_win>=0&&vid_win<win_count&&wins[vid_win].visible&&!wins[vid_win].minimized){
+        if(btn_down&&!vid_has_audio&&vid_win>=0&&vid_win<win_count&&wins[vid_win].visible&&!wins[vid_win].minimized){
             Win*vw=&wins[vid_win];
             int vx=vw->x,vy=vw->y+TITLEBAR_H,vch=vw->h-TITLEBAR_H;
             int bx=vx+6,by=vy+vch-26,bw=52,bh=20;
