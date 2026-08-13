@@ -269,6 +269,7 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_CALC     5
 #define WIN_IMGVIEW  6
 #define WIN_VIDEOPLAYER 7
+#define WIN_MEDIAPLAYER 8
 static const int win_glyph_map[7]={0,2,1,3,5,4,1};
 static int win_glyph_idx(int wid){if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
 #define NOTIF_MAX 20
@@ -1003,6 +1004,20 @@ static void np_load(const char*path,const char*shortname){
  * than this cap are not supported yet — a true arbitrary-length
  * streaming path would need the kernel-timer-driven chunked refill
  * approach instead of "load whole file", future work if ever needed. */
+/* Unified media player: one window (WIN_MEDIAPLAYER) for images,
+ * video, and audio — replaces the separate WIN_IMGVIEW/WIN_VIDEOPLAYER
+ * windows and WAV's previous no-window fire-and-forget playback.
+ * media_kind picks which draw_* function runs; still just one active
+ * window at a time, same "single active buffer" pattern the image
+ * viewer/video player/WAV playback each already used individually.
+ * Declared here (before play_wav_file, the earliest user) rather than
+ * near open_imgview/draw_imgview_content further down — C requires
+ * file-scope declaration-before-use in this single-translation-unit,
+ * no-header style. */
+static int media_win=-1;
+static int media_kind=0; /* 0=none, 1=image, 2=video, 3=audio */
+static char media_filename[40]="";
+
 static short wav_full_buf[WAV_MAX_SAMPLES];
 static int  wav_playing=0;
 static u32  wav_channels=0,wav_sample_rate=0;
@@ -1016,7 +1031,7 @@ static void wav_debug_print(void){
     i=u32_append_dec(l,i,wav_samples_total);
     l[i]=0;tprint(l);
 }
-static void play_wav_file(const char*path){
+static void play_wav_file(const char*path, const char*shortname){
     tprint("WAV: play_wav_file called");
     if(wav_playing){tprint("WAV: already playing, ignored");return;}
     u64 fd=sys_open(path,0);
@@ -1081,6 +1096,34 @@ static void play_wav_file(const char*path){
     wav_sample_rate=sample_rate;
     wav_samples_total=read_so_far;
     wav_playing=1;
+
+    /* Audio finally gets a real window, instead of the previous pure
+     * fire-and-forget playback — fixed-size (not content-sized like
+     * image/video) since there's no visual content, just a filename
+     * and a decorative "now playing" indicator (draw_media_audio_content). */
+    media_kind=3;
+    {
+        int k=0;while(shortname[k]&&k<39){media_filename[k]=shortname[k];k++;}
+        media_filename[k]=0;
+    }
+    {
+        int max_w=(int)FB_W-60, max_h=(int)FB_H-TITLEBAR_H-60;
+        int aww=320<max_w?320:max_w;
+        int awh=140+TITLEBAR_H<max_h?140+TITLEBAR_H:max_h;
+        if(media_win>=0 && media_win<win_count && wins[media_win].visible){
+            wins[media_win].w=aww; wins[media_win].h=awh;
+            wins[media_win].minimized=0;
+            focused=media_win;
+        } else {
+            int i=wm_new(WIN_MEDIAPLAYER,180,90,aww,awh,"Media Player",PURPLE);
+            if(i>=0) media_win=i;
+        }
+        if(media_win>=0){
+            int j=0;while(shortname[j]&&j<39){wins[media_win].title[j]=shortname[j];j++;}
+            wins[media_win].title[j]=0;
+        }
+    }
+
     if(sys_play_stream(wav_full_buf,read_so_far,sample_rate,(u32)channels)!=0){
         tprint("WAV: sys_play_stream failed");
         wav_playing=0;
@@ -2218,7 +2261,6 @@ static u8  img_rgba[PNG_MAX_W*PNG_MAX_H*4];
  * inflate scratch (~3.00MB) at these same PNG_MAX_W/H==JPEG_MAX_W/H
  * dimensions, so this sizes to the larger of the two. */
 static u8  img_scratch[JPEG_SCRATCH_BYTES > (PNG_MAX_W*PNG_MAX_H*4+PNG_MAX_H) ? JPEG_SCRATCH_BYTES : (PNG_MAX_W*PNG_MAX_H*4+PNG_MAX_H)];
-static int imgview_win=-1;
 static u32 imgview_w=0, imgview_h=0;
 
 static void open_imgview(const char*path, const char*shortname){
@@ -2258,6 +2300,7 @@ static void open_imgview(const char*path, const char*shortname){
     }
 
     imgview_w=iw; imgview_h=ih;
+    media_kind=1;
 
     /* Window size = image size, clamped to fit the screen with room
      * for the titlebar/margins. Larger images display cropped
@@ -2267,17 +2310,17 @@ static void open_imgview(const char*path, const char*shortname){
     int ww=(int)imgview_w<max_w?(int)imgview_w:max_w;
     int wh=(int)imgview_h+TITLEBAR_H<max_h?(int)imgview_h+TITLEBAR_H:max_h;
 
-    if(imgview_win>=0 && imgview_win<win_count && wins[imgview_win].visible){
-        wins[imgview_win].w=ww; wins[imgview_win].h=wh;
-        wins[imgview_win].minimized=0;
-        focused=imgview_win;
+    if(media_win>=0 && media_win<win_count && wins[media_win].visible){
+        wins[media_win].w=ww; wins[media_win].h=wh;
+        wins[media_win].minimized=0;
+        focused=media_win;
     } else {
-        int i=wm_new(WIN_IMGVIEW,180,90,ww,wh,"Image Viewer",PURPLE);
+        int i=wm_new(WIN_MEDIAPLAYER,180,90,ww,wh,"Media Player",PURPLE);
         if(i<0){tprint("PNG: too many windows open");return;}
-        imgview_win=i;
+        media_win=i;
     }
-    int j=0;while(shortname[j]&&j<39){wins[imgview_win].title[j]=shortname[j];j++;}
-    wins[imgview_win].title[j]=0;
+    int j=0;while(shortname[j]&&j<39){wins[media_win].title[j]=shortname[j];j++;}
+    wins[media_win].title[j]=0;
 }
 
 static void draw_imgview_content(int wi){
@@ -2327,7 +2370,6 @@ static u8  vid_scratch[JPEG_SCRATCH_BYTES]; /* separate from img_scratch:
                                               * player window can be open
                                               * and visible simultaneously */
 static mjpeg_info_t vid_info;
-static int vid_win=-1;
 static u64 vid_start_tick=0;
 static u32 vid_last_decoded_frame=0xFFFFFFFFu; /* sentinel: nothing decoded yet */
 static int vid_paused=0;
@@ -2368,21 +2410,22 @@ static void open_videoplayer(const char*path, const char*shortname){
         return;
     }
 
+    media_kind=2;
     int max_w=(int)FB_W-60, max_h=(int)FB_H-TITLEBAR_H-60;
     int ww=(int)vid_info.width<max_w?(int)vid_info.width:max_w;
     int wh=(int)vid_info.height+TITLEBAR_H<max_h?(int)vid_info.height+TITLEBAR_H:max_h;
 
-    if(vid_win>=0 && vid_win<win_count && wins[vid_win].visible){
-        wins[vid_win].w=ww; wins[vid_win].h=wh;
-        wins[vid_win].minimized=0;
-        focused=vid_win;
+    if(media_win>=0 && media_win<win_count && wins[media_win].visible){
+        wins[media_win].w=ww; wins[media_win].h=wh;
+        wins[media_win].minimized=0;
+        focused=media_win;
     } else {
-        int i=wm_new(WIN_VIDEOPLAYER,180,90,ww,wh,"Video Player",PURPLE);
+        int i=wm_new(WIN_MEDIAPLAYER,180,90,ww,wh,"Media Player",PURPLE);
         if(i<0){tprint("VID: too many windows open");return;}
-        vid_win=i;
+        media_win=i;
     }
-    int j=0;while(shortname[j]&&j<39){wins[vid_win].title[j]=shortname[j];j++;}
-    wins[vid_win].title[j]=0;
+    int j=0;while(shortname[j]&&j<39){wins[media_win].title[j]=shortname[j];j++;}
+    wins[media_win].title[j]=0;
 
     vid_start_tick=sys_ticks();
     vid_last_decoded_frame=0xFFFFFFFFu; /* force first-frame decode below */
@@ -2468,6 +2511,54 @@ static void draw_videoplayer_content(int wi){
         rect(bx,by,bw,bh,bhov?0x21262D:0x161B22);outline(bx,by,bw,bh,BORDER);
         text(bx+4,by+2,vid_paused?"Play":"Pause",bhov?TEXT:DIM,bhov?0x21262D:0x161B22);
     }
+}
+
+/* Audio has no visual content, just a filename and a status line, plus
+ * a decorative "now playing" bar animation — NOT audio-reactive (no
+ * easy access to sample amplitudes from userspace here), purely a
+ * pleasant idle animation confirming the window is alive, same spirit
+ * as most "now playing" UI conventions where visualizers are often
+ * decorative anyway. */
+static void draw_media_audio_content(int wi){
+    Win*w=&wins[wi];
+    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
+    rect(x,y,cw,ch,0x0D1117);
+
+    text(x+16,y+16,media_filename,TEXT,0x0D1117);
+    const char*status=wav_playing?"Playing...":"Finished";
+    text(x+16,y+36,status,wav_playing?cfg_accent:DIM,0x0D1117);
+
+    if(wav_playing){
+        int bars=12,bw2=8,gap=6;
+        int base_x=x+16,base_y=y+ch-24;
+        for(int b=0;b<bars&&base_x+b*(bw2+gap)+bw2<x+cw;b++){
+            int h=6+(int)((sys_ticks()/3+(u64)b*5)%18);
+            rect(base_x+b*(bw2+gap),base_y-h,bw2,h,cfg_accent);
+        }
+    }
+}
+
+static void draw_mediaplayer_content(int wi){
+    if(media_kind==1) draw_imgview_content(wi);
+    else if(media_kind==2) draw_videoplayer_content(wi);
+    else if(media_kind==3) draw_media_audio_content(wi);
+}
+
+/* Single entry point for all media types — File Manager calls this
+ * once instead of branching on extension itself and calling three+
+ * different functions; the extension check lives here now. */
+static void open_media_player(const char*path, const char*shortname){
+    int nl=slen(shortname);
+    int is_wav=(nl>4&&shortname[nl-4]=='.'&&shortname[nl-3]=='w'&&shortname[nl-2]=='a'&&shortname[nl-1]=='v');
+    int is_png=(nl>4&&shortname[nl-4]=='.'&&shortname[nl-3]=='p'&&shortname[nl-2]=='n'&&shortname[nl-1]=='g');
+    int is_jpeg=(nl>4&&shortname[nl-4]=='.'&&shortname[nl-3]=='j'&&shortname[nl-2]=='p'&&shortname[nl-1]=='g')
+              ||(nl>5&&shortname[nl-5]=='.'&&shortname[nl-4]=='j'&&shortname[nl-3]=='p'&&shortname[nl-2]=='e'&&shortname[nl-1]=='g');
+    int is_ymjp=(nl>5&&shortname[nl-5]=='.'&&shortname[nl-4]=='y'&&shortname[nl-3]=='m'&&shortname[nl-2]=='j'&&shortname[nl-1]=='p');
+
+    if(is_wav) play_wav_file(path,shortname);
+    else if(is_png||is_jpeg) open_imgview(path,shortname);
+    else if(is_ymjp) open_videoplayer(path,shortname);
+    else tprint("MEDIA: unrecognized file type");
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
@@ -3510,8 +3601,8 @@ int main(void){
         }
         /* video player: play/pause button click (rect matches the one
          * drawn in draw_videoplayer_content — see comment there) */
-        if(btn_down&&!vid_has_audio&&vid_win>=0&&vid_win<win_count&&wins[vid_win].visible&&!wins[vid_win].minimized){
-            Win*vw=&wins[vid_win];
+        if(btn_down&&!vid_has_audio&&media_kind==2&&media_win>=0&&media_win<win_count&&wins[media_win].visible&&!wins[media_win].minimized){
+            Win*vw=&wins[media_win];
             int vx=vw->x,vy=vw->y+TITLEBAR_H,vch=vw->h-TITLEBAR_H;
             int bx=vx+6,by=vy+vch-26,bw=52,bh=20;
             if(in_box(mouse_x,mouse_y,bx,by,bw,bh)){
@@ -4088,26 +4179,14 @@ int main(void){
                                     char*n=fm_entries[fi].name;int nl=slen(n);
                                     if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
                                         open_notepad(n);
-                                    else if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='w'&&n[nl-2]=='a'&&n[nl-1]=='v'){
-                                        char wpath[220];
-                                        fm_build_path(wpath,sizeof(wpath),fm_path,n);
-                                        play_wav_file(wpath);
-                                    }
-                                    else if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='p'&&n[nl-2]=='n'&&n[nl-1]=='g'){
-                                        char ipath[220];
-                                        fm_build_path(ipath,sizeof(ipath),fm_path,n);
-                                        open_imgview(ipath,n);
-                                    }
-                                    else if((nl>4&&n[nl-4]=='.'&&n[nl-3]=='j'&&n[nl-2]=='p'&&n[nl-1]=='g')
-                                          ||(nl>5&&n[nl-5]=='.'&&n[nl-4]=='j'&&n[nl-3]=='p'&&n[nl-2]=='e'&&n[nl-1]=='g')){
-                                        char ipath[220];
-                                        fm_build_path(ipath,sizeof(ipath),fm_path,n);
-                                        open_imgview(ipath,n);
-                                    }
-                                    else if(nl>5&&n[nl-5]=='.'&&n[nl-4]=='y'&&n[nl-3]=='m'&&n[nl-2]=='j'&&n[nl-1]=='p'){
-                                        char vpath[220];
-                                        fm_build_path(vpath,sizeof(vpath),fm_path,n);
-                                        open_videoplayer(vpath,n);
+                                    else if((nl>4&&n[nl-4]=='.'&&n[nl-3]=='w'&&n[nl-2]=='a'&&n[nl-1]=='v')
+                                          ||(nl>4&&n[nl-4]=='.'&&n[nl-3]=='p'&&n[nl-2]=='n'&&n[nl-1]=='g')
+                                          ||(nl>4&&n[nl-4]=='.'&&n[nl-3]=='j'&&n[nl-2]=='p'&&n[nl-1]=='g')
+                                          ||(nl>5&&n[nl-5]=='.'&&n[nl-4]=='j'&&n[nl-3]=='p'&&n[nl-2]=='e'&&n[nl-1]=='g')
+                                          ||(nl>5&&n[nl-5]=='.'&&n[nl-4]=='y'&&n[nl-3]=='m'&&n[nl-2]=='j'&&n[nl-1]=='p')){
+                                        char mpath[220];
+                                        fm_build_path(mpath,sizeof(mpath),fm_path,n);
+                                        open_media_player(mpath,n);
                                     }
                                 }
                             } else {
@@ -4367,8 +4446,7 @@ int main(void){
             else if(wins[i].id==WIN_NOTEPAD){np_current=i;draw_notepad_content(i);}
             else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
-            else if(wins[i].id==WIN_IMGVIEW)draw_imgview_content(i);
-            else if(wins[i].id==WIN_VIDEOPLAYER)draw_videoplayer_content(i);
+            else if(wins[i].id==WIN_MEDIAPLAYER)draw_mediaplayer_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
