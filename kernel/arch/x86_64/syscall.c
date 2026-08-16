@@ -17,12 +17,32 @@ uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
 kjmp_buf_t kernel_exit_jmp;
 int        kernel_exit_jmp_valid = 0;
-static uint8_t child_kstack[32768];
 static uint8_t syscall_kernel_stack[262144];
-static uint64_t   exec_saved_kstack;
-static uint64_t   exec_saved_user_rsp;
-static uint64_t   exec_saved_cr3;
-static kjmp_buf_t exec_saved_jmp;
+
+/* Nested-exec support -----------------------------------------------------
+ * A sys_exec() call doesn't return in the normal sense until its child
+ * eventually calls sys_exit() -- it's suspended mid-call for as long as
+ * the child runs. If that child itself calls sys_exec() again (e.g.
+ * desktop execs shell, then shell execs mpy), the OUTER sys_exec call is
+ * still live and its state must survive the inner one. These were
+ * previously single `static` globals shared by every nesting level,
+ * which meant a second level of exec silently corrupted the outer
+ * level's saved kernel stack, CR3, and jump target: the same 32KB
+ * child_kstack buffer was reused for every level, so the inner child's
+ * kernel-side stack activity overwrote the outer, still-suspended
+ * call's live stack frame. Bounded to MAX_EXEC_DEPTH levels -- deep
+ * enough for any realistic nesting (desktop -> shell -> mpy is 2), and
+ * sys_exec fails loudly (returns -3) rather than corrupting memory if
+ * ever exceeded. */
+#define MAX_EXEC_DEPTH   8
+#define EXEC_KSTACK_SIZE 32768
+static uint8_t     exec_kstacks[MAX_EXEC_DEPTH][EXEC_KSTACK_SIZE];
+static uint64_t    exec_saved_kstack[MAX_EXEC_DEPTH];
+static uint64_t    exec_saved_user_rsp[MAX_EXEC_DEPTH];
+static uint64_t    exec_saved_cr3[MAX_EXEC_DEPTH];
+static kjmp_buf_t   exec_saved_jmp[MAX_EXEC_DEPTH];
+static int          exec_depth = 0;
+
 static int path_is_ycfs(const char* p);
 
 static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -81,13 +101,19 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     const void* elf_data = initrd_find(name, &elf_size);
     if (!elf_data) return (uint64_t)-1;
 
+    if (exec_depth >= MAX_EXEC_DEPTH) {
+        syslog_write("EXEC","depth limit reached, refusing");
+        return (uint64_t)-3;
+    }
+    int level = exec_depth++;
+
     /* Capture the CALLER's real CR3 before touching anything else — this is
      * what we restore to when the child eventually exits. */
     extern uint64_t user_rsp_tmp;
-    exec_saved_kstack    = kernel_stack_top;
-    exec_saved_user_rsp  = user_rsp_tmp;
-    exec_saved_jmp       = kernel_exit_jmp;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(exec_saved_cr3));
+    exec_saved_kstack[level]    = kernel_stack_top;
+    exec_saved_user_rsp[level]  = user_rsp_tmp;
+    exec_saved_jmp[level]       = kernel_exit_jmp;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(exec_saved_cr3[level]));
 
     /* Page-table construction (vmm_create_user_as/elf_load/stack mapping)
      * dereferences physical addresses as if they were directly-mapped
@@ -102,7 +128,8 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     elf_load_result_t res;
     address_space_t proc_as = vmm_create_user_as();
     if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
-        __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3) : "memory");
+        __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3[level]) : "memory");
+        exec_depth--;
         return (uint64_t)-2;
     }
     extern uint64_t pmm_alloc_pages(uint64_t);
@@ -114,7 +141,7 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     kernel_exit_jmp_valid = 1;
     int exited = ksetjmp(&kernel_exit_jmp);
     if (!exited) {
-        kernel_stack_top = (uint64_t)child_kstack + sizeof(child_kstack);
+        kernel_stack_top = (uint64_t)exec_kstacks[level] + EXEC_KSTACK_SIZE;
         tss_set_kernel_stack(kernel_stack_top);
         vmm_switch(&proc_as);
         __asm__ volatile("mov %%cr3,%%rax;mov %%rax,%%cr3":::"rax","memory");
@@ -127,12 +154,13 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         extern void jump_to_userspace(uint64_t, uint64_t);
         jump_to_userspace(res.entry, stack_top);
     }
-    kernel_exit_jmp      = exec_saved_jmp;
+    kernel_exit_jmp      = exec_saved_jmp[level];
     kernel_exit_jmp_valid = 1;
-    kernel_stack_top     = exec_saved_kstack;
+    kernel_stack_top     = exec_saved_kstack[level];
     tss_set_kernel_stack(kernel_stack_top);
-    user_rsp_tmp         = exec_saved_user_rsp;
-    __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3) : "memory");
+    user_rsp_tmp         = exec_saved_user_rsp[level];
+    __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3[level]) : "memory");
+    exec_depth--;
     return 0;
 }
 static uint64_t sys_shutdown(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
