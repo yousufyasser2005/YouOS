@@ -9,7 +9,7 @@ CFLAGS  = -ffreestanding -fno-stack-protector -mno-red-zone \
 LDFLAGS = -T user.ld -nostdlib
 
 CRT0    = lib/crt0.o
-PROGS   = hello cat shell fbtest desktop
+PROGS   = hello cat shell fbtest desktop mpy
 
 all: $(PROGS:%=bin/%)
 
@@ -51,3 +51,18 @@ bin/desktop: src/desktop.o $(CRT0) | bin/
 
 src/desktop.o: src/desktop.c
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# --- MicroPython REPL ----------------------------------------------------
+MPY_PORT_DIR = ../third_party/micropython/ports/youos
+MPY_CORE_O   = $(MPY_PORT_DIR)/build/mpycore.o
+
+bin/mpy: $(MPY_CORE_O) $(CRT0) | bin/
+	$(LD) $(LDFLAGS) $(CRT0) $(MPY_CORE_O) -o $@
+
+# Delegate to the port's own Makefile (it drives MicroPython's qstr/
+# moduledefs generation via py.mk). Always re-invoke -- its own
+# dependency tracking decides whether a rebuild is actually needed, same
+# as any other recursive-make subproject.
+.PHONY: $(MPY_CORE_O)
+$(MPY_CORE_O):
+	$(MAKE) -C $(MPY_PORT_DIR)
