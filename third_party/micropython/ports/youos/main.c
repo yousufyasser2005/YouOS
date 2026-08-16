@@ -86,6 +86,10 @@ static int mpy_readline(char *buf, int max, const char *prompt) {
         // was tried in the sandbox and produced a busy-loop failure mode
         // that shell.c's simpler approach doesn't have.
         sys_read(0, &c, 1);
+        if (c == 27) { // ESC: abort input, signal caller to exit the REPL
+            sys_write(1, "\n", 1);
+            return -1;
+        }
         if (c == '\n' || c == '\r') {
             sys_write(1, "\n", 1);
             break;
@@ -108,6 +112,9 @@ static void run_repl(void) {
     char linebuf[512];
     for (;;) {
         int n = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps1());
+        if (n < 0) {
+            return; // ESC pressed -- back to main(), which returns -> crt0 sys_exit()
+        }
         if (n == 0) {
             continue;
         }
@@ -116,10 +123,19 @@ static void run_repl(void) {
         vstr_init(&line, 32);
         vstr_add_str(&line, linebuf);
 
+        int aborted = 0;
         while (mp_repl_continue_with_input(vstr_null_terminated_str(&line))) {
             vstr_add_byte(&line, '\n');
-            mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps2());
+            int n2 = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps2());
+            if (n2 < 0) {
+                aborted = 1;
+                break;
+            }
             vstr_add_str(&line, linebuf);
+        }
+        if (aborted) {
+            vstr_clear(&line);
+            return; // ESC pressed mid-block -- exit the whole REPL, same as at the prompt
         }
 
         nlr_buf_t nlr;
@@ -143,13 +159,13 @@ int main(void) {
     gc_init(mpy_heap, mpy_heap + YOUOS_MPY_HEAP_SIZE);
     mp_init();
 
-    const char banner[] = "YouOS MicroPython -- int-only build, no imports yet\n";
+    const char banner[] = "YouOS MicroPython -- int-only build, no imports yet (ESC to exit)\n";
     sys_write(1, banner, sizeof(banner) - 1);
     run_repl();
 
-    // Not reachable in normal operation (run_repl() never returns), but
-    // keep mp_deinit()/return here for symmetry with the sandbox in case
-    // a future exit command is added.
+    // Not reachable until ESC is pressed. mp_deinit()/return here is what
+    // lets main() reach crt0.asm's post-call sys_exit(rax), handing
+    // control back to the shell (or whatever exec'd this).
     mp_deinit();
     return 0;
 }
