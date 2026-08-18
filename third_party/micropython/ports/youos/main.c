@@ -23,6 +23,7 @@
 #include "py/repl.h"
 #include "py/builtin.h"
 #include "py/lexer.h"
+#include "py/stream.h"
 
 // ---- HAL: the one function that matters -------------------------------
 void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
@@ -35,11 +36,75 @@ mp_import_stat_t mp_import_stat(const char *path) {
     return MP_IMPORT_STAT_NO_EXIST;
 }
 
+typedef struct _youos_file_obj_t {
+    mp_obj_base_t base;
+    int fd;
+} youos_file_obj_t;
+
+static mp_uint_t youos_file_read(mp_obj_t o_in, void *buf, mp_uint_t size, int *errcode) {
+    youos_file_obj_t *self = MP_OBJ_TO_PTR(o_in);
+    if (self->fd < 0) {
+        *errcode = MP_EBADF;
+        return MP_STREAM_ERROR;
+    }
+    int64_t n = sys_fread(self->fd, buf, size);
+    if (n < 0) {
+        *errcode = MP_EIO;
+        return MP_STREAM_ERROR;
+    }
+    return (mp_uint_t)n;
+}
+
+static mp_uint_t youos_file_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t arg, int *errcode) {
+    (void)arg;
+    youos_file_obj_t *self = MP_OBJ_TO_PTR(o_in);
+    switch (request) {
+        case MP_STREAM_CLOSE:
+            if (self->fd >= 0) {
+                sys_close(self->fd);
+                self->fd = -1;
+            }
+            return 0;
+        default:
+            *errcode = MP_EINVAL;
+            return MP_STREAM_ERROR;
+    }
+}
+
+static const mp_rom_map_elem_t youos_file_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_stream_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_readline), MP_ROM_PTR(&mp_stream_unbuffered_readline_obj) },
+    { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&mp_stream_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR___enter__), MP_ROM_PTR(&mp_identity_obj) },
+    { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&mp_stream___exit___obj) },
+};
+static MP_DEFINE_CONST_DICT(youos_file_locals_dict, youos_file_locals_dict_table);
+
+static const mp_stream_p_t youos_file_stream_p = {
+    .read = youos_file_read,
+    .ioctl = youos_file_ioctl,
+    .is_text = true,
+};
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    youos_type_file,
+    MP_QSTR_TextIOWrapper,
+    MP_TYPE_FLAG_ITER_IS_STREAM,
+    protocol, &youos_file_stream_p,
+    locals_dict, &youos_file_locals_dict
+    );
+
 mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
     (void)n_args;
-    (void)args;
-    (void)kwargs;
-    mp_raise_OSError(MP_ENOENT);
+    (void)kwargs; // mode/encoding kwargs ignored for now -- read-only
+    const char *path = mp_obj_str_get_str(args[0]);
+    int fd = sys_open(path, 0);
+    if (fd < 0) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    youos_file_obj_t *o = mp_obj_malloc(youos_file_obj_t, &youos_type_file);
+    o->fd = fd;
+    return MP_OBJ_FROM_PTR(o);
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 

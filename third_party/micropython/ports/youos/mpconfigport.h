@@ -31,7 +31,7 @@
 
 // No real OS-shaped sys/io/os module content to back these with yet.
 #define MICROPY_PY_SYS                          (0)
-#define MICROPY_PY_IO                           (0)
+#define MICROPY_PY_IO                           (1)
 #define MICROPY_PY_OS                           (0)
 
 // We provide our own REPL I/O loop by hand in main.c (mirroring shell.c's
