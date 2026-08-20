@@ -140,9 +140,15 @@ static uint64_t ustrlen_(const char *s) {
     return n;
 }
 
-static int mpy_readline(char *buf, int max, const char *prompt) {
+static int mpy_readline(char *buf, int max, const char *prompt, const char *prefill, int prefill_len) {
     sys_write(1, prompt, ustrlen_(prompt));
     int i = 0;
+    if (prefill_len > 0) {
+        sys_write(1, prefill, prefill_len);
+        for (int k = 0; k < prefill_len && i < max - 1; k++) {
+            buf[i++] = prefill[k];
+        }
+    }
     while (i < max - 1) {
         char c;
         // Matches shell.c's readline() exactly: sys_read(0, &c, 1) is
@@ -222,10 +228,36 @@ static void run_script_file(const char *path) {
     run_script(buf, (size_t)n, path);
 }
 
+// Mirrors shared/readline's readline_auto_indent algorithm: carry the
+// just-typed line's own indent level forward, plus one more level if it
+// ends with ':'. Returns the number of spaces to pre-fill the next line
+// with. Sandbox-verified (including nested blocks and interaction with
+// manual backspace-to-dedent for else/elif) before this touched the
+// real build.
+static int compute_next_indent(const char *line) {
+    int lead = 0;
+    while (line[lead] == ' ') {
+        lead++;
+    }
+    int len = 0;
+    while (line[len]) {
+        len++;
+    }
+    int last = len - 1;
+    while (last >= 0 && line[last] == ' ') {
+        last--;
+    }
+    int n = lead / 4;
+    if (last >= 0 && line[last] == ':') {
+        n++;
+    }
+    return n * 4;
+}
+
 static void run_repl(void) {
     char linebuf[512];
     for (;;) {
-        int n = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps1());
+        int n = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps1(), NULL, 0);
         if (n < 0) {
             return; // ESC pressed -- back to main(), which returns -> crt0 sys_exit()
         }
@@ -238,14 +270,41 @@ static void run_repl(void) {
         vstr_add_str(&line, linebuf);
 
         int aborted = 0;
+        int indent = compute_next_indent(linebuf);
         while (mp_repl_continue_with_input(vstr_null_terminated_str(&line))) {
             vstr_add_byte(&line, '\n');
-            int n2 = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps2());
+            char pad[64];
+            int pn = indent;
+            if (pn > (int)sizeof(pad)) {
+                pn = sizeof(pad);
+            }
+            for (int k = 0; k < pn; k++) {
+                pad[k] = ' ';
+            }
+            int n2 = mpy_readline(linebuf, sizeof(linebuf), mp_repl_get_ps2(), pad, pn);
             if (n2 < 0) {
                 aborted = 1;
                 break;
             }
-            vstr_add_str(&line, linebuf);
+            // If the user pressed Enter without typing anything beyond
+            // the auto-inserted indent, this line is all whitespace --
+            // treat it as genuinely blank (matching plain Enter-to-end-
+            // block behavior), or mp_repl_continue_with_input never sees
+            // a truly empty line and the block never terminates. (Caught
+            // in the sandbox: without this, every auto-indented block
+            // hung forever waiting for a blank line that could never
+            // arrive.)
+            int blank_only_indent = 1;
+            for (int k = 0; k < n2; k++) {
+                if (linebuf[k] != ' ') {
+                    blank_only_indent = 0;
+                    break;
+                }
+            }
+            if (!blank_only_indent) {
+                vstr_add_str(&line, linebuf);
+                indent = compute_next_indent(linebuf);
+            }
         }
         if (aborted) {
             vstr_clear(&line);
