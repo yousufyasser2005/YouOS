@@ -492,8 +492,11 @@ static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1;
+    /* yourun takes an argument, so this is a starts-with check, not the
+       exact-match style every other command above/below uses. */
+    for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
     for(int k=0;help[k]||cmd[k];k++)if(help[k]!=cmd[k]){mh=0;break;}
     for(int k=0;ipc[k]||cmd[k];k++)if(ipc[k]!=cmd[k]){mi=0;break;}
     for(int k=0;crl[k]||cmd[k];k++)if(crl[k]!=cmd[k]){mcrl=0;break;}
@@ -508,10 +511,10 @@ static void tcmd(const char*cmd){
     for(int k=0;rb[k]||cmd[k];k++)  if(rb[k]!=cmd[k])  {mrb=0;break;}
     for(int k=0;shl[k]||cmd[k];k++) if(shl[k]!=cmd[k]) {msh=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell ipc crashlog syslog mousedbg wavdbg restartlog");
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
-    else if(ml)tprint("hello cat shell fbtest desktop");
+    else if(ml)tprint("hello cat shell fbtest desktop mpy");
     else if(ms){do_shutdown();}
     else if(mrb){do_restart();}
     else if(msh){
@@ -657,6 +660,15 @@ static void tcmd(const char*cmd){
     }
     else if(mwsc){
         wav_scan_file("/ycfs/ding.wav");
+    }
+    else if(myr){
+        const char* path = cmd + 7; /* skip "yourun " */
+        if(!path[0]){
+            tprint("usage: yourun <path>");
+        } else {
+            int64_t r = sys_exec_arg("mpy", path);
+            if (r < 0) { tprint("yourun: exec failed"); }
+        }
     }
     else if(mi){
         char msg[32]="hello from desktop";

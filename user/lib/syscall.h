@@ -162,3 +162,17 @@ static inline unsigned int sys_ac97_debug(unsigned int which){
     return (unsigned int)_sc(SYS_AC97_DEBUG,(uint64_t)which,0,0,0,0); }
 static inline unsigned int sys_stream_played_samples(void){
     return sys_ac97_debug(12); }
+
+/* syscall 42 -- get_exec_arg: fetch the optional argument string this
+ * process was sys_exec'd with (e.g. a script path for "mpy"). Empty
+ * string if none was given. Returns the string length written. */
+#define SYS_GET_EXEC_ARG 42
+static inline int64_t sys_get_exec_arg(char* buf, uint64_t bufsize) {
+    return (int64_t)_sc(SYS_GET_EXEC_ARG, (uint64_t)buf, bufsize, 0, 0, 0);
+}
+
+/* Same SYS_EXEC number as sys_exec(), just also passing an argument
+ * string through the previously-unused a2 slot. */
+static inline int64_t sys_exec_arg(const char* name, const char* arg) {
+    return (int64_t)_sc(SYS_EXEC, (uint64_t)name, (uint64_t)arg, 0, 0, 0);
+}

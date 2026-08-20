@@ -43,6 +43,14 @@ static uint64_t    exec_saved_cr3[MAX_EXEC_DEPTH];
 static kjmp_buf_t   exec_saved_jmp[MAX_EXEC_DEPTH];
 static int          exec_depth = 0;
 
+/* Optional argument string passed to sys_exec (e.g. a script path for
+ * "mpy"), one slot per nesting level for the same reason as the state
+ * above: the caller's string lives in the caller's address space, which
+ * isn't mapped into the child's fresh one, so it has to be copied out
+ * before the CR3 switch rather than referenced by pointer. */
+#define EXEC_ARG_BUF_SIZE 256
+static char exec_arg_buf[MAX_EXEC_DEPTH][EXEC_ARG_BUF_SIZE];
+
 static int path_is_ycfs(const char* p);
 
 static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -94,7 +102,7 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
     return (uint64_t)vfs_close((int)fd);
 }
 static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a2;(void)a3;(void)a4;(void)a5;
+    (void)a3;(void)a4;(void)a5;
     const char* name = (const char*)path;
     syslog_write("EXEC",name);
     uint64_t elf_size = 0;
@@ -106,6 +114,21 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         return (uint64_t)-3;
     }
     int level = exec_depth++;
+
+    /* Optional argument string for the child (e.g. yourun's script path).
+     * a2 was previously unused -- reusing it avoids needing a whole new
+     * syscall just to pass one string in. */
+    {
+        const char* arg = (const char*)a2;
+        int ai = 0;
+        if (arg) {
+            while (arg[ai] && ai < EXEC_ARG_BUF_SIZE - 1) {
+                exec_arg_buf[level][ai] = arg[ai];
+                ai++;
+            }
+        }
+        exec_arg_buf[level][ai] = 0;
+    }
 
     /* Capture the CALLER's real CR3 before touching anything else — this is
      * what we restore to when the child eventually exits. */
@@ -162,6 +185,28 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3[level]) : "memory");
     exec_depth--;
     return 0;
+}
+
+static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3;(void)a4;(void)a5;
+    char* out = (char*)buf;
+    if (bufsize == 0) {
+        return 0;
+    }
+    if (exec_depth == 0) {
+        /* Not reached via sys_exec at all (e.g. the very first process
+         * kernel_main.c launches directly) -- no argument, not an error. */
+        out[0] = 0;
+        return 0;
+    }
+    const char* src = exec_arg_buf[exec_depth - 1];
+    uint64_t n = 0;
+    while (src[n] && n < bufsize - 1) {
+        out[n] = src[n];
+        n++;
+    }
+    out[n] = 0;
+    return n;
 }
 static uint64_t sys_shutdown(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
@@ -490,7 +535,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_ac97_debug,
     sys_pcm_can_submit,
     sys_play_stream,
-    sys_stream_active
+    sys_stream_active,
+    sys_get_exec_arg
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

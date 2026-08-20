@@ -39,7 +39,8 @@
 #define SYS_PCM_CAN_SUBMIT 39
 #define SYS_PLAY_STREAM 40
 #define SYS_STREAM_ACTIVE 41
-#define SYSCALL_COUNT  42
+#define SYS_GET_EXEC_ARG 42
+#define SYSCALL_COUNT  43
 
 void syscall_init(void);
 #endif

@@ -24,6 +24,7 @@
 #include "py/builtin.h"
 #include "py/lexer.h"
 #include "py/stream.h"
+#include "py/misc.h"
 
 // ---- HAL: the one function that matters -------------------------------
 void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
@@ -173,6 +174,54 @@ static int mpy_readline(char *buf, int max, const char *prompt) {
     return i;
 }
 
+// ---- yourun: run a single .py file non-interactively, then exit -------
+// Reached when this process was sys_exec'd with an argument (see main()
+// below) -- e.g. desktop.c's "yourun <path>" command. No banner, no REPL:
+// matches the semantics of exec'ing a normal program, not starting an
+// interactive session.
+static void run_script(const char *src, size_t len, const char *name) {
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        mp_lexer_t *lex = mp_lexer_new_from_str_len(qstr_from_str(name), src, len, 0);
+        qstr source_name = lex->source_name;
+        mp_parse_tree_t parse_tree = mp_parse(lex, MP_PARSE_FILE_INPUT);
+        mp_obj_t module_fun = mp_compile(&parse_tree, source_name, true);
+        mp_call_function_0(module_fun);
+        nlr_pop();
+    } else {
+        mp_obj_print_exception(&mp_plat_print, (mp_obj_t)nlr.ret_val);
+    }
+}
+
+static void run_script_file(const char *path) {
+    unsigned int fsize = 0;
+    unsigned char isdir = 0;
+    if (sys_stat(path, &fsize, &isdir) < 0) {
+        const char msg[] = "yourun: cannot stat file\n";
+        sys_write(1, msg, sizeof(msg) - 1);
+        return;
+    }
+    if (isdir) {
+        const char msg[] = "yourun: is a directory\n";
+        sys_write(1, msg, sizeof(msg) - 1);
+        return;
+    }
+    int fd = sys_open(path, 0);
+    if (fd < 0) {
+        const char msg[] = "yourun: cannot open file\n";
+        sys_write(1, msg, sizeof(msg) - 1);
+        return;
+    }
+    char *buf = m_new(char, fsize + 1);
+    int64_t n = sys_fread(fd, buf, fsize);
+    sys_close(fd);
+    if (n < 0) {
+        n = 0;
+    }
+    buf[n] = '\0';
+    run_script(buf, (size_t)n, path);
+}
+
 static void run_repl(void) {
     char linebuf[512];
     for (;;) {
@@ -224,13 +273,32 @@ int main(void) {
     gc_init(mpy_heap, mpy_heap + YOUOS_MPY_HEAP_SIZE);
     mp_init();
 
-    const char banner[] = "YouOS MicroPython -- int-only build, no imports yet (ESC to exit)\n";
-    sys_write(1, banner, sizeof(banner) - 1);
-    run_repl();
+    char script_path[256];
+    int64_t arglen = sys_get_exec_arg(script_path, sizeof(script_path));
 
-    // Not reachable until ESC is pressed. mp_deinit()/return here is what
-    // lets main() reach crt0.asm's post-call sys_exit(rax), handing
-    // control back to the shell (or whatever exec'd this).
+    if (arglen > 0) {
+        // yourun mode: run the given script, then exit. sys_exec cleared
+        // to a raw full-screen console before jumping here (same one the
+        // REPL uses -- not the desktop GUI's own windowed Terminal), and
+        // script execution is fast enough that returning immediately
+        // makes the whole thing look like a screen flicker with nothing
+        // readable. Pause for a keypress so the output actually sticks
+        // around long enough to read before handing control back.
+        run_script_file(script_path);
+        const char donemsg[] = "\n[yourun: finished -- press any key to return]\n";
+        sys_write(1, donemsg, sizeof(donemsg) - 1);
+        char anykey;
+        sys_read(0, &anykey, 1);
+    } else {
+        const char banner[] = "YouOS MicroPython -- int-only build, no imports yet (ESC to exit)\n";
+        sys_write(1, banner, sizeof(banner) - 1);
+        run_repl();
+    }
+
+    // mp_deinit()/return here is what lets main() reach crt0.asm's
+    // post-call sys_exit(rax), handing control back to the shell (or
+    // whatever exec'd this) -- reached either after ESC (REPL mode) or
+    // right after the script finishes (yourun mode).
     mp_deinit();
     return 0;
 }
