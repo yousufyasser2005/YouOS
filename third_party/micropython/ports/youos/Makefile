@@ -17,6 +17,7 @@ CFLAGS += -ffreestanding -fno-stack-protector -mno-red-zone \
 
 SRC_C += main.c gccollect.c libc_shim.c
 SRC_C += shared/runtime/gchelper_generic.c
+SRC_C += extmod/modhashlib.c
 
 # py.mk's default SRC_QSTR only scans py/ core files (see py/py.mk:254),
 # not this port's own SRC_C -- any new MP_QSTR_ identifier introduced in
@@ -26,6 +27,7 @@ SRC_C += shared/runtime/gchelper_generic.c
 # (Found the hard way in the host sandbox before this ever touched the
 # real build.)
 SRC_QSTR += main.c
+SRC_QSTR += extmod/modhashlib.c
 
 OBJ += $(PY_CORE_O)
 OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
