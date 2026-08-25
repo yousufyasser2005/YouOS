@@ -5,3 +5,12 @@ build/
 *.iso
 *.bin
 *.img
+
+# MicroPython import-testing sandbox: intentionally not committed, per
+# project convention -- host-gcc scratch harness for proving import/lexer/
+# GC behavior under ASan/UBSan before it touches the real freestanding
+# build. Safe to delete and recreate from scratch at any time.
+third_party/micropython/ports/youos-sandbox/
+
+# Python bytecode cache
+__pycache__/

@@ -9,10 +9,10 @@
 // written. Only the character source/sink changed: sys_read/sys_write
 // instead of host stdin/stdout.
 //
-// No argc/argv (crt0.asm's _start calls main() with none), no file-backed
-// import (mp_import_stat/mp_builtin_open/mp_lexer_new_from_file below all
-// report "doesn't exist" -- same as the sandbox, deliberately out of scope
-// for this milestone).
+// No argc/argv (crt0.asm's _start calls main() with none). File-backed
+// import IS supported (single-file modules only, no packages/__init__.py):
+// searches the running script's own directory first, then a fixed
+// ycfs/lib/ fallback. See mp_import_stat/mp_lexer_new_from_file below.
 
 #include "syscall.h"
 #include "py/compile.h"
@@ -31,9 +31,86 @@ void mp_hal_stdout_tx_strn_cooked(const char *str, size_t len) {
     sys_write(1, str, len);
 }
 
-// ---- import stubs (see sandbox main.c for the reasoning) --------------
+// ---- import: single-file modules only, no package/dir support ---------
+//
+// MicroPython core (py/builtinimport.c) calls these with BARE strings --
+// no directory info, since MICROPY_PY_SYS is off (verified against
+// upstream source: without sys.path, stat_top_level() does zero path
+// joining, just passes the qstr'd module name straight through). So the
+// entire search-path policy lives here, in the port layer, not in core.
+//
+// mp_import_stat("modname") is called first (package/dir check) -- we
+// always report NO_EXIST for this, since v1 is single-file-module only
+// (no __init__.py support). Core then appends ".py" and calls us again
+// with "modname.py", which is where the real search happens.
+//
+// mp_lexer_new_from_file gets called with that SAME bare "modname.py"
+// string afterward (core never sees our resolved path) -- so it has to
+// independently redo the identical two-directory search, not read back
+// anything cached here. No shared state between the two functions.
+//
+// Search order: the running script's own directory first, then a fixed
+// ycfs/lib/ fallback. g_script_dir is empty in REPL mode (no running
+// script) or if the script was given with no '/' in its path -- either
+// way, that naturally collapses to fallback-only search, no special
+// casing needed. Sandbox-verified (script-dir import, fallback import,
+// bare-path/REPL-mode fallback, not-found ImportError, nested imports,
+// from-import/import-as) under ASan/UBSan before this touched the real
+// build.
+static char g_script_dir[240];
+
+static void set_script_dir_from_path(const char *script_path) {
+    g_script_dir[0] = '\0';
+    const char *slash = NULL;
+    for (const char *p = script_path; *p; p++) {
+        if (*p == '/') slash = p;
+    }
+    if (slash) {
+        size_t len = (size_t)(slash - script_path);
+        if (len >= sizeof(g_script_dir)) {
+            len = sizeof(g_script_dir) - 1;
+        }
+        for (size_t i = 0; i < len; i++) {
+            g_script_dir[i] = script_path[i];
+        }
+        g_script_dir[len] = '\0';
+    }
+}
+
+static int resolve_import_path(const char *modfile, char *out, size_t outsz) {
+    unsigned int fsize;
+    unsigned char isdir;
+    if (g_script_dir[0]) {
+        int n = 0;
+        const char *s = g_script_dir;
+        while (*s && n < (int)outsz - 1) { out[n++] = *s++; }
+        if (n < (int)outsz - 1) out[n++] = '/';
+        const char *m = modfile;
+        while (*m && n < (int)outsz - 1) { out[n++] = *m++; }
+        out[n] = '\0';
+        if (sys_stat(out, &fsize, &isdir) == 0 && !isdir) {
+            return 1;
+        }
+    }
+    {
+        int n = 0;
+        const char *pfx = "ycfs/lib/";
+        while (*pfx && n < (int)outsz - 1) { out[n++] = *pfx++; }
+        const char *m = modfile;
+        while (*m && n < (int)outsz - 1) { out[n++] = *m++; }
+        out[n] = '\0';
+        if (sys_stat(out, &fsize, &isdir) == 0 && !isdir) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 mp_import_stat_t mp_import_stat(const char *path) {
-    (void)path;
+    char resolved[300];
+    if (resolve_import_path(path, resolved, sizeof(resolved))) {
+        return MP_IMPORT_STAT_FILE;
+    }
     return MP_IMPORT_STAT_NO_EXIST;
 }
 
@@ -110,8 +187,28 @@ mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) 
 MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
 
 mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
-    (void)filename;
-    mp_raise_OSError(MP_ENOENT);
+    const char *modfile = qstr_str(filename);
+    char resolved[300];
+    if (!resolve_import_path(modfile, resolved, sizeof(resolved))) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    unsigned int fsize = 0;
+    unsigned char isdir = 0;
+    if (sys_stat(resolved, &fsize, &isdir) < 0 || isdir) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    int fd = sys_open(resolved, 0);
+    if (fd < 0) {
+        mp_raise_OSError(MP_ENOENT);
+    }
+    char *buf = m_new(char, fsize + 1);
+    int64_t n = sys_fread(fd, buf, fsize);
+    sys_close(fd);
+    if (n < 0) {
+        n = 0;
+    }
+    buf[n] = '\0';
+    return mp_lexer_new_from_str_len(qstr_from_str(resolved), buf, (size_t)n, 0);
 }
 
 // ---- heap ---------------------------------------------------------------
@@ -343,13 +440,14 @@ int main(void) {
         // makes the whole thing look like a screen flicker with nothing
         // readable. Pause for a keypress so the output actually sticks
         // around long enough to read before handing control back.
+        set_script_dir_from_path(script_path);
         run_script_file(script_path);
         const char donemsg[] = "\n[yourun: finished -- press any key to return]\n";
         sys_write(1, donemsg, sizeof(donemsg) - 1);
         char anykey;
         sys_read(0, &anykey, 1);
     } else {
-        const char banner[] = "YouOS MicroPython -- int-only build, no imports yet (ESC to exit)\n";
+        const char banner[] = "YouOS MicroPython -- int-only build (ESC to exit)\n";
         sys_write(1, banner, sizeof(banner) - 1);
         run_repl();
     }
