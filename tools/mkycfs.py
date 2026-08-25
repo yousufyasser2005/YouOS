@@ -172,6 +172,12 @@ def main():
         b"for i in range(3):\n"
         b"    print(i * 10)\n"
     )
+    testmod_content = (
+        b"GREETING = 'hello from testmod'\n"
+        b"\n"
+        b"def add(a, b):\n"
+        b"    return a + b\n"
+    )
     roottest_content = b"Only root (uid 0) should be able to read this.\n"
     usertest_content  = b"Only the first non-root user (uid 1) should be able to read this.\n"
 
@@ -225,13 +231,18 @@ def main():
     ymjp_direct, ymjp_indirect, ymjp_ptrs, next_block, ymjp_blocks_used = \
         allocate_indirect_file(ymjp_content, next_block)
 
+    lib_block = next_block
+    testmod_block = next_block + 1
+    next_block += 2
+
     total_used_blocks = next_block
 
     root_dirents = (pack_dirent(2, "hello.txt", YCFS_TYPE_FILE) +
                      pack_dirent(3, "docs", YCFS_TYPE_DIR) +
                      pack_dirent(6, "roottest.txt", YCFS_TYPE_FILE) +
                      pack_dirent(7, "usertest.txt", YCFS_TYPE_FILE) +
-                     pack_dirent(12, "hello.py", YCFS_TYPE_FILE))
+                     pack_dirent(12, "hello.py", YCFS_TYPE_FILE) +
+                     pack_dirent(13, "lib", YCFS_TYPE_DIR))
     if wallpaper_content:
         root_dirents += pack_dirent(5, "wall.bmp", YCFS_TYPE_FILE)
     if ding_content:
@@ -243,6 +254,7 @@ def main():
     if ymjp_content:
         root_dirents += pack_dirent(11, "test.ymjp", YCFS_TYPE_FILE)
     docs_dirents = pack_dirent(4, "notes.txt", YCFS_TYPE_FILE)
+    lib_dirents = pack_dirent(14, "testmod.py", YCFS_TYPE_FILE)
 
     inode0 = pack_inode(0, 0, 0, 0, [])
     inode1 = pack_inode(YCFS_TYPE_DIR,  len(root_dirents),  1, 1, [root_block])
@@ -304,6 +316,11 @@ def main():
     inode_table += inode12
     used_inodes.append(12)
 
+    inode13 = pack_inode(YCFS_TYPE_DIR,  len(lib_dirents),     1, 1, [lib_block])
+    inode14 = pack_inode(YCFS_TYPE_FILE, len(testmod_content), 1, 1, [testmod_block])
+    inode_table += inode13 + inode14
+    used_inodes += [13, 14]
+
     inode_table += b'\x00' * (INODE_TABLE_BLOCKS * BLOCK_SIZE - len(inode_table))
 
     inode_bitmap = make_bitmap(used_inodes, TOTAL_INODES)
@@ -330,6 +347,8 @@ def main():
         f.seek(YCFS_START + roottest_block * BLOCK_SIZE);     f.write(pad_block(roottest_content))
         f.seek(YCFS_START + usertest_block * BLOCK_SIZE);     f.write(pad_block(usertest_content))
         f.seek(YCFS_START + hello_py_block * BLOCK_SIZE);      f.write(pad_block(hello_py_content))
+        f.seek(YCFS_START + lib_block      * BLOCK_SIZE);      f.write(pad_block(lib_dirents))
+        f.seek(YCFS_START + testmod_block  * BLOCK_SIZE);      f.write(pad_block(testmod_content))
         if wallpaper_content:
             write_indirect_file(f, wallpaper_direct, wallpaper_indirect, wallpaper_ptrs, wallpaper_content)
         if ding_content:
@@ -343,7 +362,7 @@ def main():
 
     print(f"YCFS formatted: {TOTAL_BLOCKS} blocks ({REGION_SIZE} bytes), {TOTAL_INODES} inodes")
     print(f"  journal: {JOURNAL_BLOCKS} blocks starting at block {JOURNAL_START_BLOCK}")
-    print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt, hello.py" +
+    print(f"  root (inode 1) -> hello.txt, docs/, roottest.txt, usertest.txt, hello.py, lib/" +
           (", wall.bmp" if wallpaper_content else "") + (", ding.wav" if ding_content else "") +
           (", test.png" if png_content else "") + (", test.jpg" if jpg_content else "") +
           (", test.ymjp" if ymjp_content else ""))
@@ -355,6 +374,8 @@ def main():
     print(f"  roottest.txt (inode 6, uid=0 perm=0600, {len(roottest_content)} bytes)")
     print(f"  usertest.txt (inode 7, uid=1 perm=0600, {len(usertest_content)} bytes)")
     print(f"  hello.py (inode 12, {len(hello_py_content)} bytes)")
+    print(f"  lib/ (inode 13) -> testmod.py")
+    print(f"  testmod.py (inode 14, {len(testmod_content)} bytes)")
     if ding_content:
         print(f"  ding.wav (inode 8, {len(ding_content)} bytes, {ding_blocks_used} blocks)")
     elif not os.path.exists(DING_WAV_PATH):
