@@ -165,9 +165,30 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const void* buf) {
         if (ata_wait_busy() < 0) return -1;
         if (ata_wait_drq()  < 0) return -1;
         outsw(ATA_PRIMARY_DATA, &ptr[s * 256], 256);
-        /* Flush cache */
+        /* Flush cache (0xE7 = ATA CACHE FLUSH). Two real bugs fixed here
+         * (2026-08-28 investigation -- runtime writes were silently not
+         * surviving a reboot/restart despite every higher layer reporting
+         * success):
+         *
+         * 1. No settling delay between issuing the command and polling
+         *    status. A real (and emulated) ATA controller needs a brief
+         *    moment after receiving a new command before it raises BSY in
+         *    response -- checking status immediately risks reading a
+         *    STALE value left over from the previous operation, making
+         *    ata_wait_busy() return instantly as if the flush were
+         *    already done when the drive hasn't even started processing
+         *    it. ata_delay() (the standard 400ns/4-status-read settle,
+         *    already defined in this file but never actually called
+         *    anywhere) fixes this.
+         *
+         * 2. The wait's return value was silently discarded. If the
+         *    flush timed out, nothing noticed -- the function proceeded
+         *    as if the write had genuinely committed to disk. Now
+         *    propagated as a real error.
+         */
         outb(ATA_PRIMARY_COMMAND, 0xE7);
-        ata_wait_busy();
+        ata_delay();
+        if (ata_wait_busy() < 0) return -1;
     }
     return 0;
 }
