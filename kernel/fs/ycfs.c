@@ -197,6 +197,39 @@ static void txn_commit(void) {
         hdr.type   = YCFS_JTYPE_COMMIT;
         raw_write_block(sb.journal_start_block + journal_pos, &hdr);
         journal_pos += 1;
+
+        /* Wipe the journal immediately -- confirmed bug fix, 2026-08-29.
+         * write_block() logs to the journal THEN performs the real,
+         * synchronous raw_write_block() in the same call (write-ahead
+         * logging here logs before the real write, it does not defer
+         * it) -- so by the time this function returns, every write made
+         * during this transaction is already fully durable on disk. The
+         * journal entries serve no further purpose after that point.
+         *
+         * Leaving them in place until the NEXT boot's
+         * ycfs_journal_replay() is what caused the bug: replay
+         * unconditionally re-applies every committed transaction it
+         * finds, with no way to know a target block has been legitimately
+         * updated again since. ycfs_create()'s own transaction (blank
+         * inode + new dirent) would sit here un-cleared for the rest of
+         * the session; a subsequent ycfs_write() call updates that same
+         * inode with the real file content -- correctly, but NOT inside
+         * a transaction, so the journal never learns about it. At the
+         * next boot, replay would blindly restore the stale blank inode
+         * from the old transaction, stomping the real content right back
+         * to size=0/no data block -- confirmed via direct byte-level
+         * inspection of disk.img (correct inode present pre-reboot,
+         * reverted to blank post-reboot, with the exact stale DESC/COMMIT
+         * records for this transaction still sitting in the journal
+         * beforehand). Clearing the journal here, right after everything
+         * in it has already been durably applied, removes that window
+         * entirely -- mirrors the same zero-fill idiom
+         * ycfs_journal_replay() already uses at its own end. */
+        static uint8_t zero[YCFS_BLOCK_SIZE];
+        for (uint32_t i = 0; i < YCFS_BLOCK_SIZE; i++) zero[i] = 0;
+        for (uint32_t i = 0; i < sb.journal_num_blocks; i++)
+            raw_write_block(sb.journal_start_block + i, zero);
+        journal_pos = 0;
     }
     current_txn_id = 0;
 }
