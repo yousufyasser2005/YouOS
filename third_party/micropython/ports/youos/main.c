@@ -117,6 +117,15 @@ mp_import_stat_t mp_import_stat(const char *path) {
 typedef struct _youos_file_obj_t {
     mp_obj_base_t base;
     int fd;
+    // Write-mode-only fields. sys_save_file() is a single-shot,
+    // whole-buffer call (create-or-overwrite at offset 0) -- there is no
+    // incremental "write more bytes to an already-open path" syscall. So
+    // write() accumulates into wbuf, and the real save only happens once,
+    // at close()/__exit__ time. Nothing is actually on disk until then --
+    // a crash or hang before close() means nothing gets saved.
+    bool write_mode;
+    char path[256];
+    vstr_t wbuf;
 } youos_file_obj_t;
 
 static mp_uint_t youos_file_read(mp_obj_t o_in, void *buf, mp_uint_t size, int *errcode) {
@@ -133,11 +142,32 @@ static mp_uint_t youos_file_read(mp_obj_t o_in, void *buf, mp_uint_t size, int *
     return (mp_uint_t)n;
 }
 
+static mp_uint_t youos_file_write(mp_obj_t o_in, const void *buf, mp_uint_t size, int *errcode) {
+    youos_file_obj_t *self = MP_OBJ_TO_PTR(o_in);
+    if (!self->write_mode) {
+        *errcode = MP_EBADF;
+        return MP_STREAM_ERROR;
+    }
+    vstr_add_strn(&self->wbuf, (const char *)buf, size);
+    return size;
+}
+
 static mp_uint_t youos_file_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t arg, int *errcode) {
     (void)arg;
     youos_file_obj_t *self = MP_OBJ_TO_PTR(o_in);
     switch (request) {
         case MP_STREAM_CLOSE:
+            if (self->write_mode) {
+                int64_t n = sys_save_file((unsigned long long)(uintptr_t)self->path,
+                                           (unsigned long long)(uintptr_t)self->wbuf.buf,
+                                           (unsigned long long)self->wbuf.len);
+                vstr_clear(&self->wbuf);
+                self->write_mode = false;
+                if (n < 0) {
+                    *errcode = MP_EIO;
+                    return MP_STREAM_ERROR;
+                }
+            }
             if (self->fd >= 0) {
                 sys_close(self->fd);
                 self->fd = -1;
@@ -152,6 +182,7 @@ static mp_uint_t youos_file_ioctl(mp_obj_t o_in, mp_uint_t request, uintptr_t ar
 static const mp_rom_map_elem_t youos_file_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_stream_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_readline), MP_ROM_PTR(&mp_stream_unbuffered_readline_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&mp_stream_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&mp_stream_close_obj) },
     { MP_ROM_QSTR(MP_QSTR___enter__), MP_ROM_PTR(&mp_identity_obj) },
     { MP_ROM_QSTR(MP_QSTR___exit__), MP_ROM_PTR(&mp_stream___exit___obj) },
@@ -160,6 +191,7 @@ static MP_DEFINE_CONST_DICT(youos_file_locals_dict, youos_file_locals_dict_table
 
 static const mp_stream_p_t youos_file_stream_p = {
     .read = youos_file_read,
+    .write = youos_file_write,
     .ioctl = youos_file_ioctl,
     .is_text = true,
 };
@@ -173,15 +205,50 @@ MP_DEFINE_CONST_OBJ_TYPE(
     );
 
 mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) {
-    (void)n_args;
-    (void)kwargs; // mode/encoding kwargs ignored for now -- read-only
+    (void)kwargs; // mode/encoding kwargs (encoding=, newline=, etc) still
+                  // ignored -- only the second POSITIONAL arg is read for
+                  // mode, matching the common open(path, 'w') call shape.
+                  // Only 'r' (default) and 'w' are supported; anything else
+                  // raises rather than silently doing the wrong thing.
     const char *path = mp_obj_str_get_str(args[0]);
-    int fd = sys_open(path, 0);
-    if (fd < 0) {
-        mp_raise_OSError(MP_ENOENT);
+    char mode0 = 'r';
+    if (n_args > 1) {
+        mode0 = mp_obj_str_get_str(args[1])[0];
     }
+
     youos_file_obj_t *o = mp_obj_malloc(youos_file_obj_t, &youos_type_file);
-    o->fd = fd;
+    o->fd = -1;
+    o->write_mode = false;
+
+    if (mode0 == 'w') {
+        // Paths must include a literal "ycfs/" prefix to actually route to
+        // YCFS at the kernel level (path_is_ycfs() in
+        // kernel/arch/x86_64/syscall.c) -- anything without it silently
+        // falls through to a flat, basename-only FAT16 fallback instead of
+        // erroring. Not auto-prefixed here deliberately, matching this
+        // port's existing convention (resolve_import_path's own ycfs/lib/
+        // fallback is written out explicitly, never assumed).
+        size_t plen = 0;
+        while (path[plen] && plen < sizeof(o->path) - 1) {
+            o->path[plen] = path[plen];
+            plen++;
+        }
+        if (path[plen] != '\0') {
+            mp_raise_OSError(MP_EINVAL);
+        }
+        o->path[plen] = '\0';
+        vstr_init(&o->wbuf, 64);
+        o->write_mode = true;
+    } else if (mode0 == 'r') {
+        int fd = sys_open(path, 0);
+        if (fd < 0) {
+            mp_raise_OSError(MP_ENOENT);
+        }
+        o->fd = fd;
+    } else {
+        mp_raise_OSError(MP_EINVAL);
+    }
+
     return MP_OBJ_FROM_PTR(o);
 }
 MP_DEFINE_CONST_FUN_OBJ_KW(mp_builtin_open_obj, 1, mp_builtin_open);
