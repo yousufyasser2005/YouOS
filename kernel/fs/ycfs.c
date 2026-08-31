@@ -163,10 +163,17 @@ static int raw_write_block(uint32_t block_num, const void* buf) {
 static uint32_t current_txn_id = 0;
 static uint32_t journal_pos    = 0;
 static uint32_t next_txn_id    = 1;
+/* Set by journal_log()/txn_commit() whenever journal_pos wraps back to 0
+ * mid-transaction (i.e. this transaction's own writes filled the journal
+ * region and looped). When set, a transaction's entries are NOT a single
+ * contiguous [0, journal_pos) range, so txn_commit()'s wipe must fall
+ * back to clearing the whole journal region instead of just that range.
+ * Reset at the start of every transaction in txn_begin(). */
+static int txn_wrapped = 0;
 
 static int journal_log(uint32_t txn_id, uint32_t target_block, const void* data) {
     if (sb.journal_num_blocks == 0) return -1; /* unformatted / no journal */
-    if (journal_pos + 2 > sb.journal_num_blocks) journal_pos = 0;
+    if (journal_pos + 2 > sb.journal_num_blocks) { txn_wrapped = 1; journal_pos = 0; }
     ycfs_journal_hdr_t hdr;
     uint8_t* hp = (uint8_t*)&hdr;
     for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
@@ -182,13 +189,14 @@ static int journal_log(uint32_t txn_id, uint32_t target_block, const void* data)
 
 static uint32_t txn_begin(void) {
     current_txn_id = next_txn_id++;
+    txn_wrapped = 0;
     return current_txn_id;
 }
 
 static void txn_commit(void) {
     if (current_txn_id == 0) return;
     if (sb.journal_num_blocks != 0) {
-        if (journal_pos + 1 > sb.journal_num_blocks) journal_pos = 0;
+        if (journal_pos + 1 > sb.journal_num_blocks) { txn_wrapped = 1; journal_pos = 0; }
         ycfs_journal_hdr_t hdr;
         uint8_t* hp = (uint8_t*)&hdr;
         for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
@@ -197,6 +205,12 @@ static void txn_commit(void) {
         hdr.type   = YCFS_JTYPE_COMMIT;
         raw_write_block(sb.journal_start_block + journal_pos, &hdr);
         journal_pos += 1;
+        uint32_t commit_pos = journal_pos; /* this txn's entries span
+                                             * [0, commit_pos) UNLESS
+                                             * txn_wrapped is set, in which
+                                             * case that range isn't
+                                             * reliable and we fall back
+                                             * to a full-region wipe below */
 
         /* Wipe the journal immediately -- confirmed bug fix, 2026-08-29.
          * write_block() logs to the journal THEN performs the real,
@@ -227,7 +241,8 @@ static void txn_commit(void) {
          * ycfs_journal_replay() already uses at its own end. */
         static uint8_t zero[YCFS_BLOCK_SIZE];
         for (uint32_t i = 0; i < YCFS_BLOCK_SIZE; i++) zero[i] = 0;
-        for (uint32_t i = 0; i < sb.journal_num_blocks; i++)
+        uint32_t wipe_count = txn_wrapped ? sb.journal_num_blocks : commit_pos;
+        for (uint32_t i = 0; i < wipe_count; i++)
             raw_write_block(sb.journal_start_block + i, zero);
         journal_pos = 0;
     }
