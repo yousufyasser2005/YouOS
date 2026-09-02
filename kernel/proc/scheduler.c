@@ -117,9 +117,48 @@ void scheduler_tick(void) {
 }
 
 void process_sleep(uint64_t ticks) {
-    current_process->wake_tick = total_ticks + ticks;
+    uint64_t target = total_ticks + ticks;
+    current_process->wake_tick = target;
     current_process->state     = PROCESS_SLEEPING;
     process_yield();
+
+    /* If do_switch() found another PROCESS_READY process to hand off to,
+     * control returns here only once scheduler_tick() has observed
+     * total_ticks >= wake_tick and flipped us back to READY/RUNNING --
+     * i.e. we really did sleep the requested duration cooperatively, and
+     * the loop below is a no-op (condition already false).
+     *
+     * But today, process_create() -- the only way a second process_t
+     * ever enters process_list -- is never actually called anywhere in
+     * this codebase (confirmed by a full-tree grep). Every real program
+     * (shell commands, desktop, mpy via yourun, nested execs) runs via
+     * sys_exec()'s same-context nested call or the boot-time
+     * jump_to_userspace excursion, never as a second scheduler entry.
+     * So in practice do_switch() always finds itself as the only
+     * candidate and returns immediately without switching or waiting at
+     * all -- process_yield() above returns right back here with no real
+     * time having passed, current_process->state left at SLEEPING even
+     * though this process never actually stopped running.
+     *
+     * Detect that case (target not yet reached) and fall back to
+     * directly halting the CPU until real time elapses, using the timer
+     * interrupt that's already firing regardless of whether the
+     * scheduler's multi-process machinery is ever wired up. Interrupts
+     * are disabled for the whole syscall handler (cli on entry in
+     * syscall_entry.asm, sti only right before sysretq at the very end)
+     * so they must be explicitly re-enabled here or the timer IRQ could
+     * never fire and hlt would wait forever -- sti+hlt together is the
+     * standard atomic idiom to avoid missing an interrupt that arrives
+     * between the check and the halt, already used elsewhere in this
+     * file's panic/crash halt loops. total_ticks is read through a
+     * volatile pointer here since it's not declared volatile itself --
+     * without that, the compiler could legally cache the read across
+     * loop iterations and never observe the IRQ handler's update. */
+    volatile uint64_t* vt = &total_ticks;
+    while (*vt < target) {
+        __asm__ volatile ("sti; hlt");
+    }
+    current_process->state = PROCESS_RUNNING;
 }
 
 void process_exit(void) {
