@@ -113,7 +113,9 @@ void mouse_init(void) {
 }
 void mouse_update_usb_delta(int dx, int dy, int buttons) {
     mouse_x += dx; mouse_y -= dy;
-    if(mouse_x<0)mouse_x=0; if(mouse_x>1023)mouse_x=1023;
-    if(mouse_y<0)mouse_y=0; if(mouse_y>767)mouse_y=767;
+    if (mouse_x < 0)    mouse_x = 0;
+    if (mouse_x > 1023)  mouse_x = 1023;
+    if (mouse_y < 0)    mouse_y = 0;
+    if (mouse_y > 767)  mouse_y = 767;
     mouse_buttons = buttons & 0x07;
 }

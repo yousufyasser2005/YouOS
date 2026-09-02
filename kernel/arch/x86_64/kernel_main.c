@@ -169,6 +169,10 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
 
     ata_init();
     int fat16_ok = fat16_init();
+    if (fat16_ok != 0) {
+        vga_puts_color("  [!!] FAT16: init failed, /disk will not be mounted\n",
+                       VGA_YELLOW, VGA_BLACK);
+    }
     syslog_init();
     crash_init();
     ipc_init();

@@ -124,7 +124,8 @@ static int root_find(const char* name83, fat16_dirent_t* entry,
             if ((uint8_t)dir[e].name[0] == 0xE5) continue; /* deleted */
             if (dir[e].attributes == FAT16_ATTR_LFN) continue;
             char entry_name[11];
-            for (int k = 0; k < 11; k++) entry_name[k] = dir[e].name[k];
+            for (int k = 0; k < 8; k++) entry_name[k]     = dir[e].name[k];
+            for (int k = 0; k < 3; k++) entry_name[8 + k] = dir[e].ext[k];
             if (!fat_strncmp(entry_name, name83, 11)) {
                 *entry     = dir[e];
                 *entry_lba = root_dir_lba + s;
@@ -212,6 +213,10 @@ int fat16_init(void) {
     vga_puts_color("  [OK] FAT16 filesystem mounted\n",
                    VGA_LIGHT_GREEN, VGA_BLACK);
     return 0;
+}
+
+int fat16_is_initialized(void) {
+    return initialized;
 }
 
 int fat16_open(const char* path) {
@@ -433,7 +438,8 @@ int fat16_create(const char* path) {
     if (!root_alloc(&new_lba, &new_off)) return -1;
 
     fat16_dirent_t ne;
-    for (int i = 0; i < 11; i++) ne.name[i] = name83[i];
+    for (int i = 0; i < 8; i++) ne.name[i] = name83[i];
+    for (int i = 0; i < 3; i++) ne.ext[i]  = name83[8 + i];
     ne.attributes        = FAT16_ATTR_ARCHIVE;
     ne.reserved          = 0;
     ne.create_time_tenth = 0;

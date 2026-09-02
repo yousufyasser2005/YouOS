@@ -482,8 +482,10 @@ static uint64_t sys_stat(uint64_t p,uint64_t so,uint64_t io,uint64_t a4,uint64_t
     } else {
         r = fat16_stat(path,&sz,&isd);
     }
-    if(r<0)return (uint64_t)-1ULL;
-    if(so)*(uint32_t*)so=sz;if(io)*(uint8_t*)io=isd;return 0;
+    if (r < 0) return (uint64_t)-1ULL;
+    if (so) *(uint32_t*)so = sz;
+    if (io) *(uint8_t*)io  = isd;
+    return 0;
 }
 static uint64_t sys_mkdir(uint64_t p,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a2;(void)a3;(void)a4;(void)a5;

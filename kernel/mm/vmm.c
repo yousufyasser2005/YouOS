@@ -45,10 +45,20 @@ static pte_t* get_or_create(pte_t* table, uint64_t idx, uint64_t flags)
         uint64_t huge_base = entry & 0x000FFFFFFFE00000ULL;
         uint64_t pt_flags  = (entry & 0xFFF) & ~PTE_HUGE;
 
-        /* Fill new PT with 4KB pages covering same physical range */
+        /* Fill new PT with 4KB pages covering same physical range,
+         * preserving the ORIGINAL huge page's own permission bits
+         * (pt_flags) -- NOT the generic 'flags' parameter this
+         * function was called with for an unrelated lookup/create at
+         * this level. Using 'flags' here was a real bug: it silently
+         * widened every split page to whatever the triggering caller
+         * happened to request (in practice always PTE_WRITABLE|
+         * PTE_USER, per vmm_map()'s call sites), discarding the
+         * original page's real protection (e.g. kernel-only or
+         * read-only memory could become user-writable the moment it
+         * got split). */
         for (int i = 0; i < 512; i++) {
             new_pt[i] = (huge_base + (uint64_t)i * PAGE_SIZE)
-                       | flags | PTE_PRESENT;
+                       | pt_flags | PTE_PRESENT;
         }
 
         /* Replace huge page entry with new PT */

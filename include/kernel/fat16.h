@@ -58,6 +58,7 @@ typedef struct {
 } fat16_entry_t;
 
 int  fat16_init(void);
+int  fat16_is_initialized(void);
 int  fat16_open(const char* path);
 int  fat16_read(int fd, void* buf, uint32_t size);
 int  fat16_close(int fd);

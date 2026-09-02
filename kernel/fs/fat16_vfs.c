@@ -91,6 +91,8 @@ static vfs_node_t disk_node;
 
 vfs_node_t* fat16_vfs_mount(void)
 {
+    if (!fat16_is_initialized()) return 0;
+
     for (int i = 0; i < VFS_NAME_MAX; i++) disk_node.name[i] = 0;
     disk_node.name[0] = 'd';
     disk_node.name[1] = 'i';
