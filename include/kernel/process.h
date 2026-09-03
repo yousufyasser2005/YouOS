@@ -48,6 +48,11 @@ typedef struct process {
     char             name[PROCESS_NAME_MAX];
     process_state_t  state;
     cpu_context_t    context;
+    address_space_t  as;          /* Address space this process runs in.
+                                    * Kernel-only processes share kernel_as;
+                                    * isolated processes get their own via
+                                    * vmm_create_user_as(). do_switch() reloads
+                                    * CR3 from this on every context switch. */
     uint64_t         stack_base;
     uint64_t         stack_top;
     uint64_t         ticks;
@@ -57,7 +62,8 @@ typedef struct process {
 } process_t;
 
 void       scheduler_init(void);
-process_t* process_create(const char* name, void (*entry)(void));
+process_t* process_create(const char* name, void (*entry)(void),
+                          address_space_t as);
 void       process_yield(void);
 void       process_sleep(uint64_t ticks);
 void       process_exit(void);
@@ -67,4 +73,3 @@ void       scheduler_tick(void);
 uint64_t   scheduler_get_ticks(void);
 
 #endif
-#define PAGE_SIZE 4096

@@ -2,6 +2,7 @@
 #include <kernel/heap.h>
 #include <kernel/pmm.h>
 #include <kernel/vga.h>
+#include <kernel/vmm.h>
 
 extern void switch_context(uint64_t* old_rsp_ptr, uint64_t new_rsp);
 extern void process_trampoline(void);
@@ -34,6 +35,7 @@ void scheduler_init(void) {
     kp->state = PROCESS_RUNNING;
     kp->name[0]='k'; kp->name[1]='e'; kp->name[2]='r';
     kp->name[3]='n'; kp->name[4]='e'; kp->name[5]='l';
+    kp->as          = kernel_as;
     kp->stack_base  = 0;
     kp->stack_top   = 0;
     kp->timeslice   = TIMESLICE;
@@ -43,17 +45,27 @@ void scheduler_init(void) {
     next_pid        = 2;
 }
 
-process_t* process_create(const char* name, void (*entry)(void)) {
+process_t* process_create(const char* name, void (*entry)(void),
+                          address_space_t as) {
     process_t* p = (process_t*)kzalloc(sizeof(process_t));
     if (!p) return 0;
 
-    void* stack_page = pmm_alloc_page();
+    /* Kernel stacks must come from the kernel heap (HEAP_START, PML4
+     * index 256), not raw pmm_alloc_page() (PML4 index 0). The low
+     * identity map is deliberately excluded from every address space
+     * vmm_create_user_as() creates -- a stack allocated from it would
+     * vanish from the page tables the instant CR3 switches to a real
+     * process address space, including the one currently executing
+     * on it. The kernel heap range is copied into every address
+     * space, so it stays valid across any CR3 switch. */
+    void* stack_page = kmalloc_aligned(PROCESS_STACK_SIZE, PAGE_SIZE);
     if (!stack_page) { kfree(p); return 0; }
 
     p->pid        = next_pid++;
     p->state      = PROCESS_READY;
+    p->as         = as;
     p->stack_base = (uint64_t)stack_page;
-    p->stack_top  = (uint64_t)stack_page + PAGE_SIZE;
+    p->stack_top  = (uint64_t)stack_page + PROCESS_STACK_SIZE;
     p->timeslice  = TIMESLICE;
 
     int i = 0;
@@ -84,6 +96,15 @@ static void do_switch(void) {
     if (old->state == PROCESS_RUNNING) old->state = PROCESS_READY;
     next->state    = PROCESS_RUNNING;
     next->timeslice = TIMESLICE;   /* reset timeslice on switch-in */
+
+    /* Reload CR3 only if the incoming process actually uses a
+     * different address space -- avoids a needless full TLB flush
+     * when switching between two processes that share kernel_as
+     * (true for every process today; will matter once real
+     * per-process user address spaces exist). */
+    if (next->as.pml4_phys != old->as.pml4_phys) {
+        vmm_switch(&next->as);
+    }
 
     switch_context(&old->context.kernel_rsp, next->context.kernel_rsp);
 }
