@@ -18,6 +18,12 @@ static int ustrncmp(const char* a, const char* b, int n) {
 }
 static void print(const char* s) { sys_write(1, s, ustrlen(s)); }
 static void println(const char* s) { print(s); print("\n"); }
+static void print_dec(uint64_t n) {
+    if (n == 0) { print("0"); return; }
+    char buf[21]; int i = 20; buf[i] = 0;
+    while (n > 0) { buf[--i] = (char)('0' + (n % 10)); n /= 10; }
+    print(&buf[i]);
+}
 
 static void readline(char* buf, int max) {
     int i = 0;
@@ -46,9 +52,34 @@ static void cmd_help(void) {
     println("  exec <name>    - run a program from initrd");
     println("  cat <file>     - print a file");
     println("  pid            - show current PID");
+    println("  ticks          - show scheduler tick count (Phase 2 test)");
+    println("  spin           - pure ring-3 busy loop, prints tick delta (Phase 2 test)");
     println("  exit           - exit shell");
     println("  shutdown       - power off");
     println("  reboot         - reboot system");
+}
+
+/* Pure ring-3 busy loop -- deliberately makes NO syscalls inside the
+ * loop itself, so nothing here can incidentally re-enable interrupts
+ * (unlike keyboard_getchar()'s poll loop, which calls process_yield()
+ * -> sti on every iteration). This is the real Phase 2 test: if the
+ * timer can preempt genuinely-running ring-3 code with no syscalls
+ * involved, ticks should advance close to normal (100/sec) during the
+ * loop. If it can't (today's IF=0 behavior), ticks should barely move
+ * at all regardless of how long the loop runs, since the only ticks
+ * counted are from the sys_ticks() calls themselves and whatever ran
+ * before/after in kernel context. */
+static void cmd_spin(void) {
+    uint64_t t0 = sys_ticks();
+    print("spin: t0="); print_dec(t0); print("\n");
+    volatile uint64_t counter = 0;
+    for (volatile uint64_t i = 0; i < 2000000000ULL; i++) {
+        counter++;
+    }
+    uint64_t t1 = sys_ticks();
+    print("spin: t1="); print_dec(t1);
+    print("  delta="); print_dec(t1 - t0);
+    print("  counter="); print_dec((uint64_t)counter); print("\n");
 }
 
 static void cmd_cat(const char* path) {
@@ -74,6 +105,8 @@ int main(void) {
         else if (ustrcmp(line, "reboot") == 0)   { println("Rebooting..."); sys_reboot(); }
         else if (ustrcmp(line, "exit") == 0)     { println("Goodbye!"); sys_exit(0); }
         else if (ustrcmp(line, "pid") == 0)      { println("(PID syscall not wired to print yet)"); }
+        else if (ustrcmp(line, "ticks") == 0)    { print("ticks="); print_dec(sys_ticks()); print("\n"); }
+        else if (ustrcmp(line, "spin") == 0)     cmd_spin();
         else if (ustrncmp(line, "cat ", 4) == 0) cmd_cat(line + 4);
         else if (ustrncmp(line, "exec ", 5) == 0) {
             int64_t r = sys_exec(line + 5);
