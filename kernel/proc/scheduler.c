@@ -64,6 +64,7 @@ process_t* process_create(const char* name, void (*entry)(void),
     p->pid        = next_pid++;
     p->state      = PROCESS_READY;
     p->as         = as;
+    p->real_exit  = 1;
     p->stack_base = (uint64_t)stack_page;
     p->stack_top  = (uint64_t)stack_page + PROCESS_STACK_SIZE;
     p->timeslice  = TIMESLICE;
@@ -104,6 +105,35 @@ static void do_switch(void) {
      * per-process user address spaces exist). */
     if (next->as.pml4_phys != old->as.pml4_phys) {
         vmm_switch(&next->as);
+    }
+
+    /* Reload TSS.RSP0 to the incoming process's own kernel stack, so a
+     * maskable interrupt (the timer, now that ring-3 runs with IF=1)
+     * firing while this process executes ring-3 code lands safely on
+     * ITS stack, not whatever the previous process left there. Skip
+     * processes with no dedicated kernel stack of their own
+     * (stack_top == 0 -- true of pid 1, which owns the original
+     * boot-time kernel stack rather than one process_create()
+     * allocated, and isn't switched to via this path in the same way
+     * a real spawned child is). */
+    if (next->stack_top != 0) {
+        extern void tss_set_kernel_stack(uint64_t);
+        tss_set_kernel_stack(next->stack_top);
+
+        /* syscall_entry.asm uses a SEPARATE global (kernel_stack_top,
+         * declared in syscall.c) for SYSCALL/SYSRET-driven ring3->ring0
+         * entry -- it does NOT consult TSS.RSP0 at all (that's only for
+         * IDT-gate/interrupt-driven entry, e.g. the timer or a fault).
+         * Both mechanisms need to point at the SAME incoming process's
+         * kernel stack, or a syscall issued by this process would run
+         * on whatever stack this global last held (confirmed as the
+         * root cause of a real crash: a process_create()-spawned
+         * child's first syscall corrupted memory and eventually
+         * crashed with an unrelated-looking Invalid Opcode fault,
+         * because this global was still 0 -- syscall_init() hadn't
+         * even run yet at the point the child was created). */
+        extern uint64_t kernel_stack_top;
+        kernel_stack_top = next->stack_top;
     }
 
     switch_context(&old->context.kernel_rsp, next->context.kernel_rsp);
@@ -180,6 +210,20 @@ void process_sleep(uint64_t ticks) {
         __asm__ volatile ("sti; hlt");
     }
     current_process->state = PROCESS_RUNNING;
+}
+
+/* Generic entry point for a process_t that should launch straight into
+ * a ring-3 program. Callers set user_entry/user_stack_top on the
+ * returned process_t BEFORE it's ever scheduled (it starts life
+ * PROCESS_READY, not RUNNING, so there's no race with do_switch()
+ * picking it up early) and pass this function as process_create()'s
+ * 'entry' parameter. jump_to_userspace() never returns in the normal
+ * sense -- control only comes back to kernel context later via a
+ * syscall or fault, never back to this call site. */
+void process_ring3_trampoline(void) {
+    process_t* p = process_current();
+    extern void jump_to_userspace(uint64_t entry, uint64_t stack_top);
+    jump_to_userspace(p->user_entry, p->user_stack_top);
 }
 
 void process_exit(void) {

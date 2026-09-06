@@ -58,12 +58,24 @@ typedef struct process {
     uint64_t         ticks;
     uint64_t         wake_tick;
     uint32_t         timeslice;   /* ticks remaining in current slice */
+    int              real_exit;    /* Set by process_create() (never by
+                                     * scheduler_init(), i.e. never true for
+                                     * pid 1). Tells sys_exit() to hand off
+                                     * via the real scheduler (process_exit())
+                                     * instead of the legacy sys_exec()
+                                     * longjmp mechanism, which only pid 1's
+                                     * synchronous exec chain still uses. */
+    uint64_t         user_entry;    /* Ring-3 entry point. Read by
+                                     * process_ring3_trampoline(); 0 for
+                                     * kernel-only processes. */
+    uint64_t         user_stack_top; /* Ring-3 stack top, likewise. */
     struct process*  next;
 } process_t;
 
 void       scheduler_init(void);
 process_t* process_create(const char* name, void (*entry)(void),
                           address_space_t as);
+void       process_ring3_trampoline(void);
 void       process_yield(void);
 void       process_sleep(uint64_t ticks);
 void       process_exit(void);

@@ -55,7 +55,16 @@ static int path_is_ycfs(const char* p);
 
 static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)code;(void)a2;(void)a3;(void)a4;(void)a5;
-    process_current()->state = PROCESS_DEAD;
+    process_t* p = process_current();
+    p->state = PROCESS_DEAD;
+    if (p->real_exit) {
+        /* Real process_create()-spawned process: hand off via the
+         * actual scheduler instead of the legacy sys_exec() longjmp
+         * mechanism, which only pid 1's synchronous exec chain still
+         * uses. process_exit() marks DEAD (already done above, but it
+         * does so again harmlessly) and never returns. */
+        process_exit();
+    }
     if (kernel_exit_jmp_valid) {
         kernel_exit_jmp_valid = 0;
         klongjmp(&kernel_exit_jmp);
