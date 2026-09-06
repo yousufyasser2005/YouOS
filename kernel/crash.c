@@ -101,7 +101,28 @@ void crash_handle(registers_t* regs) {
     SA2(crash_log.proc_name[0]?crash_log.proc_name:"kernel");
     smsg[si]=0;
 
-    /* Ring-3: recover */
+    /* Ring-3, real process_create()-spawned child: recover via the
+     * actual scheduler instead of the old longjmp mechanism, which
+     * this process was never launched through. Checked BEFORE
+     * kernel_exit_jmp_valid deliberately -- real_exit is an explicit,
+     * unambiguous per-process signal, while kernel_exit_jmp_valid is a
+     * global that could be stale-true from pid 1's own earlier exec
+     * context even while a different, real child is the one actually
+     * crashing right now. Without this branch, a real child's fault
+     * fell through to the ring-0 halt path below and took down the
+     * whole machine over a single process's bug. */
+    if(ring==3&&proc&&proc->real_exit){
+        crash_log.recovered=1;
+        crash_log.crash_count++;
+        crash_save();
+        SA2(" [RECOVERED]");
+        syslog_write("CRASH",smsg);
+        proc->state=PROCESS_DEAD;
+        process_exit();
+        /* unreachable */
+    }
+
+    /* Ring-3, legacy sys_exec() longjmp chain: recover */
     if(ring==3&&kernel_exit_jmp_valid){
         crash_log.recovered=1;
         crash_log.crash_count++;
