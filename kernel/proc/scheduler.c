@@ -242,3 +242,50 @@ process_t* process_get(uint32_t pid) {
     do { if (p->pid == pid) return p; p = p->next; } while (p != process_list);
     return 0;
 }
+
+/* Unlink a process_t from the circular process_list. Handles the
+* head-of-list case for correctness even though nothing currently
+* reaps pid 1 (process_list always points at it in practice, since
+* it's the only process scheduler_init() ever creates directly) --
+* not relying on that staying true forever. */
+static void process_unlink(process_t* victim) {
+    if (!process_list) return;
+    if (process_list == victim) {
+        if (victim->next == victim) { process_list = 0; return; }
+        process_t* tail = process_list;
+        while (tail->next != process_list) tail = tail->next;
+        process_list = victim->next;
+        tail->next   = process_list;
+        return;
+    }
+    process_t* p = process_list;
+    do {
+        if (p->next == victim) { p->next = victim->next; return; }
+        p = p->next;
+    } while (p != process_list);
+}
+
+/* Free a dead process's resources: unlink it from process_list, free
+* its kernel stack (kmalloc_aligned()-backed, per process_create()),
+* destroy its address space (vmm_destroy_user_as() already safely
+* no-ops for a shared kernel_as rather than a real per-process one),
+* then free the process_t itself.
+*
+* SAFETY: only call this once the caller has observed
+* child->state == PROCESS_DEAD. By that point do_switch() has
+* already completed a real switch_context() away from this process
+* (that's the only way its state could have become visible as DEAD
+* to anything else) so its kernel stack is definitely not in use by
+* the CPU anymore -- freeing it is safe, not a use-after-free of a
+* still-running context. This function itself does NOT check for
+* PROCESS_DEAD beyond a defensive guard, since the real safety
+* invariant is "has anything actually observed this transition",
+* which only the caller can know. */
+void process_reap(process_t* child) {
+    if (!child) return;
+    if (child->state != PROCESS_DEAD) return;
+    process_unlink(child);
+    if (child->stack_base) kfree_aligned((void*)child->stack_base);
+    vmm_destroy_user_as(&child->as);
+    kfree(child);
+}

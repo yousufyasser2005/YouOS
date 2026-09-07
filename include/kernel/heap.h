@@ -41,11 +41,20 @@ void* kmalloc(size_t size);
 /* Allocate and zero size bytes */
 void* kzalloc(size_t size);
 
-/* Allocate size bytes aligned to align boundary */
+/* Allocate size bytes aligned to align boundary. The returned pointer
+ * is NOT directly precede by a valid block_header_t the way a plain
+ * kmalloc() pointer is -- free it with kfree_aligned(), never kfree(). */
 void* kmalloc_aligned(size_t size, size_t align);
 
 /* Free a pointer returned by kmalloc */
 void kfree(void* ptr);
+
+/* Free a pointer returned by kmalloc_aligned(). MUST be used instead
+ * of kfree() for such pointers -- kfree() assumes a block_header_t
+ * sits exactly HEADER_SIZE bytes before the pointer, which is only
+ * true for kmalloc()'s own return value, not an aligned pointer
+ * found somewhere inside a larger raw allocation. */
+void kfree_aligned(void* ptr);
 
 /* Print heap statistics to VGA */
 void heap_dump_stats(void);

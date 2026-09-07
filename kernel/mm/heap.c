@@ -159,18 +159,50 @@ void* kzalloc(size_t size)
 
 /* =========================================================================
  * kmalloc_aligned — allocate with alignment
+ *
+ * The returned pointer is somewhere INSIDE a larger raw kmalloc()
+ * block, not immediately after that block's own header the way a
+ * plain kmalloc() pointer is -- so kfree() cannot safely reverse it
+ * (it would read garbage HEADER_SIZE bytes before the aligned
+ * pointer and correctly report corruption, since there usually
+ * isn't a real header there). To make this pointer freeable at all,
+ * the original raw kmalloc() pointer is stashed in the
+ * sizeof(void*) bytes immediately before the returned aligned
+ * pointer; kfree_aligned() reads it back out to find and free the
+ * real underlying block. Always goes through this path, even for
+ * align <= 8 -- a uniform contract (every kmalloc_aligned() result
+ * is freed via kfree_aligned(), full stop) is worth the few extra
+ * bytes over a fast-path special case a caller could easily free
+ * the wrong way.
+ *
+ * This was a real, previously-latent bug: kfree_aligned() didn't
+ * exist and nothing freed a kmalloc_aligned() pointer anywhere in
+ * this codebase until process_reap() (real process teardown)
+ * started doing so and immediately hit heap corruption.
  * ========================================================================= */
 void* kmalloc_aligned(size_t size, size_t align)
 {
-    if (align <= 8) return kmalloc(size);
+    if (align < 8) align = 8;
 
-    /* Allocate extra space to find an aligned address within */
-    void* raw = kmalloc(size + align + HEADER_SIZE);
+    void* raw = kmalloc(size + align + sizeof(void*));
     if (!raw) return 0;
 
-    uint64_t addr    = (uint64_t)raw;
+    uint64_t addr    = (uint64_t)raw + sizeof(void*);
     uint64_t aligned = (addr + align - 1) & ~(uint64_t)(align - 1);
+
+    ((void**)aligned)[-1] = raw;
+
     return (void*)aligned;
+}
+
+/* =========================================================================
+ * kfree_aligned — free a pointer returned by kmalloc_aligned()
+ * ========================================================================= */
+void kfree_aligned(void* ptr)
+{
+    if (!ptr) return;
+    void* raw = ((void**)ptr)[-1];
+    kfree(raw);
 }
 
 /* =========================================================================

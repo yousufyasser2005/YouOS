@@ -76,6 +76,7 @@ void       scheduler_init(void);
 process_t* process_create(const char* name, void (*entry)(void),
                           address_space_t as);
 void       process_ring3_trampoline(void);
+void       process_reap(process_t* child);
 void       process_yield(void);
 void       process_sleep(uint64_t ticks);
 void       process_exit(void);
