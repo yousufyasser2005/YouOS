@@ -19,38 +19,6 @@ kjmp_buf_t kernel_exit_jmp;
 int        kernel_exit_jmp_valid = 0;
 static uint8_t syscall_kernel_stack[262144];
 
-/* Nested-exec support -----------------------------------------------------
- * A sys_exec() call doesn't return in the normal sense until its child
- * eventually calls sys_exit() -- it's suspended mid-call for as long as
- * the child runs. If that child itself calls sys_exec() again (e.g.
- * desktop execs shell, then shell execs mpy), the OUTER sys_exec call is
- * still live and its state must survive the inner one. These were
- * previously single `static` globals shared by every nesting level,
- * which meant a second level of exec silently corrupted the outer
- * level's saved kernel stack, CR3, and jump target: the same 32KB
- * child_kstack buffer was reused for every level, so the inner child's
- * kernel-side stack activity overwrote the outer, still-suspended
- * call's live stack frame. Bounded to MAX_EXEC_DEPTH levels -- deep
- * enough for any realistic nesting (desktop -> shell -> mpy is 2), and
- * sys_exec fails loudly (returns -3) rather than corrupting memory if
- * ever exceeded. */
-#define MAX_EXEC_DEPTH   8
-#define EXEC_KSTACK_SIZE 32768
-static uint8_t     exec_kstacks[MAX_EXEC_DEPTH][EXEC_KSTACK_SIZE];
-static uint64_t    exec_saved_kstack[MAX_EXEC_DEPTH];
-static uint64_t    exec_saved_user_rsp[MAX_EXEC_DEPTH];
-static uint64_t    exec_saved_cr3[MAX_EXEC_DEPTH];
-static kjmp_buf_t   exec_saved_jmp[MAX_EXEC_DEPTH];
-static int          exec_depth = 0;
-
-/* Optional argument string passed to sys_exec (e.g. a script path for
- * "mpy"), one slot per nesting level for the same reason as the state
- * above: the caller's string lives in the caller's address space, which
- * isn't mapped into the child's fresh one, so it has to be copied out
- * before the CR3 switch rather than referenced by pointer. */
-#define EXEC_ARG_BUF_SIZE 256
-static char exec_arg_buf[MAX_EXEC_DEPTH][EXEC_ARG_BUF_SIZE];
-
 static int path_is_ycfs(const char* p);
 
 static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
@@ -113,39 +81,41 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
 static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3;(void)a4;(void)a5;
     const char* name = (const char*)path;
-    syslog_write("EXEC",name);
+    syslog_write("EXEC", name);
+
     uint64_t elf_size = 0;
     const void* elf_data = initrd_find(name, &elf_size);
     if (!elf_data) return (uint64_t)-1;
 
-    if (exec_depth >= MAX_EXEC_DEPTH) {
-        syslog_write("EXEC","depth limit reached, refusing");
-        return (uint64_t)-3;
+    /* Copy the program name AND the optional argument string (e.g.
+     * yourun's script path) out of the CALLER's own address space NOW,
+     * while CR3 is still whatever the caller had active -- syscall
+     * entry doesn't change CR3 (see syscall_entry.asm), so this is the
+     * only point at which `name`/`a2` (pointers into the caller's own
+     * memory) are guaranteed dereferenceable. Once we switch to
+     * kernel_as below for page-table construction, they would not be
+     * -- and process_create() dereferences its own `name` argument
+     * internally (copying it into process_t.name), which would happen
+     * AFTER that switch if we passed the raw pointer through instead
+     * of this local copy. */
+    char name_buf[PROCESS_NAME_MAX];
+    {
+        int ni = 0;
+        while (name[ni] && ni < PROCESS_NAME_MAX - 1) { name_buf[ni] = name[ni]; ni++; }
+        name_buf[ni] = 0;
     }
-    int level = exec_depth++;
-
-    /* Optional argument string for the child (e.g. yourun's script path).
-     * a2 was previously unused -- reusing it avoids needing a whole new
-     * syscall just to pass one string in. */
+    char arg_buf[PROCESS_EXEC_ARG_SIZE];
     {
         const char* arg = (const char*)a2;
         int ai = 0;
         if (arg) {
-            while (arg[ai] && ai < EXEC_ARG_BUF_SIZE - 1) {
-                exec_arg_buf[level][ai] = arg[ai];
+            while (arg[ai] && ai < PROCESS_EXEC_ARG_SIZE - 1) {
+                arg_buf[ai] = arg[ai];
                 ai++;
             }
         }
-        exec_arg_buf[level][ai] = 0;
+        arg_buf[ai] = 0;
     }
-
-    /* Capture the CALLER's real CR3 before touching anything else — this is
-     * what we restore to when the child eventually exits. */
-    extern uint64_t user_rsp_tmp;
-    exec_saved_kstack[level]    = kernel_stack_top;
-    exec_saved_user_rsp[level]  = user_rsp_tmp;
-    exec_saved_jmp[level]       = kernel_exit_jmp;
-    __asm__ volatile("mov %%cr3, %0" : "=r"(exec_saved_cr3[level]));
 
     /* Page-table construction (vmm_create_user_as/elf_load/stack mapping)
      * dereferences physical addresses as if they were directly-mapped
@@ -153,46 +123,64 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
      * map. A user process's own CR3 (e.g. the caller's) can have that low
      * 1GB region partially punched by its own ELF load at 0x400000, so we
      * must do all of this construction work under kernel_as, not whatever
-     * CR3 happened to be active when sys_exec was called. */
+     * CR3 happened to be active when sys_exec was called. Unlike the old
+     * implementation, there is no manual "restore the caller's CR3"
+     * needed anywhere below: do_switch() (via the yield loop at the end)
+     * sets CR3 unconditionally based on process_t.as, comparing LOGICAL
+     * address-space values rather than reading the actual register, so
+     * it doesn't matter what the register's prior value was by the time
+     * it runs. Error-return paths before that point DO need to restore
+     * it manually, since we're about to sysretq straight back into the
+     * caller's own ring-3 code otherwise. */
     extern address_space_t kernel_as;
     __asm__ volatile("mov %0, %%cr3" :: "r"(kernel_as.pml4_phys) : "memory");
 
     elf_load_result_t res;
     address_space_t proc_as = vmm_create_user_as();
     if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
-        __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3[level]) : "memory");
-        exec_depth--;
+        __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
         return (uint64_t)-2;
     }
+
     extern uint64_t pmm_alloc_pages(uint64_t);
     uint64_t stack_base = pmm_alloc_pages(16);
     uint64_t stack_top  = stack_base + 16 * 4096;
     for (uint64_t a = stack_base; a < stack_top; a += 4096)
         vmm_map(&proc_as, a, a, 0x7);
 
-    kernel_exit_jmp_valid = 1;
-    int exited = ksetjmp(&kernel_exit_jmp);
-    if (!exited) {
-        kernel_stack_top = (uint64_t)exec_kstacks[level] + EXEC_KSTACK_SIZE;
-        tss_set_kernel_stack(kernel_stack_top);
-        vmm_switch(&proc_as);
-        __asm__ volatile("mov %%cr3,%%rax;mov %%rax,%%cr3":::"rax","memory");
-        /* Full-screen clear before handing off — the caller (e.g. desktop)
-         * may have left graphical content on screen, and the exec'd
-         * process's own text console only draws into a small fixed
-         * region, so without this the old frame stays visible underneath. */
-        fb_fill(FB_BLACK);
-        fb_terminal_init();
-        extern void jump_to_userspace(uint64_t, uint64_t);
-        jump_to_userspace(res.entry, stack_top);
+    process_t* child = process_create(name_buf, process_ring3_trampoline, proc_as);
+    if (!child) {
+        __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
+        return (uint64_t)-4;
     }
-    kernel_exit_jmp      = exec_saved_jmp[level];
-    kernel_exit_jmp_valid = 1;
-    kernel_stack_top     = exec_saved_kstack[level];
-    tss_set_kernel_stack(kernel_stack_top);
-    user_rsp_tmp         = exec_saved_user_rsp[level];
-    __asm__ volatile("mov %0, %%cr3" :: "r"(exec_saved_cr3[level]) : "memory");
-    exec_depth--;
+    child->user_entry     = res.entry;
+    child->user_stack_top = stack_top;
+    {
+        int ai = 0;
+        while (arg_buf[ai] && ai < PROCESS_EXEC_ARG_SIZE - 1) { child->exec_arg[ai] = arg_buf[ai]; ai++; }
+        child->exec_arg[ai] = 0;
+    }
+
+    /* Full-screen clear before handing off — the caller (e.g. desktop)
+     * may have left graphical content on screen, and the exec'd
+     * process's own text console only draws into a small fixed region,
+     * so without this the old frame stays visible underneath. Safe to
+     * do here (still under kernel_as, before the child ever actually
+     * runs) since fb_fill/fb_terminal_init are kernel-side, not
+     * address-space-dependent. */
+    fb_fill(FB_BLACK);
+    fb_terminal_init();
+
+    /* Block until the child exits — preserves sys_exec()'s existing
+     * synchronous, blocking semantics from the caller's perspective
+     * exactly, just via a real scheduler wait instead of a longjmp.
+     * do_switch() sets CR3 correctly the moment it picks the child as
+     * next, regardless of what the register currently holds. */
+    while (child->state != PROCESS_DEAD) {
+        process_yield();
+    }
+    process_reap(child);
+
     return 0;
 }
 
@@ -202,13 +190,14 @@ static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, ui
     if (bufsize == 0) {
         return 0;
     }
-    if (exec_depth == 0) {
-        /* Not reached via sys_exec at all (e.g. the very first process
-         * kernel_main.c launches directly) -- no argument, not an error. */
-        out[0] = 0;
-        return 0;
-    }
-    const char* src = exec_arg_buf[exec_depth - 1];
+    /* exec_arg now lives directly on the calling process's own
+     * process_t (set by sys_exec() when it spawned this process),
+     * instead of a level-indexed static array. Empty for anything not
+     * spawned via sys_exec (e.g. the very first process kernel_main.c
+     * launches directly) -- no argument, not an error, since
+     * process_t.exec_arg is zero-initialized by kzalloc() in
+     * process_create() and scheduler_init(). */
+    const char* src = process_current()->exec_arg;
     uint64_t n = 0;
     while (src[n] && n < bufsize - 1) {
         out[n] = src[n];

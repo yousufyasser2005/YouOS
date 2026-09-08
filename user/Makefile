@@ -9,7 +9,7 @@ CFLAGS  = -ffreestanding -fno-stack-protector -mno-red-zone \
 LDFLAGS = -T user.ld -nostdlib
 
 CRT0    = lib/crt0.o
-PROGS   = hello cat shell fbtest desktop mpy crashtest
+PROGS   = hello cat shell fbtest desktop mpy crashtest exectest
 
 all: $(PROGS:%=bin/%)
 
@@ -29,6 +29,12 @@ bin/crashtest: src/crashtest.o $(CRT0) | bin/
 	$(LD) $(LDFLAGS) $(CRT0) $< -o $@
 
 src/crashtest.o: src/crashtest.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+bin/exectest: src/exectest.o $(CRT0) | bin/
+	$(LD) $(LDFLAGS) $(CRT0) $< -o $@
+
+src/exectest.o: src/exectest.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

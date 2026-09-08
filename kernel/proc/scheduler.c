@@ -36,8 +36,24 @@ void scheduler_init(void) {
     kp->name[0]='k'; kp->name[1]='e'; kp->name[2]='r';
     kp->name[3]='n'; kp->name[4]='e'; kp->name[5]='l';
     kp->as          = kernel_as;
-    kp->stack_base  = 0;
-    kp->stack_top   = 0;
+    /* Real syscall-entry kernel stack (TSS.RSP0 / kernel_stack_top),
+     * matching process_create()'s own convention, instead of leaving
+     * this at 0. Deliberately does NOT touch context.kernel_rsp above
+     * -- that's pid 1's real, already-correct cooperative-switch
+     * stack (whatever kernel_main()'s actual boot-time C call stack
+     * is), untouched by this. Without this, do_switch() correctly
+     * skips reloading TSS.RSP0/kernel_stack_top when switching back
+     * to pid 1 (its old, documented behavior) -- fine as long as
+     * nothing else ever ran a syscall on those globals in between,
+     * but becomes a real dangling-stack bug the moment pid 1 spawns a
+     * real child (sys_exec()), that child gets reaped, and pid 1
+     * later makes another syscall: kernel_stack_top would still point
+     * at the reaped child's freed memory. */
+    {
+        void* pid1_stack = kmalloc_aligned(PROCESS_STACK_SIZE, PAGE_SIZE);
+        kp->stack_base = (uint64_t)pid1_stack;
+        kp->stack_top  = (uint64_t)pid1_stack + PROCESS_STACK_SIZE;
+    }
     kp->timeslice   = TIMESLICE;
     process_list    = kp;
     kp->next        = kp;
@@ -110,12 +126,11 @@ static void do_switch(void) {
     /* Reload TSS.RSP0 to the incoming process's own kernel stack, so a
      * maskable interrupt (the timer, now that ring-3 runs with IF=1)
      * firing while this process executes ring-3 code lands safely on
-     * ITS stack, not whatever the previous process left there. Skip
-     * processes with no dedicated kernel stack of their own
-     * (stack_top == 0 -- true of pid 1, which owns the original
-     * boot-time kernel stack rather than one process_create()
-     * allocated, and isn't switched to via this path in the same way
-     * a real spawned child is). */
+     * ITS stack, not whatever the previous process left there. The
+     * stack_top == 0 guard is defensive rather than load-bearing today
+     * -- every real process_t (including pid 1, since scheduler_init())
+     * now carries a valid syscall-entry stack -- but kept in case a
+     * future process_t legitimately has none. */
     if (next->stack_top != 0) {
         extern void tss_set_kernel_stack(uint64_t);
         tss_set_kernel_stack(next->stack_top);

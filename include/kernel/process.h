@@ -41,6 +41,7 @@ typedef struct {
 
 #define PROCESS_NAME_MAX    32
 #define PROCESS_STACK_SIZE  (16 * 1024)   /* 16KB kernel stack */
+#define PROCESS_EXEC_ARG_SIZE 256
 #define MAX_PROCESSES       16
 
 typedef struct process {
@@ -69,6 +70,14 @@ typedef struct process {
                                      * process_ring3_trampoline(); 0 for
                                      * kernel-only processes. */
     uint64_t         user_stack_top; /* Ring-3 stack top, likewise. */
+    char             exec_arg[PROCESS_EXEC_ARG_SIZE]; /* Optional argument
+                                     * string set by sys_exec() (e.g.
+                                     * yourun's script path), read back
+                                     * by the child via
+                                     * sys_get_exec_arg(). Replaces the
+                                     * old exec_depth-indexed static
+                                     * array -- now lives directly on
+                                     * the process it belongs to. */
     struct process*  next;
 } process_t;
 
