@@ -10,7 +10,6 @@
 #include <kernel/terminal.h>
 #include <kernel/process.h>
 #include <kernel/syscall.h>
-#include <kernel/userspace.h>
 #include <kernel/initrd.h>
 #include <kernel/boot_anim.h>
 #include <kernel/elf.h>
@@ -814,28 +813,59 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 }
             }
         } else if (kstrcmp(line, "userspace") == 0) {
-            extern void hello_main(void);
-            extern void tss_set_kernel_stack(uint64_t stack);
-            static uint8_t ring3_kstack[8192];
-            tss_set_kernel_stack((uint64_t)ring3_kstack + sizeof(ring3_kstack));
-            vga_puts_color("  Creating Ring 3 process...\n", VGA_YELLOW, VGA_BLACK);
-            user_process_t* proc = user_process_create("hello", hello_main);
-            if (!proc) {
-                vga_puts_color("  [!!] Failed\n", VGA_LIGHT_RED, VGA_BLACK);
+            /* Was: user_process_create()/hello_main(), a KERNEL FUNCTION
+             * mapped ring-3-executable via a broken map_range_user() that
+             * always fell through to kernel_as (current_user_as was
+             * declared but never once assigned) -- permanently poisoning
+             * the SHARED kernel address space with user-executable kernel
+             * code and a user-writable VGA buffer the first time this ran.
+             * Also would have triple-faulted on vmm_switch(&proc->as),
+             * since user_process_t.as was never initialized (CR3=0).
+             * Removed entirely rather than fixed: redundant with spawning
+             * the real "hello" ELF below, which does the same
+             * demonstration correctly and safely under real process
+             * isolation. */
+            uint64_t elf_size = 0;
+            const void* elf_data = initrd_find("hello", &elf_size);
+            if (!elf_data) {
+                vga_puts_color("  [!!] 'hello' not found in initrd\n",
+                               VGA_LIGHT_RED, VGA_BLACK);
             } else {
-                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-                vga_puts("Jumping to Ring 3...\n");
-                vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
-                extern kjmp_buf_t kernel_exit_jmp;
-                extern int kernel_exit_jmp_valid;
-                kernel_exit_jmp_valid = 1;
-                if (!ksetjmp(&kernel_exit_jmp)) {
-                    user_process_exec(proc);
+                address_space_t child_as = vmm_create_user_as();
+                elf_load_result_t res;
+                if (elf_load(&child_as, elf_data, elf_size, &res) != 0) {
+                    vga_puts_color("  [!!] elf_load failed\n",
+                                   VGA_LIGHT_RED, VGA_BLACK);
+                } else {
+                    uint64_t stack_base = pmm_alloc_pages(16);
+                    uint64_t stack_top  = stack_base + 16 * 4096;
+                    for (uint64_t a = stack_base; a < stack_top; a += 4096)
+                        vmm_map(&child_as, a, a, 0x7);
+
+                    process_t* child = process_create("hello",
+                                                        process_ring3_trampoline,
+                                                        child_as);
+                    if (!child) {
+                        vga_puts_color("  [!!] process_create failed\n",
+                                       VGA_LIGHT_RED, VGA_BLACK);
+                    } else {
+                        child->user_entry     = res.entry;
+                        child->user_stack_top = stack_top;
+
+                        vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                        vga_puts("Jumping to Ring 3...\n");
+                        vga_puts_color("  ----------------------------------------\n",
+                                       VGA_DARK_GREY, VGA_BLACK);
+
+                        while (child->state != PROCESS_DEAD) process_yield();
+                        process_reap(child);
+
+                        vga_puts_color("  ----------------------------------------\n",
+                                       VGA_DARK_GREY, VGA_BLACK);
+                        vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                        vga_puts("Returned from Ring 3\n");
+                    }
                 }
-                vga_puts_color("  ----------------------------------------\n", VGA_DARK_GREY, VGA_BLACK);
-                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-                vga_puts("Returned from Ring 3\n");
-                user_process_destroy(proc);
             }
 
         } else if (line[0] != '\0') {
