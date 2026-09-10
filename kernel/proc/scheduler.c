@@ -243,9 +243,54 @@ void process_ring3_trampoline(void) {
 
 void process_exit(void) {
     __asm__ volatile ("cli");
+    uint32_t my_pid = current_process->pid;
     current_process->state = PROCESS_DEAD;
+
+    /* Wake whoever is blocked specifically waiting for us, if
+     * anyone -- see process_wait(). Only one parent can legitimately
+     * be waiting for a given pid, so stop at the first match. */
+    if (process_list) {
+        process_t* p = process_list;
+        do {
+            if (p->state == PROCESS_BLOCKED && p->waiting_for_pid == my_pid) {
+                p->state = PROCESS_READY;
+                p->waiting_for_pid = 0;
+                break;
+            }
+            p = p->next;
+        } while (p != process_list);
+    }
+
     do_switch();
     while (1) __asm__ volatile ("hlt");
+}
+
+/* Block the calling process until `child` dies, WITHOUT making it
+ * compete for round-robin timeslice preemption while it waits --
+ * unlike a busy `while (child->state != PROCESS_DEAD) process_yield();`
+ * loop, which leaves the caller PROCESS_READY the whole time, meaning
+ * do_switch() treats it as an ordinary schedulable process and the
+ * timer forces a real context switch to it (CR3 switch + TLB flush)
+ * roughly every TIMESLICE ticks even though it has nothing to do
+ * until the child exits. Confirmed as a real, user-visible cost: the
+ * boot-time desktop launch used exactly this busy-loop pattern, and
+ * once desktop became a genuinely separate process_t (rather than
+ * being pid 1 itself), those forced round-trips caused measurable
+ * periodic stutter during continuous rendering (mouse dragging). */
+void process_wait(process_t* child) {
+    if (!child) return;
+    process_t* self = process_current();
+    while (child->state != PROCESS_DEAD) {
+        self->waiting_for_pid = child->pid;
+        self->state           = PROCESS_BLOCKED;
+        process_yield();
+        /* Resumes here once process_exit() (running as some other
+         * process) wakes us by setting state back to READY and
+         * do_switch() picks us again. Loop re-checks in case of a
+         * spurious wake or an unrelated pid reuse edge case, rather
+         * than assuming the first wake was necessarily correct. */
+    }
+    self->waiting_for_pid = 0;
 }
 
 process_t* process_current(void)     { return current_process; }

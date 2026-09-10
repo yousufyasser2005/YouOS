@@ -10,6 +10,13 @@ typedef enum {
     PROCESS_RUNNING  = 1,
     PROCESS_SLEEPING = 2,
     PROCESS_DEAD     = 3,
+    PROCESS_BLOCKED  = 4,  /* Waiting on a specific child (see
+                            * waiting_for_pid below) via
+                            * process_wait(). Unlike READY, never
+                            * selected by do_switch()'s round-robin
+                            * search -- doesn't compete for timeslice
+                            * preemption at all until explicitly woken
+                            * by process_exit(). */
 } process_state_t;
 
 /*
@@ -78,6 +85,13 @@ typedef struct process {
                                      * old exec_depth-indexed static
                                      * array -- now lives directly on
                                      * the process it belongs to. */
+    uint32_t         waiting_for_pid; /* Nonzero while PROCESS_BLOCKED:
+                                     * the pid this process is waiting
+                                     * to die. process_exit() checks
+                                     * this on every exit and wakes the
+                                     * matching waiter, if any. 0 = not
+                                     * waiting (pid numbering starts at
+                                     * 1, so 0 is safely unused). */
     struct process*  next;
 } process_t;
 
@@ -86,6 +100,10 @@ process_t* process_create(const char* name, void (*entry)(void),
                           address_space_t as);
 void       process_ring3_trampoline(void);
 void       process_reap(process_t* child);
+void       process_wait(process_t* child); /* blocks until child dies,
+                                            * without competing for
+                                            * round-robin timeslice
+                                            * preemption while waiting */
 void       process_yield(void);
 void       process_sleep(uint64_t ticks);
 void       process_exit(void);

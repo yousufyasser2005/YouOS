@@ -576,7 +576,17 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts_color("================================================================================\n", VGA_LIGHT_CYAN, VGA_BLACK);
     boot_anim_run();
 
-    /* Auto-launch user shell */
+    /* Auto-launch user shell -- spawns "desktop" (or "shell" as a
+     * fallback) as a genuine process_create() child, exactly like
+     * sys_exec() and everything else in this codebase now does,
+     * instead of the old direct ksetjmp()+jump_to_userspace() +
+     * manual per-launch static kernel stack. pid 1 (this function)
+     * blocks via the same plain yield loop until desktop exits, then
+     * reaps it and falls through to the internal fallback shell below,
+     * exactly matching the old control flow's end state. Stack size
+     * (4 pages) deliberately left unchanged from the old code --
+     * resizing it is an unrelated concern, not part of this
+     * migration. */
     {
         uint64_t sz = 0;
         const void* sd = initrd_find("desktop", &sz);
@@ -592,18 +602,14 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 uint64_t st = sb + 4 * PAGE_SIZE;
                 for (uint64_t a = sb; a < st; a += 4096)
                     vmm_map(&pa, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-                static uint8_t sk[8192];
-                extern void tss_set_kernel_stack(uint64_t);
-                tss_set_kernel_stack((uint64_t)sk + sizeof(sk));
-                vmm_switch(&pa);
-                __asm__ volatile("mov %%cr3,%%rax;mov %%rax,%%cr3":::"rax","memory");
-                extern kjmp_buf_t kernel_exit_jmp;
-                extern int kernel_exit_jmp_valid;
-                kernel_exit_jmp_valid = 1;
-                extern void jump_to_userspace(uint64_t, uint64_t);
-                if (!ksetjmp(&kernel_exit_jmp))
-                    jump_to_userspace(r.entry, st);
-                vmm_switch(&kernel_as);
+
+                process_t* top = process_create("desktop", process_ring3_trampoline, pa);
+                if (top) {
+                    top->user_entry     = r.entry;
+                    top->user_stack_top = st;
+                    process_wait(top);
+                    process_reap(top);
+                }
             }
         }
     }
@@ -857,7 +863,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                         vga_puts_color("  ----------------------------------------\n",
                                        VGA_DARK_GREY, VGA_BLACK);
 
-                        while (child->state != PROCESS_DEAD) process_yield();
+                        process_wait(child);
                         process_reap(child);
 
                         vga_puts_color("  ----------------------------------------\n",

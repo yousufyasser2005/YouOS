@@ -176,9 +176,7 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
      * exactly, just via a real scheduler wait instead of a longjmp.
      * do_switch() sets CR3 correctly the moment it picks the child as
      * next, regardless of what the register currently holds. */
-    while (child->state != PROCESS_DEAD) {
-        process_yield();
-    }
+    process_wait(child);
     process_reap(child);
 
     return 0;
