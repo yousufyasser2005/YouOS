@@ -1,4 +1,8 @@
 bits 64
+default rel     ; use RIP-relative addressing for label references below
+                ; (e.g. [user_rsp_tmp], [kernel_stack_top]) instead of
+                ; implicit absolute addressing, which newer NASM versions
+                ; warn about as deprecated
 global syscall_entry
 extern syscall_handler
 extern kernel_stack_top

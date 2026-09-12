@@ -14,30 +14,6 @@ static idt_ptr_t   idt_ptr;
 /* Custom handler table — one per vector */
 static void (*handlers[256])(registers_t*);
 
-/* Exception names for panic messages */
-static const char* exception_names[] = {
-    "Division Error",
-    "Debug",
-    "Non-Maskable Interrupt",
-    "Breakpoint",
-    "Overflow",
-    "Bound Range Exceeded",
-    "Invalid Opcode",
-    "Device Not Available",
-    "Double Fault",
-    "Coprocessor Segment Overrun",
-    "Invalid TSS",
-    "Segment Not Present",
-    "Stack Fault",
-    "General Protection Fault",
-    "Page Fault",
-    "Reserved",
-    "FPU Error",
-    "Alignment Check",
-    "Machine Check",
-    "SIMD Floating-Point Exception",
-};
-
 /* Forward declarations for all stubs */
 extern void isr0(void);  extern void isr1(void);  extern void isr2(void);
 extern void isr3(void);  extern void isr4(void);  extern void isr5(void);

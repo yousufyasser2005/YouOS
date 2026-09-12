@@ -40,6 +40,20 @@ static void ata_delay(void) {
     inb(ATA_PRIMARY_CTRL);
 }
 
+/* Longer (~2ms) settle delay via repeated port reads. This runs before
+ * the timer/scheduler is initialized during boot, so a real time-based
+ * sleep isn't available yet -- this approximates one instead. Needed
+ * because a real drive/controller can take noticeably longer than a
+ * single ata_delay() (~400ns) to settle after a software reset before
+ * status reads become reliable; the previous single short delay left
+ * too little margin, which is why detection was flaky/timing-dependent
+ * under QEMU (see prior session's handoff doc -- logged as a known,
+ * low-priority backlog item, not a functional problem, since real PIO
+ * reads still worked independently and reliably regardless). */
+static void ata_delay_long(void) {
+    for (int i = 0; i < 5000; i++) ata_delay();
+}
+
 /* Wait until BSY clears */
 static int ata_wait_busy(void) {
     uint32_t timeout = 100000;
@@ -64,7 +78,12 @@ int ata_init(void) {
     outb(ATA_PRIMARY_CTRL, 0x04);  /* SRST */
     ata_delay();
     outb(ATA_PRIMARY_CTRL, 0x00);  /* clear reset */
-    ata_delay();
+    /* Give the drive real time to settle after the reset (see
+     * ata_delay_long()'s comment) before trusting any status read, and
+     * explicitly wait for BSY to negate rather than assuming a fixed
+     * delay is always enough. */
+    ata_delay_long();
+    ata_wait_busy();
 
     /* Select master drive */
     outb(ATA_PRIMARY_DRIVE, 0xA0);
@@ -78,9 +97,11 @@ int ata_init(void) {
     outb(ATA_PRIMARY_COMMAND, ATA_CMD_IDENTIFY);
     ata_delay();
 
-    /* Check if drive exists */
+    /* Check if drive exists. Given more patience than before (10x the
+     * iterations) so a slow-to-respond but genuinely present drive
+     * isn't misreported as absent under slower emulation timing. */
     uint8_t status = 0;
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 10000; i++) {
         status = inb(ATA_PRIMARY_STATUS);
         if (status != 0) break;
         ata_delay();
