@@ -5,10 +5,27 @@ extern kernel_stack_top
 
 syscall_entry:
     cli
+    ; user_rsp_tmp is a scratch (register-free) holding spot ONLY for the
+    ; few instructions until we have a valid kernel stack to push onto --
+    ; it must NOT be relied on to still hold OUR value once we're past
+    ; that point, because if this syscall blocks/yields (e.g. sys_exec()
+    ; waiting on a child), a DIFFERENT process can make its own syscalls
+    ; (each overwriting this same global) before we ever get back here to
+    ; read it. That was a real, previously-latent bug: the blocked parent
+    ; would resume and SYSRET with the *child's* last-saved user RSP
+    ; instead of its own, corrupting the parent's ring-3 stack pointer.
+    ; Fix: push the saved value onto THIS process's own kernel stack
+    ; immediately (making it part of the same per-invocation, per-process
+    ; state as every other saved register below) and pop it back
+    ; symmetrically on exit, instead of leaving it sitting in a global for
+    ; the whole, possibly-long, possibly-preempted-by-another-process
+    ; duration of the syscall.
     mov [user_rsp_tmp], rsp
     mov rsp, [kernel_stack_top]
 
-    ; Push all registers. Stack layout after pushes (rsp+0=r15 ... rsp+112=rcx):
+    ; Push all registers. Stack layout after pushes (rsp+0=r15 ... rsp+112=rcx,
+    ; rsp+120=saved user RSP):
+    push qword [user_rsp_tmp]  ; [rsp+120] user RSP (see note above)
     push rcx        ; [rsp+112] user RIP
     push r11        ; [rsp+104] user RFLAGS
     push rax        ; [rsp+96]  syscall number
@@ -50,8 +67,9 @@ syscall_entry:
     add rsp, 8      ; skip saved rax (syscall number) — keep rax=return value
     pop r11         ; user RFLAGS
     pop rcx         ; user RIP
+    pop rsp         ; user RSP — popped from THIS process's own kernel
+                    ; stack, not the shared scratch global (see note above)
 
-    mov rsp, [user_rsp_tmp]
     sti
     db 0x48, 0x0F, 0x07    ; sysretq
 

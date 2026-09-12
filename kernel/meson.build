@@ -29,7 +29,6 @@ kernel_asm_objects = kernel_asm_gen.process(
   'arch/x86_64/switch.asm',
   'arch/x86_64/syscall_entry.asm',
   'arch/x86_64/usermode.asm',
-  'arch/x86_64/kjmp.asm',
   'fs/initrd_blob.asm',
 )
 

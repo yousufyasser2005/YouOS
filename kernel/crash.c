@@ -2,7 +2,6 @@
 #include <kernel/ata.h>
 #include <kernel/vga.h>
 #include <kernel/process.h>
-#include <kernel/kjmp.h>
 #include <kernel/syslog.h>
 #include <stdint.h>
 
@@ -60,8 +59,6 @@ static void make_summary(crash_log_t*cl, char*out, int maxl) {
     #undef AP
 }
 
-extern kjmp_buf_t kernel_exit_jmp;
-extern int        kernel_exit_jmp_valid;
 extern uint64_t   scheduler_get_ticks(void);
 
 void crash_init(void) { crash_load(); }
@@ -102,15 +99,14 @@ void crash_handle(registers_t* regs) {
     smsg[si]=0;
 
     /* Ring-3, real process_create()-spawned child: recover via the
-     * actual scheduler instead of the old longjmp mechanism, which
-     * this process was never launched through. Checked BEFORE
-     * kernel_exit_jmp_valid deliberately -- real_exit is an explicit,
-     * unambiguous per-process signal, while kernel_exit_jmp_valid is a
-     * global that could be stale-true from pid 1's own earlier exec
-     * context even while a different, real child is the one actually
-     * crashing right now. Without this branch, a real child's fault
-     * fell through to the ring-0 halt path below and took down the
-     * whole machine over a single process's bug. */
+     * actual scheduler. Every real process is now spawned via
+     * process_create() (real_exit set unconditionally there), including
+     * the fallback shell's exec command -- the last holdout -- so the
+     * old legacy longjmp recovery branch that used to sit here is
+     * permanently unreachable and has been removed; see the handoff doc
+     * for the verification that made this safe. Without this branch, a
+     * real child's fault falls through to the ring-0 halt path below
+     * and takes down the whole machine over a single process's bug. */
     if(ring==3&&proc&&proc->real_exit){
         crash_log.recovered=1;
         crash_log.crash_count++;
@@ -119,19 +115,6 @@ void crash_handle(registers_t* regs) {
         syslog_write("CRASH",smsg);
         proc->state=PROCESS_DEAD;
         process_exit();
-        /* unreachable */
-    }
-
-    /* Ring-3, legacy sys_exec() longjmp chain: recover */
-    if(ring==3&&kernel_exit_jmp_valid){
-        crash_log.recovered=1;
-        crash_log.crash_count++;
-        crash_save();
-        SA2(" [RECOVERED]");
-        syslog_write("CRASH",smsg);
-        if(proc)proc->state=PROCESS_DEAD;
-        kernel_exit_jmp_valid=0;
-        klongjmp(&kernel_exit_jmp);
         /* unreachable */
     }
 

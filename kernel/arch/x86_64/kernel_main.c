@@ -16,7 +16,6 @@
 #include <kernel/vfs.h>
 #include <kernel/fat16.h>
 #include <kernel/ata.h>
-#include <kernel/kjmp.h>
 #include <kernel/fb.h>
 #include <kernel/pci.h>
 #include <kernel/rtl8139.h>
@@ -710,6 +709,19 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [!!] disk read failed\n", VGA_LIGHT_RED, VGA_BLACK);
             }
         } else if (line[0]=='e' && line[1]=='x' && line[2]=='e' && line[3]=='c' && line[4]==' ') {
+            /* Migrated off the old ksetjmp()/klongjmp() + manual vmm_switch()
+             * mechanism onto the same process_create()/process_wait()/
+             * process_reap() pattern every other real launch site in this
+             * codebase already uses (sys_exec(), the boot-time desktop/shell
+             * launch, and the "userspace" command above). This was the last
+             * remaining caller of ksetjmp()/klongjmp() -- see the handoff doc
+             * for why that made kernel_exit_jmp/kernel_exit_jmp_valid dead
+             * from here on, leaving them referenced only by sys_exit()'s and
+             * crash.c's now-permanently-dead legacy fallback branches. This
+             * code path is only reachable if both "desktop" and "shell" are
+             * missing from the initrd, which never happens in real use --
+             * migrated anyway for consistency and to finish killing the old
+             * mechanism, not because it was observed to misbehave. */
             const char* name = line + 5;
             uint64_t elf_size = 0;
             const void* elf_data = initrd_find(name, &elf_size);
@@ -717,31 +729,28 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 vga_puts_color("  [!!] Not found: ", VGA_LIGHT_RED, VGA_BLACK);
                 vga_puts(name); vga_puts("\n");
             } else {
-                elf_load_result_t res;
-                /* Create isolated address space for this process */
                 address_space_t proc_as = vmm_create_user_as();
-                vmm_switch(&proc_as);
-                if (elf_load(&proc_as, elf_data, elf_size, &res) == 0) {
-                    extern void tss_set_kernel_stack(uint64_t);
-                    static uint8_t elf_kstack[8192];
-                    tss_set_kernel_stack((uint64_t)elf_kstack + sizeof(elf_kstack));
+                elf_load_result_t res;
+                if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
+                    vga_puts_color("  [!!] elf_load failed\n", VGA_LIGHT_RED, VGA_BLACK);
+                } else {
                     uint64_t stack_base = pmm_alloc_pages(4);
                     uint64_t stack_top  = stack_base + 4 * PAGE_SIZE;
                     for (uint64_t a = stack_base; a < stack_top; a += 4096)
                         vmm_map(&proc_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
-                    /* Flush TLB */
-                    __asm__ volatile("mov %%cr3,%%rax; mov %%rax,%%cr3":::"rax","memory");
-                    vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
-                    extern void jump_to_userspace(uint64_t entry, uint64_t stack);
-                    extern kjmp_buf_t kernel_exit_jmp;
-                    extern int kernel_exit_jmp_valid;
-                    kernel_exit_jmp_valid = 1;
-                    if (!ksetjmp(&kernel_exit_jmp)) {
-                        jump_to_userspace(res.entry, stack_top);
+
+                    process_t* child = process_create(name, process_ring3_trampoline, proc_as);
+                    if (!child) {
+                        vga_puts_color("  [!!] process_create failed\n", VGA_LIGHT_RED, VGA_BLACK);
+                    } else {
+                        child->user_entry     = res.entry;
+                        child->user_stack_top = stack_top;
+
+                        vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                        process_wait(child);
+                        process_reap(child);
+                        vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
                     }
-                    /* Restore kernel address space */
-                    vmm_switch(&kernel_as);
-                    vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
                 }
             }
         } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='c'&&line[5]=='a'&&line[6]=='t'&&line[7]==' ') {

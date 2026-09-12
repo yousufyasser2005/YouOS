@@ -67,13 +67,16 @@ process_t* process_create(const char* name, void (*entry)(void),
     if (!p) return 0;
 
     /* Kernel stacks must come from the kernel heap (HEAP_START, PML4
-     * index 256), not raw pmm_alloc_page() (PML4 index 0). The low
-     * identity map is deliberately excluded from every address space
-     * vmm_create_user_as() creates -- a stack allocated from it would
-     * vanish from the page tables the instant CR3 switches to a real
-     * process address space, including the one currently executing
-     * on it. The kernel heap range is copied into every address
-     * space, so it stays valid across any CR3 switch. */
+     * index 256), not raw pmm_alloc_page() (PML4 index 0). Correction:
+     * the low identity map (PML4[0]) is NOT excluded from address spaces
+     * vmm_create_user_as() creates -- it's deep-copied, giving each
+     * process its own private, independently-splittable page-directory
+     * copy (see vmm.c). A raw-physical-address stack wouldn't vanish on
+     * a CR3 switch, but it could end up pointing at memory whose mapping
+     * has diverged from another process's own split of the same range.
+     * The kernel heap range (PML4 index 256), by contrast, is a single
+     * shared copy across every address space, so it's the correct place
+     * for kernel stacks regardless. */
     void* stack_page = kmalloc_aligned(PROCESS_STACK_SIZE, PAGE_SIZE);
     if (!stack_page) { kfree(p); return 0; }
 

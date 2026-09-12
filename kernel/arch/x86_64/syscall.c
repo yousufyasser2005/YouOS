@@ -8,15 +8,12 @@
 #include <kernel/vfs.h>
 #include <kernel/elf.h>
 #include <kernel/initrd.h>
-#include <kernel/kjmp.h>
 #include <kernel/gdt.h>
 #include <kernel/keyboard.h>
 #include <kernel/fb.h>
 #include <kernel/mouse.h>
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
-kjmp_buf_t kernel_exit_jmp;
-int        kernel_exit_jmp_valid = 0;
 static uint8_t syscall_kernel_stack[262144];
 
 static int path_is_ycfs(const char* p);
@@ -25,18 +22,14 @@ static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint6
     (void)code;(void)a2;(void)a3;(void)a4;(void)a5;
     process_t* p = process_current();
     p->state = PROCESS_DEAD;
-    if (p->real_exit) {
-        /* Real process_create()-spawned process: hand off via the
-         * actual scheduler instead of the legacy sys_exec() longjmp
-         * mechanism, which only pid 1's synchronous exec chain still
-         * uses. process_exit() marks DEAD (already done above, but it
-         * does so again harmlessly) and never returns. */
-        process_exit();
-    }
-    if (kernel_exit_jmp_valid) {
-        kernel_exit_jmp_valid = 0;
-        klongjmp(&kernel_exit_jmp);
-    }
+    /* Every real process is now spawned via process_create() (real_exit
+     * is set unconditionally there), including the fallback shell's
+     * exec command -- the last holdout. The old kernel_exit_jmp_valid
+     * longjmp fallback below is therefore permanently unreachable and
+     * has been removed; see the handoff doc for the verification that
+     * made this safe. process_exit() marks DEAD (already done above,
+     * but it does so again harmlessly) and never returns. */
+    process_exit();
     return 0;
 }
 static uint64_t sys_write(uint64_t fd,uint64_t buf,uint64_t len,uint64_t a4,uint64_t a5){
@@ -153,6 +146,7 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
         return (uint64_t)-4;
     }
+
     child->user_entry     = res.entry;
     child->user_stack_top = stack_top;
     {
