@@ -41,6 +41,15 @@ stack_bottom:
     resb 65536
 stack_top:
 
+; Set from the CPUID check below during early boot; read by the C kernel
+; (vmm.c / elf.c) to decide whether it's safe to set the NX bit (PTE bit
+; 63) in any page table entry. Setting that bit while EFER.NXE is 0
+; would make it a reserved bit and fault -- so nothing downstream should
+; ever set PTE_NX without first checking this is nonzero.
+global nx_supported
+align 4
+nx_supported: resd 1
+
 section .rodata
 gdt64:
     dq 0
@@ -83,6 +92,19 @@ _start:
     test edx, (1<<29)
     jz .error
 
+    ; Same CPUID leaf also reports NX/XD support in edx bit 20 -- record
+    ; it now (before edx gets clobbered by anything else) so the C
+    ; kernel can later check nx_supported before ever setting PTE bit 63
+    ; (see the .bss comment above). This CPU is essentially certain to
+    ; support NX in practice (every real and QEMU-emulated x86_64 CPU
+    ; does), but we check explicitly rather than assume: if bit 20 is 0,
+    ; EFER.NXE below is deliberately left unset, and nx_supported stays
+    ; 0, so nothing downstream tries to use a feature the CPU lacks.
+    mov ebx, edx
+    and ebx, (1<<20)
+    shr ebx, 20
+    mov [nx_supported], ebx
+
     ; ---- Set up page tables ----
     ; PML4[0] → PDP
     mov eax, pdp_table
@@ -117,10 +139,17 @@ _start:
     mov eax, pml4_table
     mov cr3, eax
 
-    ; Enable long mode in EFER MSR
+    ; Enable long mode (and NX, if supported) in EFER MSR
     mov ecx, 0xC0000080
     rdmsr
-    or  eax, (1<<8)
+    or  eax, (1<<8)         ; LME
+    cmp dword [nx_supported], 0
+    je  .skip_nxe
+    or  eax, (1<<11)        ; NXE -- only set if CPUID confirmed support
+                            ; above; setting it on a CPU that lacks the
+                            ; feature is itself the kind of unconditional
+                            ; assumption this checks against
+.skip_nxe:
     wrmsr
 
     ; Enable paging + protected mode

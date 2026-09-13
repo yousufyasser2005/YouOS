@@ -42,7 +42,12 @@ static int heap_expand(uint64_t bytes)
     for (uint64_t addr = heap_mapped_end; addr < new_end; addr += PAGE_SIZE) {
         uint64_t phys = pmm_alloc_page();
         if (!phys) return -1;
-        vmm_map(&kernel_as, addr, phys, PTE_PRESENT | PTE_WRITABLE);
+        /* Kernel heap memory is pure data, never code -- mark it NX
+         * when the CPU/boot support it (see nx_supported's comment in
+         * vmm.h). A classic heap-corruption exploit relies on heap
+         * memory being executable; this closes that off. */
+        vmm_map(&kernel_as, addr, phys, PTE_PRESENT | PTE_WRITABLE |
+                (nx_supported ? PTE_NO_EXEC : 0));
     }
 
     heap_mapped_end = new_end;

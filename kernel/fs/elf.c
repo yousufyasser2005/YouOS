@@ -43,6 +43,14 @@ int elf_load(address_space_t* as, const void* elf_data, uint64_t elf_size, elf_l
 
         uint64_t pte_flags = PTE_PRESENT | PTE_USER;
         if (phdr->p_flags & PF_W) pte_flags |= PTE_WRITABLE;
+        /* Mark non-executable segments (e.g. .data/.bss, now split from
+         * .text/.rodata into their own PT_LOAD segment by user.ld) NX,
+         * so a data-only segment is actually non-executable at the
+         * hardware level and not just absent a PF_X flag nothing ever
+         * enforced. Only if the CPU/boot actually support it -- see
+         * nx_supported's own comment in vmm.h for why this check is
+         * mandatory, not optional. */
+        if (!(phdr->p_flags & PF_X) && nx_supported) pte_flags |= PTE_NO_EXEC;
 
         uint64_t page_start = vaddr & ~(uint64_t)0xFFF;
         uint64_t page_end   = (vaddr + memsz + 0xFFF) & ~(uint64_t)0xFFF;

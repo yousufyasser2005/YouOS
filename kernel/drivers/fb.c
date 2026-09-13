@@ -258,7 +258,8 @@ void fb_map_into_as(void* as_ptr) {
     uint64_t pages = (size + 4095) / 4096 + 1;
     for (uint64_t i = 0; i < pages; i++) {
         uint64_t pa = base + i * 4096;
-        vmm_map((address_space_t*)as_ptr, pa, pa, 0x3);
+        /* 0x3 = PRESENT|WRITABLE; framebuffer is pure data, never code. */
+        vmm_map((address_space_t*)as_ptr, pa, pa, 0x3 | (nx_supported ? PTE_NO_EXEC : 0));
     }
 }
 

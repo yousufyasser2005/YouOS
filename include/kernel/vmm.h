@@ -20,6 +20,13 @@
 #define PTE_HUGE        (1ULL << 7)   /* 2MB huge page           */
 #define PTE_NO_EXEC     (1ULL << 63)  /* No execute (NX bit)     */
 
+/* Set by boot.asm from a CPUID check before EFER.NXE is (conditionally)
+ * enabled. Nonzero only if the CPU actually supports NX AND EFER.NXE
+ * was successfully set -- PTE_NO_EXEC must NEVER be set in any page
+ * table entry unless this is checked and nonzero first, since bit 63
+ * is a reserved bit (causing a fault) whenever EFER.NXE is 0. */
+extern int nx_supported;
+
 /*
  * Page Table Entry — address mask
  * Bits 12-51 hold the physical address

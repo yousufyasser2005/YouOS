@@ -122,8 +122,12 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 uint64_t fb_pages = (fb_h * fb_pitch + 4095) / 4096 + 1;
                 for (uint64_t pg = 0; pg < fb_pages; pg++) {
                     uint64_t pa = (fb_addr & ~(uint64_t)0xFFF) + pg * 4096;
+                    /* Framebuffer memory is pure data, never code -- mark
+                     * it NX when the CPU/boot support it (see
+                     * nx_supported's comment in vmm.h). */
                     vmm_map(&kernel_as, pa, pa,
-                            PTE_PRESENT | PTE_WRITABLE);
+                            PTE_PRESENT | PTE_WRITABLE |
+                            (nx_supported ? PTE_NO_EXEC : 0));
                 }
                 fb_init(fb_addr, fb_w, fb_h, fb_pitch, fb_bpp);
                 fb_terminal_init();
@@ -600,7 +604,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                 uint64_t sb = pmm_alloc_pages(4);
                 uint64_t st = sb + 4 * PAGE_SIZE;
                 for (uint64_t a = sb; a < st; a += 4096)
-                    vmm_map(&pa, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+                    /* User-mode stack: writable, never executable. */
+                    vmm_map(&pa, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER |
+                            (nx_supported ? PTE_NO_EXEC : 0));
 
                 process_t* top = process_create("desktop", process_ring3_trampoline, pa);
                 if (top) {
@@ -737,7 +743,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                     uint64_t stack_base = pmm_alloc_pages(4);
                     uint64_t stack_top  = stack_base + 4 * PAGE_SIZE;
                     for (uint64_t a = stack_base; a < stack_top; a += 4096)
-                        vmm_map(&proc_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER);
+                        /* User-mode stack: writable, never executable. */
+                        vmm_map(&proc_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER |
+                                (nx_supported ? PTE_NO_EXEC : 0));
 
                     process_t* child = process_create(name, process_ring3_trampoline, proc_as);
                     if (!child) {
@@ -855,7 +863,9 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
                     uint64_t stack_base = pmm_alloc_pages(16);
                     uint64_t stack_top  = stack_base + 16 * 4096;
                     for (uint64_t a = stack_base; a < stack_top; a += 4096)
-                        vmm_map(&child_as, a, a, 0x7);
+                        /* 0x7 = PRESENT|WRITABLE|USER; user-mode
+                         * stack, writable, never executable. */
+                        vmm_map(&child_as, a, a, 0x7 | (nx_supported ? PTE_NO_EXEC : 0));
 
                     process_t* child = process_create("hello",
                                                         process_ring3_trampoline,

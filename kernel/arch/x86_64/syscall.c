@@ -139,7 +139,9 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     uint64_t stack_base = pmm_alloc_pages(16);
     uint64_t stack_top  = stack_base + 16 * 4096;
     for (uint64_t a = stack_base; a < stack_top; a += 4096)
-        vmm_map(&proc_as, a, a, 0x7);
+        /* 0x7 = PRESENT|WRITABLE|USER; user-mode stack, writable,
+         * never executable. */
+        vmm_map(&proc_as, a, a, 0x7 | (nx_supported ? PTE_NO_EXEC : 0));
 
     process_t* child = process_create(name_buf, process_ring3_trampoline, proc_as);
     if (!child) {
