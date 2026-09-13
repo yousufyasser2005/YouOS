@@ -176,3 +176,25 @@ static inline int64_t sys_get_exec_arg(char* buf, uint64_t bufsize) {
 static inline int64_t sys_exec_arg(const char* name, const char* arg) {
     return (int64_t)_sc(SYS_EXEC, (uint64_t)name, (uint64_t)arg, 0, 0, 0);
 }
+
+/* Non-blocking spawn/wait pair -- Phase 1 of true concurrent
+ * multi-program execution. sys_spawn() starts `name` and returns its
+ * pid immediately (or a negative sys_exec()-style error code) instead
+ * of blocking until it exits. The caller must later poll
+ * sys_wait_nonblock() on that pid -- it returns -2 while still
+ * running, -1 if the pid is invalid/already reaped, or 0 once it's
+ * exited (reaping it as a side effect of that 0 return). Skipping
+ * sys_wait_nonblock() forever leaks that child's resources the same
+ * way never calling sys_exec() would, if sys_exec() ever stopped
+ * reaping on its own. */
+#define SYS_SPAWN         43
+#define SYS_WAIT_NONBLOCK 44
+static inline int64_t sys_spawn(const char* name) {
+    return (int64_t)_sc(SYS_SPAWN, (uint64_t)name, 0, 0, 0, 0);
+}
+static inline int64_t sys_spawn_arg(const char* name, const char* arg) {
+    return (int64_t)_sc(SYS_SPAWN, (uint64_t)name, (uint64_t)arg, 0, 0, 0);
+}
+static inline int64_t sys_wait_nonblock(int64_t pid) {
+    return (int64_t)_sc(SYS_WAIT_NONBLOCK, (uint64_t)pid, 0, 0, 0, 0);
+}

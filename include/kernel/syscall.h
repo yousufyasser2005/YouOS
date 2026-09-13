@@ -40,7 +40,16 @@
 #define SYS_PLAY_STREAM 40
 #define SYS_STREAM_ACTIVE 41
 #define SYS_GET_EXEC_ARG 42
-#define SYSCALL_COUNT  43
+
+/* Non-blocking spawn/wait pair -- Phase 1 of true concurrent
+ * multi-program execution. sys_spawn() is like sys_exec() but returns
+ * the child's pid immediately instead of blocking; sys_wait_nonblock()
+ * checks (and reaps, if dead) a pid previously returned by sys_spawn()
+ * without ever blocking. See spawn_common()/sys_spawn()/
+ * sys_wait_nonblock() in syscall.c for the full contract. */
+#define SYS_SPAWN         43
+#define SYS_WAIT_NONBLOCK 44
+#define SYSCALL_COUNT  45
 
 void syscall_init(void);
 #endif

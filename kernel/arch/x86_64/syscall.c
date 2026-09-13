@@ -71,20 +71,30 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
     (void)a2;(void)a3;(void)a4;(void)a5;
     return (uint64_t)vfs_close((int)fd);
 }
-static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3;(void)a4;(void)a5;
-    const char* name = (const char*)path;
+/* Shared by sys_exec() (blocking) and sys_spawn() (non-blocking, Phase 1
+ * of the true-concurrency work): builds a fresh child process from an
+ * initrd ELF, ready to run, but does NOT wait on or reap it -- that part
+ * differs between the two callers. Returns the new process_t* on
+ * success, or NULL with *err set to sys_exec()'s existing error codes
+ * (-1 not found, -2 elf_load failed, -4 process_create failed), so both
+ * callers can keep returning the exact values they always have.
+ *
+ * `path`/`arg` are raw pointers into the CALLING process's own address
+ * space -- copied out before the CR3 switch below, for the same reason
+ * sys_exec() always has (see the CR3 comment further down). */
+static process_t* spawn_common(const char* path, const char* arg, uint64_t* err) {
+    const char* name = path;
     syslog_write("EXEC", name);
 
     uint64_t elf_size = 0;
     const void* elf_data = initrd_find(name, &elf_size);
-    if (!elf_data) return (uint64_t)-1;
+    if (!elf_data) { *err = (uint64_t)-1; return 0; }
 
     /* Copy the program name AND the optional argument string (e.g.
      * yourun's script path) out of the CALLER's own address space NOW,
      * while CR3 is still whatever the caller had active -- syscall
      * entry doesn't change CR3 (see syscall_entry.asm), so this is the
-     * only point at which `name`/`a2` (pointers into the caller's own
+     * only point at which `name`/`arg` (pointers into the caller's own
      * memory) are guaranteed dereferenceable. Once we switch to
      * kernel_as below for page-table construction, they would not be
      * -- and process_create() dereferences its own `name` argument
@@ -99,7 +109,6 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     }
     char arg_buf[PROCESS_EXEC_ARG_SIZE];
     {
-        const char* arg = (const char*)a2;
         int ai = 0;
         if (arg) {
             while (arg[ai] && ai < PROCESS_EXEC_ARG_SIZE - 1) {
@@ -116,15 +125,15 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
      * map. A user process's own CR3 (e.g. the caller's) can have that low
      * 1GB region partially punched by its own ELF load at 0x400000, so we
      * must do all of this construction work under kernel_as, not whatever
-     * CR3 happened to be active when sys_exec was called. Unlike the old
+     * CR3 happened to be active when this was called. Unlike the old
      * implementation, there is no manual "restore the caller's CR3"
-     * needed anywhere below: do_switch() (via the yield loop at the end)
-     * sets CR3 unconditionally based on process_t.as, comparing LOGICAL
-     * address-space values rather than reading the actual register, so
-     * it doesn't matter what the register's prior value was by the time
-     * it runs. Error-return paths before that point DO need to restore
-     * it manually, since we're about to sysretq straight back into the
-     * caller's own ring-3 code otherwise. */
+     * needed anywhere below: do_switch() (via each caller's own wait/yield
+     * loop) sets CR3 unconditionally based on process_t.as, comparing
+     * LOGICAL address-space values rather than reading the actual
+     * register, so it doesn't matter what the register's prior value was
+     * by the time it runs. Error-return paths before that point DO need
+     * to restore it manually, since we're about to sysretq straight back
+     * into the caller's own ring-3 code otherwise. */
     extern address_space_t kernel_as;
     __asm__ volatile("mov %0, %%cr3" :: "r"(kernel_as.pml4_phys) : "memory");
 
@@ -132,7 +141,8 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     address_space_t proc_as = vmm_create_user_as();
     if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
         __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
-        return (uint64_t)-2;
+        *err = (uint64_t)-2;
+        return 0;
     }
 
     extern uint64_t pmm_alloc_pages(uint64_t);
@@ -146,7 +156,8 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     process_t* child = process_create(name_buf, process_ring3_trampoline, proc_as);
     if (!child) {
         __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
-        return (uint64_t)-4;
+        *err = (uint64_t)-4;
+        return 0;
     }
 
     child->user_entry     = res.entry;
@@ -156,6 +167,15 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
         while (arg_buf[ai] && ai < PROCESS_EXEC_ARG_SIZE - 1) { child->exec_arg[ai] = arg_buf[ai]; ai++; }
         child->exec_arg[ai] = 0;
     }
+
+    return child;
+}
+
+static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3;(void)a4;(void)a5;
+    uint64_t err = 0;
+    process_t* child = spawn_common((const char*)path, (const char*)a2, &err);
+    if (!child) return err;
 
     /* Full-screen clear before handing off — the caller (e.g. desktop)
      * may have left graphical content on screen, and the exec'd
@@ -175,6 +195,56 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
     process_wait(child);
     process_reap(child);
 
+    return 0;
+}
+
+/* Non-blocking counterpart to sys_exec() -- Phase 1 of true concurrent
+ * multi-program execution. Builds and starts the child exactly the same
+ * way, but returns its pid immediately instead of waiting for it to
+ * exit, and deliberately skips the fb_fill/fb_terminal_init() full-
+ * screen clear sys_exec() does: a spawned-but-not-waited-on child isn't
+ * meant to take over the caller's whole screen the way a blocking exec
+ * does. The caller is responsible for later calling sys_wait_nonblock()
+ * on the returned pid -- otherwise the child is never reaped once it
+ * exits (the same resource-leak risk sys_exec()'s own process_reap()
+ * call exists to avoid). */
+static uint64_t sys_spawn(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a3;(void)a4;(void)a5;
+    uint64_t err = 0;
+    process_t* child = spawn_common((const char*)path, (const char*)a2, &err);
+    if (!child) return err;
+
+    /* CRITICAL, unlike sys_exec(): spawn_common()'s success path leaves
+     * CR3 pointing at kernel_as (needed for the page-table construction
+     * inside it) and never restores it -- sys_exec() gets away with
+     * this because process_wait() right after it always triggers
+     * do_switch(), which restores CR3 correctly as a side effect before
+     * ever returning to ring 3. sys_spawn() deliberately has no such
+     * call (that's the whole point of not blocking), so nothing else
+     * will fix this up -- without restoring it explicitly here, we'd
+     * sysretq straight back into the CALLING process's ring-3 code
+     * with kernel_as still active, which doesn't have that process's
+     * own ELF/stack mapped at all and crashes essentially immediately. */
+    __asm__ volatile("mov %0, %%cr3" :: "r"(process_current()->as.pml4_phys) : "memory");
+
+    return child->pid;
+}
+
+/* Non-blocking check on a pid previously returned by sys_spawn(). Never
+ * blocks or yields, unlike process_wait(): if the process doesn't exist
+ * (bad pid, or already reaped by an earlier call), returns -1. If it's
+ * still running, returns -2 without touching it further -- the caller
+ * is expected to poll again later (e.g. once per desktop frame). If
+ * it's exited, reaps it immediately (same as sys_exec()'s own
+ * process_reap() call) and returns 0. A caller that never calls this
+ * on a pid it spawned leaks that child's resources forever, the same
+ * way skipping process_reap() always has. */
+static uint64_t sys_wait_nonblock(uint64_t pid, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    process_t* p = process_get((uint32_t)pid);
+    if (!p) return (uint64_t)-1;
+    if (p->state != PROCESS_DEAD) return (uint64_t)-2;
+    process_reap(p);
     return 0;
 }
 
@@ -530,7 +600,9 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_pcm_can_submit,
     sys_play_stream,
     sys_stream_active,
-    sys_get_exec_arg
+    sys_get_exec_arg,
+    sys_spawn,
+    sys_wait_nonblock
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

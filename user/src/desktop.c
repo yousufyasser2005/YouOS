@@ -475,6 +475,12 @@ static int wm_draw_frame(int i){
 static char tlines[32][128];
 static int  trow=0,tinput_len=0,cursor_blink=0;
 static char tinput[128];
+
+/* TEMPORARY -- Phase 1 regression check for true concurrent
+ * multi-program execution (see spawntest.c). -1 means no spawntest is
+ * currently outstanding; otherwise the pid returned by sys_spawn(),
+ * polled once per frame in main()'s loop until it exits. */
+static int64_t spawntest_pid = -1;
 static int u32_append_dec(char*buf,int bi,unsigned int v){
     if(v==0){buf[bi++]='0';return bi;}
     char tmp[10];int ti=0;
@@ -492,8 +498,8 @@ static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -511,7 +517,8 @@ static void tcmd(const char*cmd){
     for(int k=0;rb[k]||cmd[k];k++)  if(rb[k]!=cmd[k])  {mrb=0;break;}
     for(int k=0;shl[k]||cmd[k];k++) if(shl[k]!=cmd[k]) {msh=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog");
+    for(int k=0;spt[k]||cmd[k];k++) if(spt[k]!=cmd[k]) {mspt=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -522,6 +529,21 @@ static void tcmd(const char*cmd){
         flush();
         sys_exec("shell");
         tprint("Welcome back to the desktop.");
+    }
+    else if(mspt){
+        /* TEMPORARY -- Phase 1 regression check for true concurrent
+         * multi-program execution. Unlike "shell" above, this does NOT
+         * block: desktop keeps running (cursor blink, mouse, window
+         * drag, everything) for the several seconds spawntest sleeps,
+         * proving the scheduler genuinely runs it concurrently rather
+         * than the caller being stuck waiting. See the per-frame poll
+         * in main()'s loop for where this gets reaped. */
+        if(spawntest_pid>=0){tprint("spawntest already running.");}
+        else{
+            int64_t r=sys_spawn("spawntest");
+            if(r<0){tprint("spawntest: sys_spawn failed.");}
+            else{spawntest_pid=r;tprint("spawntest running in background (desktop keeps working)...");}
+        }
     }
     else if(mcrl){
         static char cbuf[2048];
@@ -3548,6 +3570,20 @@ int main(void){
         u64 ticks=sys_ticks();
         g_now_ticks=ticks;
         u64 secs=ticks/100;
+
+        /* TEMPORARY -- Phase 1 regression check for true concurrent
+         * multi-program execution. Non-blocking poll, cheap enough to
+         * do unconditionally every frame: -2 means still running (do
+         * nothing), -1/0 mean it's gone (invalid pid, or just reaped)
+         * either way clear our tracking so "spawntest" can be run
+         * again. */
+        if(spawntest_pid>=0){
+            int64_t wr=sys_wait_nonblock(spawntest_pid);
+            if(wr!=-2){
+                tprint("spawntest finished (desktop was never blocked).");
+                spawntest_pid=-1;
+            }
+        }
 
         /* mouse */
         unsigned long long mstate[3];
