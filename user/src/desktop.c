@@ -492,14 +492,47 @@ static void tprint(const char*s){
     if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;}
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
 }
+
+/* TEMPORARY -- Phase 2 regression check for true concurrent
+ * multi-program execution (per-process I/O redirection, see
+ * iotest.c). Mirrors term_queue_name()'s naming convention from
+ * syscall.c exactly -- this is the ONLY place that convention needs
+ * to be known outside the kernel, since sys_msgpost()/sys_msgrecv()
+ * are already plain userspace syscalls taking a name string. `out`
+ * must be at least 24 bytes. */
+static void term_qname(int64_t pid, int is_out, char* out){
+    const char* prefix = is_out ? "term_out_" : "term_in_";
+    int oi=0; while(prefix[oi]){out[oi]=prefix[oi];oi++;}
+    oi=u32_append_dec(out,oi,(unsigned int)pid);
+    out[oi]=0;
+}
+
+/* TEMPORARY -- drains and tprint()s every currently-queued message on
+ * `qname`, polling with a few yields in between since the writer
+ * (iotest, in this case) needs actual CPU time to produce them -- a
+ * fixed retry budget rather than blocking forever, so a genuinely
+ * broken redirection shows up as "nothing received" instead of
+ * hanging the whole desktop. */
+static void term_drain(const char* qname){
+    int idle=0;
+    while(idle<20){
+        char buf[130]; unsigned int len=0,from=0;
+        int rc=sys_msgrecv(qname,buf,&len,&from);
+        if(rc<0){ idle++; sys_yield(); continue; }
+        idle=0;
+        if(len>128)len=128;
+        buf[len]=0;
+        tprint(buf);
+    }
+}
 static void do_shutdown(void);
 static void do_restart(void);
 static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -518,7 +551,8 @@ static void tcmd(const char*cmd){
     for(int k=0;shl[k]||cmd[k];k++) if(shl[k]!=cmd[k]) {msh=0;break;}
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
     for(int k=0;spt[k]||cmd[k];k++) if(spt[k]!=cmd[k]) {mspt=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest");
+    for(int k=0;iot[k]||cmd[k];k++) if(iot[k]!=cmd[k]) {miot=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -543,6 +577,38 @@ static void tcmd(const char*cmd){
             int64_t r=sys_spawn("spawntest");
             if(r<0){tprint("spawntest: sys_spawn failed.");}
             else{spawntest_pid=r;tprint("spawntest running in background (desktop keeps working)...");}
+        }
+    }
+    else if(miot){
+        /* TEMPORARY -- Phase 2 regression check for true concurrent
+         * multi-program execution (per-process I/O redirection).
+         * Unlike spawntest, this is a synchronous, one-shot
+         * verification (spawn, drain its output, post fake input,
+         * drain the echo, reap) rather than something left running in
+         * the background -- it's testing redirection correctness, not
+         * concurrency itself (Phase 1 already proved that). */
+        int64_t pid=sys_spawn_windowed("iotest");
+        if(pid<0){tprint("iotest: sys_spawn_windowed failed.");}
+        else{
+            char qout[24],qin[24];
+            term_qname(pid,1,qout);
+            term_qname(pid,0,qin);
+
+            term_drain(qout); /* the greeting */
+
+            const char*line="hi\n";
+            for(int k=0;line[k];k++) sys_msgpost(qin,&line[k],1);
+
+            term_drain(qout); /* the echoed-back line */
+
+            int tries=0;
+            while(tries<50){
+                int64_t wr=sys_wait_nonblock(pid);
+                if(wr!=-2)break;
+                sys_yield();
+                tries++;
+            }
+            tprint("iotest: done.");
         }
     }
     else if(mcrl){

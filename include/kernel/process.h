@@ -92,6 +92,19 @@ typedef struct process {
                                      * matching waiter, if any. 0 = not
                                      * waiting (pid numbering starts at
                                      * 1, so 0 is safely unused). */
+    int              windowed;      /* Set by sys_spawn()'s windowed
+                                     * flag (Phase 2 of true concurrent
+                                     * multi-program execution). When
+                                     * nonzero, sys_write()/sys_read()
+                                     * (fd 0/1/2) redirect through this
+                                     * process's own per-pid IPC queues
+                                     * (see term_queue_name() in
+                                     * syscall.c) instead of the single
+                                     * shared fb_terminal/keyboard
+                                     * console every other process still
+                                     * uses. Defaults to 0 (unwindowed)
+                                     * via process_create()'s kzalloc(),
+                                     * same as every other field here. */
     struct process*  next;
 } process_t;
 

@@ -32,13 +32,59 @@ static uint64_t sys_exit(uint64_t code,uint64_t a2,uint64_t a3,uint64_t a4,uint6
     process_exit();
     return 0;
 }
+/* Builds "term_out_<pid>" or "term_in_<pid>" into `out` (caller-
+ * provided, must be at least 21 bytes: 9-char longest prefix +
+ * up to 10 digits for a uint32_t pid + nul). Phase 2 of true
+ * concurrent multi-program execution: the naming convention a
+ * windowed process's fd 0/1/2 get redirected through, via the
+ * existing ipc_post()/ipc_recv() primitive -- and the same convention
+ * a future window manager (Phase 3) uses directly (via sys_msgpost()/
+ * sys_msgrecv()) to drain a window's output and feed it input,
+ * without needing any new syscall of its own to look the names up. */
+static void term_queue_name(uint32_t pid, int is_out, char* out) {
+    const char* prefix = is_out ? "term_out_" : "term_in_";
+    int oi = 0;
+    while (prefix[oi]) { out[oi] = prefix[oi]; oi++; }
+    if (pid == 0) { out[oi++] = '0'; }
+    else {
+        char tmp[12]; int ti = 0;
+        uint32_t pv = pid;
+        while (pv) { tmp[ti++] = (char)('0' + (pv % 10)); pv /= 10; }
+        while (ti > 0) out[oi++] = tmp[--ti];
+    }
+    out[oi] = 0;
+}
+
 static uint64_t sys_write(uint64_t fd,uint64_t buf,uint64_t len,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
     const char* s=(const char*)buf;
     if(!s||len==0) return 0;
+    if(fd!=1 && fd!=2) return (uint64_t)-1;
+
+    if (process_current()->windowed) {
+        /* Phase 2: redirect through this process's own output queue
+         * instead of the single shared console, chunked to
+         * IPC_MAX_MSGLEN per message since ipc_post() deals in whole
+         * messages, not a byte stream. If the queue fills up (a slow
+         * reader not draining it -- 32 messages deep) the remainder is
+         * dropped rather than blocking: sys_write() has never blocked
+         * before, and introducing that now would be a bigger behavior
+         * change than this redirection is meant to make. A caller that
+         * cares can check the returned count against `len`. */
+        char qname[24];
+        term_queue_name(process_current()->pid, 1, qname);
+        uint64_t sent = 0;
+        while (sent < len) {
+            uint32_t chunk = (uint32_t)(len - sent);
+            if (chunk > IPC_MAX_MSGLEN) chunk = IPC_MAX_MSGLEN;
+            if (ipc_post(qname, s + sent, chunk) != 0) break;
+            sent += chunk;
+        }
+        return sent;
+    }
+
     if(fd==1) vga_set_color(VGA_WHITE,VGA_BLACK);
-    else if(fd==2) vga_set_color(VGA_LIGHT_RED,VGA_BLACK);
-    else return (uint64_t)-1;
+    else vga_set_color(VGA_LIGHT_RED,VGA_BLACK);
     for(uint64_t i=0;i<len;i++) vga_putchar(s[i]);
     vga_set_color(VGA_LIGHT_GREY,VGA_BLACK);
     return len;
@@ -47,6 +93,26 @@ static uint64_t sys_read(uint64_t fd,uint64_t buf,uint64_t len,uint64_t a4,uint6
     (void)a4;(void)a5;
     if(fd!=0) return (uint64_t)-1;
     char* b=(char*)buf; uint64_t i=0;
+
+    if (process_current()->windowed) {
+        /* Phase 2: same blocking-via-polling shape keyboard_getchar()
+         * already uses below (yield and retry until something's
+         * there), just sourced from this process's own input queue
+         * instead of the shared keyboard stream. Each message is
+         * expected to be exactly one character -- the convention
+         * Phase 3's window manager posts keystrokes under. */
+        char qname[24];
+        term_queue_name(process_current()->pid, 0, qname);
+        while (i < len) {
+            uint8_t c; uint32_t rlen = 0, from = 0;
+            if (ipc_recv(qname, &c, &rlen, &from) != 0) { process_yield(); continue; }
+            if (rlen < 1) continue;
+            b[i++] = (char)c;
+            if ((char)c == '\n') break;
+        }
+        return i;
+    }
+
     extern char keyboard_getchar(void);
     while(i<len){char c=keyboard_getchar();b[i++]=c;if(c=='\n')break;}
     return i;
@@ -209,10 +275,26 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
  * exits (the same resource-leak risk sys_exec()'s own process_reap()
  * call exists to avoid). */
 static uint64_t sys_spawn(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a3;(void)a4;(void)a5;
+    (void)a4;(void)a5;
     uint64_t err = 0;
     process_t* child = spawn_common((const char*)path, (const char*)a2, &err);
     if (!child) return err;
+
+    /* Phase 2: a3 nonzero means the caller wants this child's fd 0/1/2
+     * redirected through its own IPC queues (see term_queue_name())
+     * instead of the single shared console -- the prerequisite for a
+     * window manager to host it in its own window rather than it
+     * fighting every other process over one shared text console.
+     * ipc_post()/ipc_recv() auto-create a queue on first use, so
+     * nothing needs to be explicitly created here; whichever side
+     * (this child writing output, or its window posting input) touches
+     * a queue first brings it into existence. Note: ipc.c's queues are
+     * a fixed-size, never-freed registry (IPC_MAX_QUEUES=16, no
+     * destroy call exists) -- each windowed process permanently
+     * consumes 2 slots for its lifetime and beyond, a real but
+     * accepted constraint of the existing, already-tested IPC
+     * primitive this reuses rather than something new here. */
+    child->windowed = (a3 != 0) ? 1 : 0;
 
     /* CRITICAL, unlike sys_exec(): spawn_common()'s success path leaves
      * CR3 pointing at kernel_as (needed for the page-table construction

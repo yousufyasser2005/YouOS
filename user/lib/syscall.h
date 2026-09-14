@@ -198,3 +198,16 @@ static inline int64_t sys_spawn_arg(const char* name, const char* arg) {
 static inline int64_t sys_wait_nonblock(int64_t pid) {
     return (int64_t)_sc(SYS_WAIT_NONBLOCK, (uint64_t)pid, 0, 0, 0, 0);
 }
+
+/* Phase 2: spawn with fd 0/1/2 redirected through this process's own
+ * "term_out_<pid>"/"term_in_<pid>" IPC queues instead of the single
+ * shared console -- read/write them directly with sys_msgrecv()/
+ * sys_msgpost() using that same naming convention (see
+ * term_queue_name() in syscall.c). Still non-blocking / still needs
+ * sys_wait_nonblock() to reap, exactly like plain sys_spawn(). */
+static inline int64_t sys_spawn_windowed(const char* name) {
+    return (int64_t)_sc(SYS_SPAWN, (uint64_t)name, 0, 1, 0, 0);
+}
+static inline int64_t sys_spawn_windowed_arg(const char* name, const char* arg) {
+    return (int64_t)_sc(SYS_SPAWN, (uint64_t)name, (uint64_t)arg, 1, 0, 0);
+}
