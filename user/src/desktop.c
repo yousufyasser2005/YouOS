@@ -270,6 +270,13 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_IMGVIEW  6
 #define WIN_VIDEOPLAYER 7
 #define WIN_MEDIAPLAYER 8
+#define WIN_PTERM 9  /* Phase 3 of true concurrent multi-program
+                       * execution: a window backed by a REAL, separate
+                       * process (spawned via sys_spawn_windowed()) as
+                       * opposed to WIN_TERMINAL, which is desktop's own
+                       * internal tcmd() interpreter running in-process.
+                       * Multiple WIN_PTERM windows can be open and
+                       * running concurrently -- that's the whole point. */
 static const int win_glyph_map[7]={0,2,1,3,5,4,1};
 static int win_glyph_idx(int wid){if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
 #define NOTIF_MAX 20
@@ -382,6 +389,31 @@ typedef struct{
 static Calc calc_states[MAX_WINDOWS];
 static int calc_current=-1;
 #define calc (calc_states[calc_current])
+
+/* Phase 3 of true concurrent multi-program execution: per-window state
+ * for a WIN_PTERM window. Unlike the global tlines[]/trow used by
+ * WIN_TERMINAL (desktop's own internal command interpreter), each
+ * WIN_PTERM window has its own independent scrollback, since each is
+ * backed by its own independent real process. */
+typedef struct{
+    int64_t pid;   /* -1 = no backing process (spawn failed, or already
+                    * detached after being reaped and the window closed) */
+    int exited;    /* backing process has exited (polled via
+                    * sys_wait_nonblock() once per frame below) --
+                    * gates whether the window can be closed, since
+                    * there's no way to kill a still-running process */
+    char tlines[32][128];
+    int  trow;     /* index of the CURRENT (possibly still in-progress)
+                    * line -- unlike the global trow, which counts
+                    * COMPLETE lines with a separate tinput[] for the
+                    * in-progress one, tlines[trow] here IS the
+                    * in-progress line, since a real process's raw
+                    * output (including its own echo of what you type)
+                    * arrives as an arbitrary character stream, not
+                    * discrete pre-formed lines the way tcmd()'s
+                    * responses do. */
+} PTerm;
+static PTerm pterm_states[MAX_WINDOWS];
 
 
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
@@ -525,14 +557,63 @@ static void term_drain(const char* qname){
         tprint(buf);
     }
 }
+
+/* Phase 3: appends raw process output to WIN_PTERM window `i`'s own
+ * scrollback, character by character -- unlike tprint() (which always
+ * treats a whole call as one complete new line, fine for tcmd()'s
+ * own pre-formed responses), this handles a real process's output
+ * arriving in arbitrary chunks correctly: newline starts a new line,
+ * backspace/DEL erases the previous character (matching what
+ * shell.c's own readline() sends on backspace -- a plain '\b', no
+ * erase-sequence), CR is dropped (treating CRLF as LF; nothing in
+ * this codebase emits a lone CR that would need real cursor-return
+ * handling), everything else appends to the current (last) line. */
+static void pterm_append(int i, const char* data, int len){
+    PTerm* p=&pterm_states[i];
+    for(int k=0;k<len;k++){
+        char c=data[k];
+        if(c=='\n'){
+            p->trow++;
+            if(p->trow>=32){
+                for(int r=0;r<31;r++){int j=0;while(p->tlines[r+1][j]){p->tlines[r][j]=p->tlines[r+1][j];j++;}p->tlines[r][j]=0;}
+                p->trow=31;
+            }
+            p->tlines[p->trow][0]=0;
+        } else if(c=='\r'){
+            /* ignore */
+        } else if(c=='\b'||c==127){
+            int j=0;while(p->tlines[p->trow][j])j++;
+            if(j>0)p->tlines[p->trow][j-1]=0;
+        } else {
+            int j=0;while(p->tlines[p->trow][j])j++;
+            if(j<127){p->tlines[p->trow][j]=c;p->tlines[p->trow][j+1]=0;}
+        }
+    }
+}
+/* Phase 3: drains up to a fixed number of messages per call (capped so
+ * one very chatty window can't starve the render loop or other
+ * windows in the same frame) from WIN_PTERM window `i`'s own output
+ * queue, appending each to its scrollback via pterm_append(). */
+static void pterm_drain(int i){
+    if(pterm_states[i].pid<0)return;
+    char qname[24];term_qname(pterm_states[i].pid,1,qname);
+    for(int got=0;got<8;got++){
+        char buf[130]; unsigned int len=0,from=0;
+        int rc=sys_msgrecv(qname,buf,&len,&from);
+        if(rc<0)break;
+        if(len>128)len=128;
+        pterm_append(i,buf,(int)len);
+    }
+}
 static void do_shutdown(void);
 static void do_restart(void);
 static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
+static void open_new_pterm(const char* prog);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -552,7 +633,8 @@ static void tcmd(const char*cmd){
     for(int k=0;ls[k]||cmd[k];k++)  if(ls[k]!=cmd[k])  {ml=0;break;}
     for(int k=0;spt[k]||cmd[k];k++) if(spt[k]!=cmd[k]) {mspt=0;break;}
     for(int k=0;iot[k]||cmd[k];k++) if(iot[k]!=cmd[k]) {miot=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest");
+    for(int k=0;nt[k]||cmd[k];k++)  if(nt[k]!=cmd[k])  {mnt=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -610,6 +692,15 @@ static void tcmd(const char*cmd){
             }
             tprint("iotest: done.");
         }
+    }
+    else if(mnt){
+        /* Phase 3 of true concurrent multi-program execution: opens a
+         * NEW window backed by a real, independent "shell" process --
+         * unlike this window (desktop's own internal tcmd()
+         * interpreter), it runs concurrently, and you can open more
+         * than one. */
+        open_new_pterm("shell");
+        tprint("newterm: opened a new terminal window.");
     }
     else if(mcrl){
         static char cbuf[2048];
@@ -792,6 +883,33 @@ static void draw_terminal_content(int i){
     text(w->x+pad+16,iy+3,iclip,TEXT,0x0A0D10);
     int cur_x=w->x+pad+16+tinput_len*8;
     if(cursor_blink<50&&cur_x+8<w->x+w->w)rect(cur_x,iy+2,8,14,cfg_accent);
+}
+
+/* Phase 3: renders a WIN_PTERM window. Unlike draw_terminal_content()
+ * above, there's no separate input-line region at the bottom -- the
+ * backing process's own echo of what you type IS the visible text
+ * (see pterm_append()'s comment), so the whole window is just
+ * scrollback with a cursor block after the last character of the
+ * current (possibly in-progress) line. */
+static void draw_pterm_content(int i){
+    Win*w=&wins[i];PTerm*p=&pterm_states[i];int pad=8;
+    int cx=w->x+pad,cy=w->y+TITLEBAR_H+pad;
+    int max_cols=(w->w-pad*2)/8;int max_rows=(w->h-TITLEBAR_H-pad*2)/16;
+    if(max_rows<1||max_cols<1)return;
+    rect(w->x,w->y+TITLEBAR_H,w->w,w->h-TITLEBAR_H,0x0D1117);
+    int total=p->trow+1;
+    int start=total>max_rows?total-max_rows:0;
+    for(int r=start;r<total;r++){
+        char clip[128];int k=0;while(p->tlines[r][k]&&k<max_cols&&k<127){clip[k]=p->tlines[r][k];k++;}clip[k]=0;
+        int ry=cy+(r-start)*16;
+        text(cx,ry,clip,TEXT,0x0D1117);
+        if(r==p->trow&&cursor_blink<50){
+            int cw=0;while(p->tlines[r][cw]&&cw<max_cols)cw++;
+            int curx=cx+cw*8;
+            if(curx+8<w->x+w->w)rect(curx,ry-1,8,14,cfg_accent);
+        }
+    }
+    if(p->exited)text(w->x+pad,w->y+w->h-20,"[process exited -- close to dismiss]",DIM,0x0D1117);
 }
 
 /* ═══ FILE MANAGER ══════════════════════════════════════════════ */
@@ -2317,6 +2435,29 @@ static void calc_handle_key(s64 ch){
 /* === OPEN HELPERS ══════════════════════════════════════════════ *//* === OPEN HELPERS ══════════════════════════════════════════════ */
 static int find_win(int id){for(int i=0;i<win_count;i++)if(wins[i].id==id)return i;return -1;}
 static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_TERMINAL,130,60,600,500,"Terminal",cfg_accent);}
+/* Phase 3 of true concurrent multi-program execution: opens a NEW
+ * window backed by a real, separate process, spawned windowed (per-
+ * process I/O redirection, Phase 2) so it renders/receives input
+ * through this window instead of the single shared console. Unlike
+ * open_terminal() above, this has no singleton find_win() check --
+ * multiple can be open and genuinely running concurrently at once,
+ * same pattern open_files()/open_notepad() already use for their own
+ * multi-instance windows. */
+static void open_new_pterm(const char* prog){
+    int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_PTERM)cnt++;
+    int ox=160+(cnt%6)*24,oy=90+(cnt%6)*24;
+    int i=wm_new(WIN_PTERM,ox,oy,600,400,"Terminal",cfg_accent);
+    if(i<0)return;
+    PTerm*p=&pterm_states[i];
+    p->trow=0;p->tlines[0][0]=0;p->exited=0;
+    int64_t pid=sys_spawn_windowed(prog);
+    p->pid=pid;
+    if(pid<0){
+        p->exited=1;
+        const char*msg="[failed to start]";
+        int k=0;while(msg[k]&&k<127){p->tlines[0][k]=msg[k];k++;}p->tlines[0][k]=0;
+    }
+}
 static void open_about(void){int i=find_win(WIN_ABOUT);if(i>=0){wins[i].visible=1;wins[i].minimized=0;wm_focus(i);}else wm_new(WIN_ABOUT,280,150,420,280,"About YouOS",PURPLE);}
 static void open_files(void){
     int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_FILES)cnt++;
@@ -3651,6 +3792,22 @@ int main(void){
             }
         }
 
+        /* Phase 3: drain every WIN_PTERM window's output queue and
+         * poll for exit, once per frame, for ALL such windows --
+         * not just the focused/visible one, so a minimized or
+         * unfocused terminal still makes progress and doesn't fill up
+         * its output queue while nobody's looking at it. */
+        for(int pwi=0;pwi<win_count;pwi++){
+            if(wins[pwi].id!=WIN_PTERM)continue;
+            PTerm*p=&pterm_states[pwi];
+            if(p->pid<0)continue;
+            pterm_drain(pwi);
+            if(!p->exited){
+                int64_t wr=sys_wait_nonblock(p->pid);
+                if(wr!=-2)p->exited=1;
+            }
+        }
+
         /* mouse */
         unsigned long long mstate[3];
         sys_mouseread(mstate);
@@ -3861,10 +4018,23 @@ int main(void){
                 Win*w=&wins[hit];
                 /* close */
                 if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
+                    /* Phase 3: no syscall exists to forcibly kill a
+                     * running process, so closing a WIN_PTERM window
+                     * while its backing process is still alive would
+                     * orphan it permanently (unreachable, unkillable,
+                     * running forever, forever holding its pid and
+                     * memory). Refuse the close until it's actually
+                     * exited (e.g. the user typed "exit" in it) --
+                     * the per-frame poll above flips `exited` the
+                     * moment that happens, so this naturally becomes
+                     * closable a frame or two later with no extra
+                     * action needed. */
+                    if(wins[hit].id==WIN_PTERM&&!pterm_states[hit].exited)goto click_done;
                     w->visible=0;
                     if(wins[hit].id==WIN_NOTEPAD){np_current=hit;np.mode=0;}
                     if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;
                     if(wins[hit].id==WIN_CALC)calc_current=-1;
+                    if(wins[hit].id==WIN_PTERM)pterm_states[hit].pid=-1;
                     focused=-1;int bz=-1;
                     for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
                     goto click_done;
@@ -4364,6 +4534,20 @@ int main(void){
                 else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
                 else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
             }
+            /* Phase 3: forward the RAW character straight to the
+             * backing process's input queue, no local echo or
+             * editing at all -- shell.c's own readline() already
+             * handles backspace and echoes every character back
+             * itself (see pterm_append()'s comment), exactly like a
+             * real terminal in raw mode talking to a PTY. */
+            if(wins[focused].id==WIN_PTERM&&ch>0&&ch<256){
+                PTerm*p=&pterm_states[focused];
+                if(p->pid>=0&&!p->exited){
+                    char c=(char)ch;
+                    char qin[24];term_qname(p->pid,0,qin);
+                    sys_msgpost(qin,&c,1);
+                }
+            }
             if(wins[focused].id==WIN_FILES&&wins[focused].visible&&!wins[focused].minimized&&(fm_current=focused,fm_dialog==4)){
                 if(ch>0&&ch<256){
                     char fc=(char)ch;
@@ -4561,6 +4745,7 @@ int main(void){
             else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
             else if(wins[i].id==WIN_MEDIAPLAYER)draw_mediaplayer_content(i);
+            else if(wins[i].id==WIN_PTERM)draw_pterm_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
