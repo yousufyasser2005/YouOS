@@ -211,3 +211,15 @@ static inline int64_t sys_spawn_windowed(const char* name) {
 static inline int64_t sys_spawn_windowed_arg(const char* name, const char* arg) {
     return (int64_t)_sc(SYS_SPAWN, (uint64_t)name, (uint64_t)arg, 1, 0, 0);
 }
+
+/* Forcibly terminates another process. Returns 0 on success, -1 if no
+ * such pid, -2 if already dead, -3 for pid 1 (refused), -4 if pid is
+ * your own (use a normal `return`/exit from main() instead -- this
+ * function only flips a flag and returns, which is wrong for ending
+ * yourself). See process_kill()'s comment in scheduler.c for the full
+ * contract. Doesn't reap -- call sys_wait_nonblock() afterward, same
+ * as for a process that exited on its own. */
+#define SYS_KILL 45
+static inline int64_t sys_kill(int64_t pid) {
+    return (int64_t)_sc(SYS_KILL, (uint64_t)pid, 0, 0, 0, 0);
+}

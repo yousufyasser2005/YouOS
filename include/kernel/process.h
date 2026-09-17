@@ -122,6 +122,10 @@ void       process_sleep(uint64_t ticks);
 void       process_exit(void);
 process_t* process_current(void);
 process_t* process_get(uint32_t pid);
+int        process_kill(uint32_t pid); /* forcibly ends another process;
+                                        * see its own comment in
+                                        * scheduler.c for the full
+                                        * contract and return codes. */
 void       scheduler_tick(void);
 uint64_t   scheduler_get_ticks(void);
 

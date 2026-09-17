@@ -612,8 +612,8 @@ static void wav_scan_file(const char*path);
 static void open_new_pterm(const char* prog);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -634,7 +634,8 @@ static void tcmd(const char*cmd){
     for(int k=0;spt[k]||cmd[k];k++) if(spt[k]!=cmd[k]) {mspt=0;break;}
     for(int k=0;iot[k]||cmd[k];k++) if(iot[k]!=cmd[k]) {miot=0;break;}
     for(int k=0;nt[k]||cmd[k];k++)  if(nt[k]!=cmd[k])  {mnt=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm");
+    for(int k=0;kt[k]||cmd[k];k++)  if(kt[k]!=cmd[k])  {mkt=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -701,6 +702,33 @@ static void tcmd(const char*cmd){
          * than one. */
         open_new_pterm("shell");
         tprint("newterm: opened a new terminal window.");
+    }
+    else if(mkt){
+        /* TEMPORARY -- regression check for process_kill()/sys_kill().
+         * Spawns spawntest (non-windowed; it sleeps quietly for ~5s
+         * doing nothing else) and immediately kills it -- if
+         * sys_wait_nonblock() reports it dead almost right away
+         * instead of only after the full ~5s it would otherwise take,
+         * that's a clean, unambiguous proof the kill actually did
+         * something, not a false pass from just getting lucky with
+         * timing. */
+        int64_t pid=sys_spawn("spawntest");
+        if(pid<0){tprint("killtest: sys_spawn failed.");}
+        else{
+            int64_t kr=sys_kill(pid);
+            if(kr!=0){tprint("killtest: sys_kill failed.");}
+            else{
+                int tries=0;int64_t wr=-2;
+                while(tries<10){
+                    wr=sys_wait_nonblock(pid);
+                    if(wr!=-2)break;
+                    sys_yield();
+                    tries++;
+                }
+                if(wr==0)tprint("killtest: killed and reaped quickly -- kill works.");
+                else tprint("killtest: still running after kill -- something's wrong.");
+            }
+        }
     }
     else if(mcrl){
         static char cbuf[2048];
@@ -4018,18 +4046,21 @@ int main(void){
                 Win*w=&wins[hit];
                 /* close */
                 if(in_box(mouse_x,mouse_y,w->x+8,w->y+7,14,14)){
-                    /* Phase 3: no syscall exists to forcibly kill a
-                     * running process, so closing a WIN_PTERM window
-                     * while its backing process is still alive would
-                     * orphan it permanently (unreachable, unkillable,
-                     * running forever, forever holding its pid and
-                     * memory). Refuse the close until it's actually
-                     * exited (e.g. the user typed "exit" in it) --
-                     * the per-frame poll above flips `exited` the
-                     * moment that happens, so this naturally becomes
-                     * closable a frame or two later with no extra
-                     * action needed. */
-                    if(wins[hit].id==WIN_PTERM&&!pterm_states[hit].exited)goto click_done;
+                    /* Phase 3 originally refused this close outright
+                     * while a WIN_PTERM window's backing process was
+                     * still alive, since nothing could forcibly stop
+                     * it -- closing would have orphaned it
+                     * permanently. Now that sys_kill() exists, force-
+                     * kill it instead and reap immediately (we just
+                     * confirmed it's dead ourselves, so there's no
+                     * need to wait for the per-frame poll to notice)
+                     * -- matches how a real terminal emulator closes
+                     * even with a foreground process still running. */
+                    if(wins[hit].id==WIN_PTERM&&!pterm_states[hit].exited){
+                        sys_kill(pterm_states[hit].pid);
+                        sys_wait_nonblock(pterm_states[hit].pid);
+                        pterm_states[hit].exited=1;
+                    }
                     w->visible=0;
                     if(wins[hit].id==WIN_NOTEPAD){np_current=hit;np.mode=0;}
                     if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;

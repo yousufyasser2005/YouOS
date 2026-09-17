@@ -330,6 +330,15 @@ static uint64_t sys_wait_nonblock(uint64_t pid, uint64_t a2, uint64_t a3, uint64
     return 0;
 }
 
+/* Forcibly terminates another process -- see process_kill()'s own
+ * comment in scheduler.c for the full contract and why this is safe
+ * on this single-core scheduler. Thin wrapper, same as every other
+ * syscall here that's really just a process.h function underneath. */
+static uint64_t sys_kill(uint64_t pid, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)process_kill((uint32_t)pid);
+}
+
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3;(void)a4;(void)a5;
     char* out = (char*)buf;
@@ -684,7 +693,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_stream_active,
     sys_get_exec_arg,
     sys_spawn,
-    sys_wait_nonblock
+    sys_wait_nonblock,
+    sys_kill
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

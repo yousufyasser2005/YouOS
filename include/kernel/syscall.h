@@ -49,7 +49,11 @@
  * sys_wait_nonblock() in syscall.c for the full contract. */
 #define SYS_SPAWN         43
 #define SYS_WAIT_NONBLOCK 44
-#define SYSCALL_COUNT  45
+
+/* Forcibly terminates another process -- see process_kill()'s comment
+ * in scheduler.c for the full contract. */
+#define SYS_KILL          45
+#define SYSCALL_COUNT  46
 
 void syscall_init(void);
 #endif

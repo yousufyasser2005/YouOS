@@ -244,28 +244,75 @@ void process_ring3_trampoline(void) {
     jump_to_userspace(p->user_entry, p->user_stack_top);
 }
 
+/* Wakes whoever is BLOCKED specifically waiting for `pid` (via
+ * process_wait()), if anyone -- shared by process_exit() (a process
+ * ending itself) and process_kill() (one process forcibly ending
+ * another) so both leave a waiting parent in the same correct state
+ * rather than duplicating this search. Only one parent can
+ * legitimately be waiting for a given pid, so stop at the first
+ * match. */
+static void wake_waiter_for(uint32_t pid) {
+    if (!process_list) return;
+    process_t* p = process_list;
+    do {
+        if (p->state == PROCESS_BLOCKED && p->waiting_for_pid == pid) {
+            p->state = PROCESS_READY;
+            p->waiting_for_pid = 0;
+            break;
+        }
+        p = p->next;
+    } while (p != process_list);
+}
+
 void process_exit(void) {
     __asm__ volatile ("cli");
     uint32_t my_pid = current_process->pid;
     current_process->state = PROCESS_DEAD;
-
-    /* Wake whoever is blocked specifically waiting for us, if
-     * anyone -- see process_wait(). Only one parent can legitimately
-     * be waiting for a given pid, so stop at the first match. */
-    if (process_list) {
-        process_t* p = process_list;
-        do {
-            if (p->state == PROCESS_BLOCKED && p->waiting_for_pid == my_pid) {
-                p->state = PROCESS_READY;
-                p->waiting_for_pid = 0;
-                break;
-            }
-            p = p->next;
-        } while (p != process_list);
-    }
-
+    wake_waiter_for(my_pid);
     do_switch();
     while (1) __asm__ volatile ("hlt");
+}
+
+/* Forcibly terminates ANOTHER process -- unlike process_exit(), which
+ * a process calls on ITSELF and which never returns, this is called
+ * BY one process ON ANOTHER and returns normally to the caller.
+ * Safe on this single-core, cooperative-plus-timer-preemption
+ * scheduler: the target can never be the CURRENTLY RUNNING process
+ * from the caller's own perspective, since only one process ever runs
+ * at a time on one core -- by the time any code can call this at all,
+ * the target is necessarily READY (sitting in the round-robin queue),
+ * BLOCKED, or SLEEPING, never mid-execution. Its saved context is
+ * simply abandoned exactly the way any DEAD process's already is
+ * (process_exit() itself "returns" by never returning, abandoning its
+ * own call stack the same way) -- do_switch()'s round-robin search
+ * only ever considers PROCESS_READY processes, so a DEAD one is
+ * silently skipped forever, no special unwinding needed. The caller
+ * (typically whoever originally spawned it) is expected to notice via
+ * sys_wait_nonblock() and reap it, same as a process that exited on
+ * its own.
+ *
+ * Returns 0 on success, -1 if no such pid, -2 if already dead, -3 for
+ * pid 1 (refused -- the boot process the whole system depends on),
+ * -4 if pid is the CALLER's own pid (use process_exit() instead,
+ * which correctly stops the caller from running further; this
+ * function only flips a flag and returns, which would be wrong for
+ * ending yourself).
+ *
+ * Known, accepted gap shared with every other way a process can end
+ * (exit, crash recovery, this): a killed process's OWN children, if
+ * it had spawned any, become orphaned -- nothing re-parents them to
+ * pid 1 or otherwise reaps them once they themselves exit. Not new
+ * here; process_exit() and crash.c's recovery path already have the
+ * same limitation. */
+int process_kill(uint32_t pid) {
+    if (pid == 1) return -3;
+    process_t* p = process_get(pid);
+    if (!p) return -1;
+    if (p == current_process) return -4;
+    if (p->state == PROCESS_DEAD) return -2;
+    p->state = PROCESS_DEAD;
+    wake_waiter_for(pid);
+    return 0;
 }
 
 /* Block the calling process until `child` dies, WITHOUT making it
