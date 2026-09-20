@@ -612,8 +612,8 @@ static void wav_scan_file(const char*path);
 static void open_new_pterm(const char* prog);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest",*mm="meminfo";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1,mmm=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -635,7 +635,8 @@ static void tcmd(const char*cmd){
     for(int k=0;iot[k]||cmd[k];k++) if(iot[k]!=cmd[k]) {miot=0;break;}
     for(int k=0;nt[k]||cmd[k];k++)  if(nt[k]!=cmd[k])  {mnt=0;break;}
     for(int k=0;kt[k]||cmd[k];k++)  if(kt[k]!=cmd[k])  {mkt=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest");
+    for(int k=0;mm[k]||cmd[k];k++)  if(mm[k]!=cmd[k])  {mmm=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -729,6 +730,25 @@ static void tcmd(const char*cmd){
                 else tprint("killtest: still running after kill -- something's wrong.");
             }
         }
+    }
+    else if(mmm){
+        /* TEMPORARY -- added while auditing/fixing the process-reap
+         * memory leak (see vmm_destroy_user_as()/process_reap()'s
+         * comments). Reports free physical pages so a spawn/kill or
+         * spawn/exit cycle's pages can actually be confirmed given
+         * back, e.g. by running this before and after several
+         * "newterm" open+close or "spawntest"/"killtest" cycles and
+         * checking the count returns to (near) where it started
+         * instead of shrinking every time. */
+        uint64_t free_pages=sys_meminfo();
+        char out[48];int oi=0;
+        const char*pfx="Free: ";int k=0;while(pfx[k])out[oi++]=pfx[k++];
+        oi=u32_append_dec(out,oi,(unsigned int)free_pages);
+        const char*sfx=" pages (~";k=0;while(sfx[k])out[oi++]=sfx[k++];
+        oi=u32_append_dec(out,oi,(unsigned int)(free_pages*4/1024));
+        const char*sfx2=" MB)";k=0;while(sfx2[k])out[oi++]=sfx2[k++];
+        out[oi]=0;
+        tprint(out);
     }
     else if(mcrl){
         static char cbuf[2048];

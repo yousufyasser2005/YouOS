@@ -224,26 +224,71 @@ address_space_t vmm_create_user_as(void)
 }
 
 /*
- * Destroy a user address space — free user-space page tables.
- * Only frees PD/PT tables under PML4[0] (user region).
- * Does NOT free physical pages backing user data (caller's job).
+ * Destroy a user address space — frees every PDP/PD/PT page-table
+ * STRUCTURE under PML4[0] (the user region), plus the PML4 itself.
+ * Does NOT free the physical pages backing actual user DATA (ELF
+ * segments, the ring-3 stack) -- those are owned by the caller
+ * (process_reap(), which frees them separately via vmm_get_phys()
+ * against the still-intact page tables, BEFORE calling this) since
+ * this function only has an address_space_t to work with, not the
+ * process_t that knows which virtual ranges are this process's own
+ * private data versus shared (e.g. the framebuffer, mapped into every
+ * address space -- its physical pages must never be freed here, only
+ * the page-table entries that reference them).
+ *
+ * Previously this only zeroed PML4[0]'s contents without freeing
+ * anything at all -- a real, unbounded leak: every process that ever
+ * ran and got reaped leaked its entire page-table tree (PDP + every
+ * PD + every split PT + the PML4 page itself) permanently. On a
+ * system with ~256MB total and a hard PMM cap to match, repeated
+ * process creation (exactly what real use of this session's
+ * concurrency work encourages -- opening/closing terminal windows,
+ * spawntest/killtest/iotest, etc.) would eventually exhaust physical
+ * memory entirely.
  */
 void vmm_destroy_user_as(address_space_t* as)
 {
     if (!as->pml4) return;
 
-    /* Walk PML4[0] only — that's the user region */
     pte_t pml4e = as->pml4[0];
-    if (!(pml4e & PTE_PRESENT)) goto done;
+    if (!(pml4e & PTE_PRESENT)) goto free_pml4;
 
-    /* Don't free if it's the kernel's shared entry */
+    /* Defensive: PML4[0] should never actually equal kernel_as's own
+     * shared PDP pointer -- vmm_create_user_as() always deep-copies
+     * into a fresh PDP -- but if some future change ever left it
+     * aliased, freeing it here would take down every other address
+     * space in the system sharing it. Structurally shouldn't happen;
+     * kept as a belt-and-suspenders guard rather than assumed away. */
     if ((pml4e & PTE_ADDR_MASK) == (kernel_as.pml4[0] & PTE_ADDR_MASK))
-        goto done;
+        goto free_pml4;
 
-    /* TODO: walk and free PT pages — for now just free the PML4 */
-done:
-    /* Zero out to prevent use-after-free */
-    for (int i = 0; i < 512; i++) as->pml4[i] = 0;
+    {
+        pte_t* pdp = (pte_t*)(pml4e & PTE_ADDR_MASK);
+        for (int i = 0; i < 512; i++) {
+            pte_t pdpe = pdp[i];
+            if (!(pdpe & PTE_PRESENT) || (pdpe & PTE_HUGE)) continue;
+            pte_t* pd = (pte_t*)(pdpe & PTE_ADDR_MASK);
+            for (int j = 0; j < 512; j++) {
+                pte_t pde = pd[j];
+                /* A present, non-huge PD entry is a split PT --
+                 * always a fresh, process-private allocation from
+                 * get_or_create() (e.g. splitting a huge identity-map
+                 * page to map an ELF segment, the ring-3 stack, or
+                 * the framebuffer at finer granularity). Free the
+                 * TABLE itself here; the DATA pages its entries point
+                 * to are handled by the caller as described above. */
+                if (!(pde & PTE_PRESENT) || (pde & PTE_HUGE)) continue;
+                pte_t* pt = (pte_t*)(pde & PTE_ADDR_MASK);
+                pmm_free_page((uint64_t)pt);
+            }
+            pmm_free_page((uint64_t)pd);
+        }
+        pmm_free_page((uint64_t)pdp);
+    }
+
+free_pml4:
+    pmm_free_page((uint64_t)as->pml4);
+    as->pml4 = 0;
 }
 
 int vmm_map_in(address_space_t* as, uint64_t virt, uint64_t phys, uint64_t flags)

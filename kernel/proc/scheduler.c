@@ -396,6 +396,32 @@ void process_reap(process_t* child) {
     if (child->state != PROCESS_DEAD) return;
     process_unlink(child);
     if (child->stack_base) kfree_aligned((void*)child->stack_base);
+
+    /* Free this process's own ELF-segment and ring-3-stack backing
+     * physical pages BEFORE tearing down the page tables below --
+     * both need to walk/read those still-intact tables (ELF via
+     * vmm_get_phys(), stack directly since it's identity-mapped) to
+     * know which physical pages are theirs to free. Previously
+     * neither was ever freed at all -- see vmm_destroy_user_as()'s
+     * own comment for the full story; this is the other half of that
+     * same fix, the "caller's job" its old comment referred to but
+     * that no caller ever actually did. */
+    if (child->elf_load_end > child->elf_load_base) {
+        uint64_t start = child->elf_load_base & PAGE_MASK;
+        uint64_t end   = PAGE_ALIGN(child->elf_load_end);
+        for (uint64_t va = start; va < end; va += PAGE_SIZE) {
+            uint64_t pa = vmm_get_phys(&child->as, va);
+            if (pa) pmm_free_page(pa);
+        }
+    }
+    if (child->user_stack_base) {
+        uint64_t base = child->user_stack_base;
+        for (uint64_t va = base; va < base + 16 * PAGE_SIZE; va += PAGE_SIZE) {
+            uint64_t pa = vmm_get_phys(&child->as, va);
+            if (pa) pmm_free_page(pa);
+        }
+    }
+
     vmm_destroy_user_as(&child->as);
     kfree(child);
 }

@@ -77,6 +77,24 @@ typedef struct process {
                                      * process_ring3_trampoline(); 0 for
                                      * kernel-only processes. */
     uint64_t         user_stack_top; /* Ring-3 stack top, likewise. */
+    uint64_t         user_stack_base; /* Ring-3 stack base (physical ==
+                                     * virtual, identity-mapped) -- 0
+                                     * for kernel-only processes. Read
+                                     * by process_reap() to free the
+                                     * stack's backing physical pages,
+                                     * which vmm_destroy_user_as() does
+                                     * NOT free (it only has an
+                                     * address_space_t, not this
+                                     * process_t). */
+    uint64_t         elf_load_base, elf_load_end; /* Virtual range
+                                     * (raw, not page-aligned) of this
+                                     * process's own ELF LOAD segments
+                                     * -- read by process_reap() to
+                                     * walk and free their backing
+                                     * physical pages via
+                                     * vmm_get_phys(), same reason as
+                                     * user_stack_base above. Both 0
+                                     * for kernel-only processes. */
     char             exec_arg[PROCESS_EXEC_ARG_SIZE]; /* Optional argument
                                      * string set by sys_exec() (e.g.
                                      * yourun's script path), read back

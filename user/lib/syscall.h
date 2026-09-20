@@ -223,3 +223,13 @@ static inline int64_t sys_spawn_windowed_arg(const char* name, const char* arg) 
 static inline int64_t sys_kill(int64_t pid) {
     return (int64_t)_sc(SYS_KILL, (uint64_t)pid, 0, 0, 0, 0);
 }
+
+/* Returns free physical pages (each 4096 bytes). Added while auditing
+ * the process-reap memory leak so free memory can actually be
+ * observed and a spawn/kill or spawn/exit cycle's pages confirmed
+ * given back, not just trusted. See sys_meminfo()'s comment in
+ * syscall.c. */
+#define SYS_MEMINFO 46
+static inline uint64_t sys_meminfo(void) {
+    return _sc(SYS_MEMINFO, 0, 0, 0, 0, 0);
+}

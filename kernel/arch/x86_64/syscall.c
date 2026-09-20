@@ -12,6 +12,7 @@
 #include <kernel/keyboard.h>
 #include <kernel/fb.h>
 #include <kernel/mouse.h>
+#include <kernel/pmm.h>
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
 static uint8_t syscall_kernel_stack[262144];
@@ -226,8 +227,14 @@ static process_t* spawn_common(const char* path, const char* arg, uint64_t* err)
         return 0;
     }
 
-    child->user_entry     = res.entry;
-    child->user_stack_top = stack_top;
+    child->user_entry      = res.entry;
+    child->user_stack_top  = stack_top;
+    /* Recorded purely so process_reap() can later free this process's
+     * own ELF/stack backing physical pages -- see their comments in
+     * process.h for why vmm_destroy_user_as() can't do this itself. */
+    child->user_stack_base = stack_base;
+    child->elf_load_base   = res.load_base;
+    child->elf_load_end    = res.load_end;
     {
         int ai = 0;
         while (arg_buf[ai] && ai < PROCESS_EXEC_ARG_SIZE - 1) { child->exec_arg[ai] = arg_buf[ai]; ai++; }
@@ -337,6 +344,19 @@ static uint64_t sys_wait_nonblock(uint64_t pid, uint64_t a2, uint64_t a3, uint64
 static uint64_t sys_kill(uint64_t pid, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a2;(void)a3;(void)a4;(void)a5;
     return (uint64_t)process_kill((uint32_t)pid);
+}
+
+/* Returns free physical pages (each PAGE_SIZE=4096 bytes) -- added
+ * while auditing/fixing the process-reap memory leak (see
+ * vmm_destroy_user_as()/process_reap()'s comments) so it's actually
+ * possible to observe free memory from userspace and confirm a
+ * spawn/kill or spawn/exit cycle really does give its pages back,
+ * rather than having to trust it. Nothing existed for this before --
+ * desktop.c's own "MEM" sidebar widget turned out to be a hardcoded
+ * "50%" string, not backed by any real stat. */
+static uint64_t sys_meminfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return pmm_get_stats().free_pages;
 }
 
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -694,7 +714,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_get_exec_arg,
     sys_spawn,
     sys_wait_nonblock,
-    sys_kill
+    sys_kill,
+    sys_meminfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

@@ -53,7 +53,11 @@
 /* Forcibly terminates another process -- see process_kill()'s comment
  * in scheduler.c for the full contract. */
 #define SYS_KILL          45
-#define SYSCALL_COUNT  46
+
+/* Free physical page count -- see sys_meminfo()'s comment in
+ * syscall.c. */
+#define SYS_MEMINFO       46
+#define SYSCALL_COUNT  47
 
 void syscall_init(void);
 #endif
