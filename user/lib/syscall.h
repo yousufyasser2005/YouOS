@@ -233,3 +233,19 @@ static inline int64_t sys_kill(int64_t pid) {
 static inline uint64_t sys_meminfo(void) {
     return _sc(SYS_MEMINFO, 0, 0, 0, 0, 0);
 }
+
+/* Total physical page count -- pairs with sys_meminfo() so a real
+ * used/total percentage can be computed. See sys_mem_total()'s comment
+ * in syscall.c. */
+#define SYS_MEM_TOTAL 47
+static inline uint64_t sys_mem_total(void) {
+    return _sc(SYS_MEM_TOTAL, 0, 0, 0, 0, 0);
+}
+
+/* Live CPU-busy percentage (0-100) for the interval since the previous
+ * call. See scheduler_get_cpu_percent()'s comment in scheduler.c for
+ * how this is actually measured. */
+#define SYS_CPUINFO 48
+static inline uint64_t sys_cpuinfo(void) {
+    return _sc(SYS_CPUINFO, 0, 0, 0, 0, 0);
+}

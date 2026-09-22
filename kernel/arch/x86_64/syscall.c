@@ -96,17 +96,25 @@ static uint64_t sys_read(uint64_t fd,uint64_t buf,uint64_t len,uint64_t a4,uint6
     char* b=(char*)buf; uint64_t i=0;
 
     if (process_current()->windowed) {
-        /* Phase 2: same blocking-via-polling shape keyboard_getchar()
-         * already uses below (yield and retry until something's
-         * there), just sourced from this process's own input queue
-         * instead of the shared keyboard stream. Each message is
-         * expected to be exactly one character -- the convention
-         * Phase 3's window manager posts keystrokes under. */
+        /* Phase 2 originally used a busy-spin here (process_yield() and
+         * retry immediately, forever, until something's in the queue)
+         * -- harmless-looking on paper, but it means a windowed shell
+         * sitting idle at its own prompt is PROCESS_READY 100% of the
+         * time, so do_switch()'s search finds it before it ever falls
+         * through to idle_process. Confirmed via this session's new,
+         * real sys_cpuinfo(): opening a single "newterm" window (doing
+         * nothing in it) pinned CPU at 100% until it was closed --
+         * accurate, not a measurement bug; that busy-spin really was
+         * consuming its full round-robin share every timeslice. Genuine
+         * sleep instead: 1 tick (~10ms at 100Hz) of real latency per
+         * retry, imperceptible for keystroke echo, but the process is
+         * actually PROCESS_SLEEPING while waiting -- do_switch() can
+         * now correctly skip it and reach idle_process. */
         char qname[24];
         term_queue_name(process_current()->pid, 0, qname);
         while (i < len) {
             uint8_t c; uint32_t rlen = 0, from = 0;
-            if (ipc_recv(qname, &c, &rlen, &from) != 0) { process_yield(); continue; }
+            if (ipc_recv(qname, &c, &rlen, &from) != 0) { process_sleep(1); continue; }
             if (rlen < 1) continue;
             b[i++] = (char)c;
             if ((char)c == '\n') break;
@@ -357,6 +365,29 @@ static uint64_t sys_kill(uint64_t pid, uint64_t a2, uint64_t a3, uint64_t a4, ui
 static uint64_t sys_meminfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
     return pmm_get_stats().free_pages;
+}
+
+/* Total physical page count -- pairs with sys_meminfo()'s free-page
+ * count so userspace can compute a real used/total percentage. Added
+ * alongside sys_cpuinfo() below while finally wiring desktop's sidebar
+ * stats to real numbers -- sys_meminfo() itself already existed (from
+ * the memory-leak audit) but nothing had ever called it from
+ * draw_stats(), so the "MEM" widget stayed hardcoded at "50%" even
+ * after that fix landed. */
+static uint64_t sys_mem_total(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return pmm_get_stats().total_pages;
+}
+
+/* Live CPU-busy percentage (0-100) for the interval since the previous
+ * call to this syscall -- see scheduler_get_cpu_percent()'s own comment
+ * in scheduler.c for how this is actually measured (a real idle task's
+ * tick count, not a since-boot average or anything approximated from
+ * userspace timing). Same motivation as sys_mem_total() above: the
+ * "CPU" sidebar widget was hardcoded at "8%" the whole time. */
+static uint64_t sys_cpuinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)scheduler_get_cpu_percent();
 }
 
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -715,7 +746,9 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_spawn,
     sys_wait_nonblock,
     sys_kill,
-    sys_meminfo
+    sys_meminfo,
+    sys_mem_total,
+    sys_cpuinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

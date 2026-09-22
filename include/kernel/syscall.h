@@ -57,7 +57,21 @@
 /* Free physical page count -- see sys_meminfo()'s comment in
  * syscall.c. */
 #define SYS_MEMINFO       46
-#define SYSCALL_COUNT  47
+
+/* Total physical page count -- pairs with SYS_MEMINFO so userspace can
+ * compute a real used/total percentage (desktop's "MEM" sidebar stat
+ * was, until now, a hardcoded string -- see sys_mem_total()'s comment
+ * in syscall.c). */
+#define SYS_MEM_TOTAL     47
+
+/* Live CPU-busy percentage (0-100) for the interval since the previous
+ * call -- see scheduler_get_cpu_percent()'s comment in scheduler.c for
+ * how this is actually measured (a real idle task, not a since-boot
+ * average). Added alongside SYS_MEM_TOTAL for the same reason: desktop's
+ * "CPU" sidebar stat was also a hardcoded string. */
+#define SYS_CPUINFO       48
+
+#define SYSCALL_COUNT  49
 
 void syscall_init(void);
 #endif

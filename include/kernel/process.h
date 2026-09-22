@@ -146,5 +146,10 @@ int        process_kill(uint32_t pid); /* forcibly ends another process;
                                         * contract and return codes. */
 void       scheduler_tick(void);
 uint64_t   scheduler_get_ticks(void);
+uint32_t   scheduler_get_cpu_percent(void); /* live "percent busy" for the
+                                             * interval since the previous
+                                             * call (0-100), backed by a
+                                             * real idle task -- see its
+                                             * own comment in scheduler.c. */
 
 #endif

@@ -89,7 +89,13 @@ char keyboard_getchar(void) {
     key_event_t e;
     while (1) {
         if (kb_pop(&e) && e.ascii) return e.ascii;
-        process_yield();
+        /* Same busy-spin-via-yield issue as the windowed sys_read() path
+         * in syscall.c (see its comment) -- this process stays
+         * PROCESS_READY the whole time it's waiting for a keystroke, so
+         * it's found before do_switch() ever falls through to
+         * idle_process. Genuine sleep instead: 1 tick (~10ms at 100Hz)
+         * of latency per retry, imperceptible for keystroke echo. */
+        process_sleep(1);
     }
 }
 void keyboard_inject(key_event_t* e) { kb_push(e); }

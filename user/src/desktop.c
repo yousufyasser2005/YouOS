@@ -1763,11 +1763,34 @@ static void draw_digital_clock(int x,int y,u64 secs){
     for(int i=0;t[i];i++){int gx=cx-36+i*14;glyph(gx,y,t[i],ACCENT,PANEL_BG);glyph(gx,y+8,t[i],ACCENT,PANEL_BG);}
     text_center(cx,y+28,"Fri May 29 2026",DIM,PANEL_BG);
 }
+/* Real, live figures via sys_cpuinfo()/sys_meminfo()/sys_mem_total() --
+ * both bars were hardcoded ("8%"/"50%", fixed bar widths) until this
+ * session; see those syscalls' own comments in syscall.c for how each
+ * is actually measured. Called every frame (draw_stats() runs in the
+ * main render loop), so sys_cpuinfo()'s own "since the previous call"
+ * delta window naturally tracks roughly one frame's worth of load --
+ * no separate polling/throttle logic needed here. */
 static void draw_stats(int x,int y){
     rect(x,y,PANEL_W-8,60,0x0D1117);outline(x,y,PANEL_W-8,60,BORDER);
     text_bold(x+6,y+4,"System",DIM,0x0D1117);
-    text(x+6,y+20,"CPU",DIM,0x0D1117);rect(x+36,y+22,150,8,0x21262D);rect(x+36,y+22,12,8,GREEN);text(x+190,y+20,"8%",DIM,0x0D1117);
-    text(x+6,y+36,"MEM",DIM,0x0D1117);rect(x+36,y+38,150,8,0x21262D);rect(x+36,y+38,75,8,ACCENT);text(x+190,y+36,"50%",DIM,0x0D1117);
+
+    u32 cpu_pct=(u32)sys_cpuinfo();
+    if(cpu_pct>100)cpu_pct=100;
+    int cpu_w=(int)(cpu_pct*150/100);
+    char cpu_s[8];int ci=0;ci=u32_append_dec(cpu_s,ci,cpu_pct);cpu_s[ci++]='%';cpu_s[ci]=0;
+    text(x+6,y+20,"CPU",DIM,0x0D1117);rect(x+36,y+22,150,8,0x21262D);rect(x+36,y+22,cpu_w,8,GREEN);text(x+190,y+20,cpu_s,DIM,0x0D1117);
+
+    u64 free_pages=sys_meminfo();
+    u64 total_pages=sys_mem_total();
+    u32 mem_pct=0;
+    if(total_pages>0 && total_pages>=free_pages){
+        u64 used_pages=total_pages-free_pages;
+        mem_pct=(u32)((used_pages*100)/total_pages);
+    }
+    if(mem_pct>100)mem_pct=100;
+    int mem_w=(int)(mem_pct*150/100);
+    char mem_s[8];int mi=0;mi=u32_append_dec(mem_s,mi,mem_pct);mem_s[mi++]='%';mem_s[mi]=0;
+    text(x+6,y+36,"MEM",DIM,0x0D1117);rect(x+36,y+38,150,8,0x21262D);rect(x+36,y+38,mem_w,8,ACCENT);text(x+190,y+36,mem_s,DIM,0x0D1117);
 }
 
 /* ═══ ICONS ═════════════════════════════════════════════════════ */

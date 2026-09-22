@@ -12,6 +12,30 @@ static process_t* process_list    = 0;
 static uint32_t   next_pid        = 1;
 static uint64_t   total_ticks     = 0;
 
+/* Idle task -- see scheduler_init()'s own comment for why it exists and
+ * why it's deliberately kept OUTSIDE process_list's circular chain
+ * rather than being just another process_create()'d entry. */
+static process_t* idle_process    = 0;
+
+/* Last-sampled tick counts, for scheduler_get_cpu_percent()'s delta
+ * calculation (a live figure for the interval since the previous call,
+ * not a since-boot average). */
+static uint64_t cpu_sample_total_ticks = 0;
+static uint64_t cpu_sample_idle_ticks  = 0;
+static uint32_t cpu_sample_last_percent = 0;
+
+/* Minimum ticks between real recomputes (~250ms at 100Hz). draw_stats()
+ * calls scheduler_get_cpu_percent() roughly once per rendered frame, and
+ * an idle desktop's frames are only ~4 ticks (~40ms) apart (bounded by
+ * idle_process's own timeslice -- see do_switch()'s comment). A window
+ * that short means one real-but-brief tick of work (a frame whose redraw
+ * happens to straddle a timer-tick boundary) swings the reported
+ * percentage by 25%+ in a single sample -- true to the tick count, but
+ * not a meaningful load figure at that granularity. Requiring a longer
+ * minimum window averages that out, the same way a real system monitor
+ * refreshes on the order of a second rather than every single poll. */
+#define CPU_SAMPLE_MIN_TICKS 25
+
 /* Timeslice: how many timer ticks each process runs before preemption.
  * At 100Hz PIT, 4 ticks = ~40ms per slice — responsive but not too chatty. */
 #define TIMESLICE 4
@@ -27,6 +51,17 @@ static void setup_stack(process_t* p, void (*entry)(void)) {
     *--stk = 0;
     *--stk = 0;
     p->context.kernel_rsp = (uint64_t)stk;
+}
+
+/* Idle task body: nothing to do but wait for the next interrupt,
+ * forever. sti+hlt (not a bare hlt) so the timer IRQ that's the whole
+ * reason this ever gets scheduled again can actually fire -- same
+ * atomic-enable-then-halt idiom process_sleep()'s own fallback loop
+ * uses, for the same reason. */
+static void idle_task_entry(void) {
+    for (;;) {
+        __asm__ volatile ("sti; hlt");
+    }
 }
 
 void scheduler_init(void) {
@@ -59,6 +94,36 @@ void scheduler_init(void) {
     kp->next        = kp;
     current_process = kp;
     next_pid        = 2;
+
+    /* Idle task: exists so do_switch() has something safe to fall back
+     * on when no real process is READY, and so ITS tick count becomes a
+     * genuine measure of idle time (scheduler_get_cpu_percent()).
+     *
+     * Deliberately NOT linked into process_list's circular chain like a
+     * normal process_create()'d process would be. If it were, do_switch()'s
+     * ordinary round-robin search would give it an equal, regular turn
+     * alongside every real process -- which is wrong here: desktop.c
+     * calls sys_yield() unconditionally on every single rendered frame,
+     * regardless of whether it actually has nothing left to do that
+     * frame, so a round-robin-fair idle task would silently steal real
+     * frame time from it (visible stutter) and, worse, make "CPU%"
+     * report a meaningless ~50/50 split instead of real load. Keeping it
+     * outside the ring and only ever selecting it as an explicit last
+     * resort (see do_switch()) means its ticks only ever accumulate when
+     * truly nothing else wanted the CPU. */
+    {
+        idle_process = (process_t*)kzalloc(sizeof(process_t));
+        idle_process->pid   = 0;
+        idle_process->state = PROCESS_READY;
+        idle_process->name[0]='i'; idle_process->name[1]='d';
+        idle_process->name[2]='l'; idle_process->name[3]='e';
+        idle_process->as    = kernel_as;
+        void* idle_stack = kmalloc_aligned(PROCESS_STACK_SIZE, PAGE_SIZE);
+        idle_process->stack_base = (uint64_t)idle_stack;
+        idle_process->stack_top  = (uint64_t)idle_stack + PROCESS_STACK_SIZE;
+        idle_process->timeslice  = TIMESLICE;
+        setup_stack(idle_process, idle_task_entry);
+    }
 }
 
 process_t* process_create(const char* name, void (*entry)(void),
@@ -101,16 +166,13 @@ process_t* process_create(const char* name, void (*entry)(void),
     return p;
 }
 
-static void do_switch(void) {
-    process_t* next = current_process->next;
-    int loops = 0;
-    while (next->state != PROCESS_READY && next != current_process) {
-        next = next->next;
-        if (++loops > MAX_PROCESSES) return;
-    }
-    if (next == current_process) return;
-
-    process_t* old  = current_process;
+/* Shared tail of a real switch decision -- state flips, CR3/TSS reload,
+ * and the actual switch_context() call. Factored out of do_switch() so
+ * both the "current is idle_process" and "current is a real process"
+ * search paths below (which pick their `next` candidate differently)
+ * share one, single-tested implementation of the switch itself. Exact
+ * same logic as the pre-idle-task do_switch() body -- unchanged. */
+static void switch_to(process_t* old, process_t* next) {
     current_process = next;
 
     if (old->state == PROCESS_RUNNING) old->state = PROCESS_READY;
@@ -131,9 +193,9 @@ static void do_switch(void) {
      * firing while this process executes ring-3 code lands safely on
      * ITS stack, not whatever the previous process left there. The
      * stack_top == 0 guard is defensive rather than load-bearing today
-     * -- every real process_t (including pid 1, since scheduler_init())
-     * now carries a valid syscall-entry stack -- but kept in case a
-     * future process_t legitimately has none. */
+     * -- every real process_t (including pid 1, since scheduler_init(),
+     * and idle_process) now carries a valid syscall-entry stack -- but
+     * kept in case a future process_t legitimately has none. */
     if (next->stack_top != 0) {
         extern void tss_set_kernel_stack(uint64_t);
         tss_set_kernel_stack(next->stack_top);
@@ -155,6 +217,54 @@ static void do_switch(void) {
     }
 
     switch_context(&old->context.kernel_rsp, next->context.kernel_rsp);
+}
+
+static void do_switch(void) {
+    process_t* next;
+
+    if (current_process == idle_process) {
+        /* idle_process is deliberately kept OUTSIDE process_list's
+         * circular chain (see its setup comment in scheduler_init()),
+         * so there's no "walked all the way back to myself" terminator
+         * to rely on the way the real-process branch below has. Just
+         * scan the real ring once for anything READY. */
+        next = 0;
+        if (process_list) {
+            process_t* p = process_list;
+            int loops = 0;
+            do {
+                if (p->state == PROCESS_READY) { next = p; break; }
+                p = p->next;
+            } while (++loops <= MAX_PROCESSES);
+        }
+        if (!next) return;   /* still nothing real to do -- stay idle */
+    } else {
+        /* Original round-robin search, unchanged: walk the ring from
+         * current->next looking for a READY sibling, stopping either
+         * when one is found or when the walk gets back to `current`
+         * itself (meaning nobody else wants the CPU right now). */
+        next = current_process->next;
+        int loops = 0;
+        while (next->state != PROCESS_READY && next != current_process) {
+            next = next->next;
+            if (++loops > MAX_PROCESSES) return;
+        }
+        if (next == current_process) {
+            /* No other real process is READY. Hand off to idle_process
+             * instead of just returning and leaving `current_process`
+             * running uninterrupted -- idle_process is never part of
+             * this ring's rotation (see its setup comment), so this is
+             * the ONLY place it's ever selected. That's what makes its
+             * tick count a genuine idle measurement (see
+             * scheduler_get_cpu_percent()) rather than a round-robin-fair
+             * share stolen from processes -- like desktop.c -- that call
+             * sys_yield() every frame regardless of whether they're
+             * actually out of real work to do. */
+            next = idle_process;
+        }
+    }
+
+    switch_to(current_process, next);
 }
 
 void process_yield(void) {
@@ -191,38 +301,30 @@ void process_sleep(uint64_t ticks) {
     current_process->state     = PROCESS_SLEEPING;
     process_yield();
 
-    /* If do_switch() found another PROCESS_READY process to hand off to,
-     * control returns here only once scheduler_tick() has observed
-     * total_ticks >= wake_tick and flipped us back to READY/RUNNING --
-     * i.e. we really did sleep the requested duration cooperatively, and
-     * the loop below is a no-op (condition already false).
+    /* CORRECTED, outdated comment (was written when process_create() was
+     * never actually called anywhere in this codebase -- that stopped
+     * being true as of the concurrency work: sys_spawn()/sys_exec() both
+     * route through it via spawn_common(), and it's genuinely exercised
+     * every time desktop opens a "newterm" window). With idle_process
+     * now always present (see scheduler_init()/do_switch()), do_switch()
+     * can NEVER return "no switch happened" the way it used to when this
+     * process was the only one that existed -- it always finds either a
+     * real READY sibling or idle_process to hand off to. So the
+     * process_yield() call above now always performs a genuine
+     * switch_context(), and control only returns here once some LATER
+     * do_switch() call picks this process again -- which, by
+     * scheduler_tick()'s own wake condition (total_ticks >= wake_tick),
+     * can only happen once the target has already been reached.
      *
-     * But today, process_create() -- the only way a second process_t
-     * ever enters process_list -- is never actually called anywhere in
-     * this codebase (confirmed by a full-tree grep). Every real program
-     * (shell commands, desktop, mpy via yourun, nested execs) runs via
-     * sys_exec()'s same-context nested call or the boot-time
-     * jump_to_userspace excursion, never as a second scheduler entry.
-     * So in practice do_switch() always finds itself as the only
-     * candidate and returns immediately without switching or waiting at
-     * all -- process_yield() above returns right back here with no real
-     * time having passed, current_process->state left at SLEEPING even
-     * though this process never actually stopped running.
-     *
-     * Detect that case (target not yet reached) and fall back to
-     * directly halting the CPU until real time elapses, using the timer
-     * interrupt that's already firing regardless of whether the
-     * scheduler's multi-process machinery is ever wired up. Interrupts
-     * are disabled for the whole syscall handler (cli on entry in
-     * syscall_entry.asm, sti only right before sysretq at the very end)
-     * so they must be explicitly re-enabled here or the timer IRQ could
-     * never fire and hlt would wait forever -- sti+hlt together is the
-     * standard atomic idiom to avoid missing an interrupt that arrives
-     * between the check and the halt, already used elsewhere in this
-     * file's panic/crash halt loops. total_ticks is read through a
-     * volatile pointer here since it's not declared volatile itself --
-     * without that, the compiler could legally cache the read across
-     * loop iterations and never observe the IRQ handler's update. */
+     * That makes the loop below dead in every realistic case now (its
+     * condition is already false by the time we reach it) rather than
+     * the load-bearing fallback it used to be. Left in place anyway, as
+     * a defensive belt-and-suspenders measure -- it's correct and cheap
+     * either way, and correctly re-enables interrupts (disabled for the
+     * whole syscall handler: cli on entry in syscall_entry.asm, sti only
+     * right before sysretq) via the same sti+hlt atomic idiom used
+     * elsewhere in this file's panic/crash halt loops, so a timer IRQ
+     * arriving between the check and the halt is never missed. */
     volatile uint64_t* vt = &total_ticks;
     while (*vt < target) {
         __asm__ volatile ("sti; hlt");
@@ -345,6 +447,32 @@ void process_wait(process_t* child) {
 
 process_t* process_current(void)     { return current_process; }
 uint64_t   scheduler_get_ticks(void) { return total_ticks; }
+
+/* Live "percent busy" (0-100) for the interval since the PREVIOUS call
+ * to this function, not a since-boot average -- a since-boot average
+ * would barely move after the system's been up a while and wouldn't
+ * reflect what's actually happening right now, which is the whole point
+ * of a "CPU" sidebar stat. Backed by idle_process's own real tick count
+ * (see its setup comment in scheduler_init() and do_switch() for why
+ * it's a genuine idle measurement and not just round-robin noise).
+ * First call ever has no prior sample to diff against, so dt==0 and it
+ * reports 0 rather than a meaningless full-history figure. */
+uint32_t scheduler_get_cpu_percent(void) {
+    uint64_t total_now = total_ticks;
+
+    uint64_t dt = total_now - cpu_sample_total_ticks;
+    if (dt < CPU_SAMPLE_MIN_TICKS) return cpu_sample_last_percent;
+
+    uint64_t idle_now = idle_process ? idle_process->ticks : 0;
+    uint64_t di        = idle_now - cpu_sample_idle_ticks;
+
+    cpu_sample_total_ticks = total_now;
+    cpu_sample_idle_ticks  = idle_now;
+
+    if (di > dt) di = dt;   /* defensive: never report a negative busy% */
+    cpu_sample_last_percent = (uint32_t)(100 - (100 * di) / dt);
+    return cpu_sample_last_percent;
+}
 
 process_t* process_get(uint32_t pid) {
     process_t* p = process_list;
