@@ -165,10 +165,28 @@ static uint64_t sys_close(uint64_t fd,uint64_t a2,uint64_t a3,uint64_t a4,uint64
  * (-1 not found, -2 elf_load failed, -4 process_create failed), so both
  * callers can keep returning the exact values they always have.
  *
+ * No longer static, and no longer only for syscall-handler callers:
+ * kernel_main.c's boot-time desktop/shell launch and its internal
+ * fallback shell's "exec"/"userspace" commands used to hand-roll this
+ * exact same ELF-load/stack-map/process_create sequence themselves,
+ * three separate times, and consequently never populated
+ * user_stack_base/elf_load_base/elf_load_end -- meaning process_reap()
+ * silently skipped freeing THEIR pages, the one gap last session's
+ * memory-leak fix explicitly left open (see process_reap()'s comment).
+ * Routing all three through this single choke point instead closes
+ * that gap for them too, for free, rather than duplicating the
+ * leak-fix bookkeeping a fourth time.
+ *
  * `path`/`arg` are raw pointers into the CALLING process's own address
  * space -- copied out before the CR3 switch below, for the same reason
- * sys_exec() always has (see the CR3 comment further down). */
-static process_t* spawn_common(const char* path, const char* arg, uint64_t* err) {
+ * sys_exec() always has (see the CR3 comment further down). For
+ * kernel_main.c's callers specifically, "the calling process's own
+ * address space" is just kernel_as itself (this all runs before any
+ * user process is ever scheduled, or from pid 1's own kernel-mode
+ * context afterward) -- the CR3 switch below is a no-op there, and
+ * `path`/`arg` are ordinary kernel string literals/buffers, always
+ * dereferenceable regardless of CR3. */
+process_t* spawn_common(const char* path, const char* arg, uint64_t* err) {
     const char* name = path;
     syslog_write("EXEC", name);
 

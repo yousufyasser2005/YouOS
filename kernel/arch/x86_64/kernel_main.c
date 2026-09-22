@@ -586,36 +586,35 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
      * manual per-launch static kernel stack. pid 1 (this function)
      * blocks via the same plain yield loop until desktop exits, then
      * reaps it and falls through to the internal fallback shell below,
-     * exactly matching the old control flow's end state. Stack size
-     * (4 pages) deliberately left unchanged from the old code --
-     * resizing it is an unrelated concern, not part of this
-     * migration. */
+     * exactly matching the old control flow's end state.
+     *
+     * Now routed through spawn_common() (see its own comment in
+     * syscall.c) instead of hand-rolling the same ELF-load/stack-map/
+     * process_create sequence -- this used to be exactly the gap last
+     * session's memory-leak fix explicitly left open: never populating
+     * user_stack_base/elf_load_base/elf_load_end meant process_reap()
+     * silently skipped freeing desktop's own ELF/stack pages. Low
+     * real-world impact (one long-lived process per boot, not
+     * repeated), but a real leak regardless.
+     *
+     * Stack size changes from 4 pages to spawn_common()'s fixed 16 --
+     * a deliberate side effect, not an oversight: every other real
+     * launch path (sys_exec()/sys_spawn()) already uses 16, so this
+     * just makes desktop's own boot-time launch consistent with them
+     * rather than an arbitrary one-off. Strictly more headroom, never
+     * less. */
     {
-        uint64_t sz = 0;
-        const void* sd = initrd_find("desktop", &sz);
-        if (!sd) {
+        const char* boot_prog = "desktop";
+        uint64_t probe_sz = 0;
+        if (!initrd_find(boot_prog, &probe_sz)) {
             vga_puts_color("  [!!] desktop not found in initrd, falling back to shell\n", VGA_LIGHT_GREEN, VGA_BLACK);
-            sd = initrd_find("shell", &sz);
+            boot_prog = "shell";
         }
-        if (sd) {
-            elf_load_result_t r;
-            address_space_t pa = vmm_create_user_as();
-            if (elf_load(&pa, sd, sz, &r) == 0) {
-                uint64_t sb = pmm_alloc_pages(4);
-                uint64_t st = sb + 4 * PAGE_SIZE;
-                for (uint64_t a = sb; a < st; a += 4096)
-                    /* User-mode stack: writable, never executable. */
-                    vmm_map(&pa, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER |
-                            (nx_supported ? PTE_NO_EXEC : 0));
-
-                process_t* top = process_create("desktop", process_ring3_trampoline, pa);
-                if (top) {
-                    top->user_entry     = r.entry;
-                    top->user_stack_top = st;
-                    process_wait(top);
-                    process_reap(top);
-                }
-            }
+        uint64_t err = 0;
+        process_t* top = spawn_common(boot_prog, 0, &err);
+        if (top) {
+            process_wait(top);
+            process_reap(top);
         }
     }
     vga_puts_color("  YouOS shell — type 'help' for commands\n", VGA_WHITE, VGA_BLACK);
@@ -727,39 +726,32 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
              * code path is only reachable if both "desktop" and "shell" are
              * missing from the initrd, which never happens in real use --
              * migrated anyway for consistency and to finish killing the old
-             * mechanism, not because it was observed to misbehave. */
+             * mechanism, not because it was observed to misbehave.
+             *
+             * Now routed through spawn_common() (see its comment in
+             * syscall.c) rather than hand-rolling ELF-load/stack-map/
+             * process_create directly -- closes the same process_reap()
+             * leak gap the boot-time desktop launch above had (see its
+             * comment). The three distinct error messages below are
+             * reconstructed from spawn_common()'s *err codes to keep
+             * this path's console output unchanged. */
             const char* name = line + 5;
-            uint64_t elf_size = 0;
-            const void* elf_data = initrd_find(name, &elf_size);
-            if (!elf_data) {
-                vga_puts_color("  [!!] Not found: ", VGA_LIGHT_RED, VGA_BLACK);
-                vga_puts(name); vga_puts("\n");
-            } else {
-                address_space_t proc_as = vmm_create_user_as();
-                elf_load_result_t res;
-                if (elf_load(&proc_as, elf_data, elf_size, &res) != 0) {
+            uint64_t err = 0;
+            process_t* child = spawn_common(name, 0, &err);
+            if (!child) {
+                if (err == (uint64_t)-1) {
+                    vga_puts_color("  [!!] Not found: ", VGA_LIGHT_RED, VGA_BLACK);
+                    vga_puts(name); vga_puts("\n");
+                } else if (err == (uint64_t)-2) {
                     vga_puts_color("  [!!] elf_load failed\n", VGA_LIGHT_RED, VGA_BLACK);
                 } else {
-                    uint64_t stack_base = pmm_alloc_pages(4);
-                    uint64_t stack_top  = stack_base + 4 * PAGE_SIZE;
-                    for (uint64_t a = stack_base; a < stack_top; a += 4096)
-                        /* User-mode stack: writable, never executable. */
-                        vmm_map(&proc_as, a, a, PTE_PRESENT | PTE_WRITABLE | PTE_USER |
-                                (nx_supported ? PTE_NO_EXEC : 0));
-
-                    process_t* child = process_create(name, process_ring3_trampoline, proc_as);
-                    if (!child) {
-                        vga_puts_color("  [!!] process_create failed\n", VGA_LIGHT_RED, VGA_BLACK);
-                    } else {
-                        child->user_entry     = res.entry;
-                        child->user_stack_top = stack_top;
-
-                        vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
-                        process_wait(child);
-                        process_reap(child);
-                        vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
-                    }
+                    vga_puts_color("  [!!] process_create failed\n", VGA_LIGHT_RED, VGA_BLACK);
                 }
+            } else {
+                vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                process_wait(child);
+                process_reap(child);
+                vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
             }
         } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='c'&&line[5]=='a'&&line[6]=='t'&&line[7]==' ') {
             const char* fname = line + 8;
@@ -848,49 +840,39 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
              * the real "hello" ELF below, which does the same
              * demonstration correctly and safely under real process
              * isolation. */
-            uint64_t elf_size = 0;
-            const void* elf_data = initrd_find("hello", &elf_size);
-            if (!elf_data) {
-                vga_puts_color("  [!!] 'hello' not found in initrd\n",
-                               VGA_LIGHT_RED, VGA_BLACK);
-            } else {
-                address_space_t child_as = vmm_create_user_as();
-                elf_load_result_t res;
-                if (elf_load(&child_as, elf_data, elf_size, &res) != 0) {
+            /* Now routed through spawn_common() (see its comment in
+             * syscall.c) rather than hand-rolling ELF-load/stack-map/
+             * process_create directly -- closes the same process_reap()
+             * leak gap the boot-time desktop launch and "exec" command
+             * above had (see their comments). Error messages
+             * reconstructed from spawn_common()'s *err codes to keep
+             * this path's console output unchanged. */
+            uint64_t err = 0;
+            process_t* child = spawn_common("hello", 0, &err);
+            if (!child) {
+                if (err == (uint64_t)-1) {
+                    vga_puts_color("  [!!] 'hello' not found in initrd\n",
+                                   VGA_LIGHT_RED, VGA_BLACK);
+                } else if (err == (uint64_t)-2) {
                     vga_puts_color("  [!!] elf_load failed\n",
                                    VGA_LIGHT_RED, VGA_BLACK);
                 } else {
-                    uint64_t stack_base = pmm_alloc_pages(16);
-                    uint64_t stack_top  = stack_base + 16 * 4096;
-                    for (uint64_t a = stack_base; a < stack_top; a += 4096)
-                        /* 0x7 = PRESENT|WRITABLE|USER; user-mode
-                         * stack, writable, never executable. */
-                        vmm_map(&child_as, a, a, 0x7 | (nx_supported ? PTE_NO_EXEC : 0));
-
-                    process_t* child = process_create("hello",
-                                                        process_ring3_trampoline,
-                                                        child_as);
-                    if (!child) {
-                        vga_puts_color("  [!!] process_create failed\n",
-                                       VGA_LIGHT_RED, VGA_BLACK);
-                    } else {
-                        child->user_entry     = res.entry;
-                        child->user_stack_top = stack_top;
-
-                        vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-                        vga_puts("Jumping to Ring 3...\n");
-                        vga_puts_color("  ----------------------------------------\n",
-                                       VGA_DARK_GREY, VGA_BLACK);
-
-                        process_wait(child);
-                        process_reap(child);
-
-                        vga_puts_color("  ----------------------------------------\n",
-                                       VGA_DARK_GREY, VGA_BLACK);
-                        vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
-                        vga_puts("Returned from Ring 3\n");
-                    }
+                    vga_puts_color("  [!!] process_create failed\n",
+                                   VGA_LIGHT_RED, VGA_BLACK);
                 }
+            } else {
+                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts("Jumping to Ring 3...\n");
+                vga_puts_color("  ----------------------------------------\n",
+                               VGA_DARK_GREY, VGA_BLACK);
+
+                process_wait(child);
+                process_reap(child);
+
+                vga_puts_color("  ----------------------------------------\n",
+                               VGA_DARK_GREY, VGA_BLACK);
+                vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);
+                vga_puts("Returned from Ring 3\n");
             }
 
         } else if (line[0] != '\0') {

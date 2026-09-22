@@ -160,4 +160,15 @@ uint32_t   scheduler_get_cpu_percent(void); /* live "percent busy" for the
  * not -- ipc_destroy() itself is a no-op for a name with no queue. */
 void       windowed_ipc_queues_free(uint32_t pid);
 
+/* Builds a fresh, ready-to-run child process from an initrd ELF by
+ * name (path) with an optional argument string (arg) -- does NOT wait
+ * on or reap it. Returns the new process_t* on success, or NULL with
+ * *err set (-1 not found, -2 elf_load failed, -4 process_create
+ * failed). Implemented in syscall.c (originally sys_exec()/sys_spawn()'s
+ * private helper); declared here so kernel_main.c's boot-time launches
+ * can share it too instead of hand-rolling the same ELF-load/stack-map/
+ * process_create sequence -- see spawn_common()'s own comment in
+ * syscall.c for why that mattered (a real, if minor, leak). */
+process_t* spawn_common(const char* path, const char* arg, uint64_t* err);
+
 #endif
