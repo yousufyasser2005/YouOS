@@ -550,6 +550,16 @@ void process_reap(process_t* child) {
         }
     }
 
+    /* Free the 2 IPC queues (term_out_<pid>/term_in_<pid>) a windowed
+     * process's fd 0/1/2 redirection auto-created for it, if any --
+     * previously nothing ever did, permanently consuming 2 of the
+     * fixed IPC_MAX_QUEUES=16 slots per window for the life of the
+     * system rather than the life of the process (see
+     * ipc_destroy()'s own comment in ipc.c for the concrete impact).
+     * Unconditional and harmless for a non-windowed child: pid never
+     * had matching queues to begin with, so this just no-ops. */
+    windowed_ipc_queues_free(child->pid);
+
     vmm_destroy_user_as(&child->as);
     kfree(child);
 }

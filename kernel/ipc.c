@@ -79,3 +79,35 @@ int ipc_recv(const char* name, void* data, uint32_t* len_out, uint32_t* from_out
     q->count--;
     return 0;
 }
+
+/* Returns a queue's slot to the pool -- nothing called this before it
+ * existed, ever, for any queue: a known, explicitly-deferred leak from
+ * last session's Phase 2 (per-process I/O redirection). Each windowed
+ * process (every "newterm" window) auto-creates 2 queues on first
+ * touch (term_out_<pid>/term_in_<pid> -- see term_queue_name()'s
+ * comment in syscall.c) and, until this, permanently consumed those 2
+ * of the fixed IPC_MAX_QUEUES=16 slots for the life of the system, not
+ * just the life of the process -- roughly 8 newterm windows opened
+ * (and even closed again) over one boot would exhaust every slot,
+ * after which ipc_create() starts failing for everyone. Called from
+ * process_reap() (see windowed_ipc_queues_free() in syscall.c) once a
+ * windowed process is actually dead. A no-op if `name` has no matching
+ * queue -- callers don't need to know whether a queue was ever
+ * actually created (e.g. a window closed before its process ever
+ * wrote or read anything) before asking to free it. */
+void ipc_destroy(const char* name) {
+    ipc_queue_t* q = find_queue(name);
+    if (!q) return;
+    q->used    = 0;
+    q->head    = 0;
+    q->tail    = 0;
+    q->count   = 0;
+    q->name[0] = 0;
+}
+
+int ipc_used_count(void) {
+    int n = 0;
+    for (int i = 0; i < IPC_MAX_QUEUES; i++)
+        if (queues[i].used) n++;
+    return n;
+}

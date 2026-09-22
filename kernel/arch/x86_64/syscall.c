@@ -56,6 +56,17 @@ static void term_queue_name(uint32_t pid, int is_out, char* out) {
     out[oi] = 0;
 }
 
+/* See its own declaration in process.h -- frees the 2 IPC queues (if
+ * any) term_queue_name() above would have named for this pid. Called
+ * from process_reap(), unconditionally: harmless (ipc_destroy() no-ops)
+ * for a pid that was never windowed or never actually touched fd 0/1/2,
+ * and correct for one that did. */
+void windowed_ipc_queues_free(uint32_t pid) {
+    char qname[24];
+    term_queue_name(pid, 1, qname); ipc_destroy(qname);
+    term_queue_name(pid, 0, qname); ipc_destroy(qname);
+}
+
 static uint64_t sys_write(uint64_t fd,uint64_t buf,uint64_t len,uint64_t a4,uint64_t a5){
     (void)a4;(void)a5;
     const char* s=(const char*)buf;
@@ -388,6 +399,16 @@ static uint64_t sys_mem_total(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4
 static uint64_t sys_cpuinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
     return (uint64_t)scheduler_get_cpu_percent();
+}
+
+/* Used IPC queue slots out of IPC_MAX_QUEUES (16) -- added alongside
+ * the queue-leak fix (windowed_ipc_queues_free(), called from
+ * process_reap()) so it's actually observable, not trusted, same
+ * reasoning as sys_meminfo() for the process-reap page leak. See
+ * ipc_used_count()'s comment in ipc.c. */
+static uint64_t sys_ipcinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)ipc_used_count();
 }
 
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
@@ -748,7 +769,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_kill,
     sys_meminfo,
     sys_mem_total,
-    sys_cpuinfo
+    sys_cpuinfo,
+    sys_ipcinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

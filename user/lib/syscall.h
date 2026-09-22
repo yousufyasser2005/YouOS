@@ -249,3 +249,10 @@ static inline uint64_t sys_mem_total(void) {
 static inline uint64_t sys_cpuinfo(void) {
     return _sc(SYS_CPUINFO, 0, 0, 0, 0, 0);
 }
+
+/* Used IPC queue slots out of 16 -- see sys_ipcinfo()'s comment in
+ * syscall.c (the newterm queue-leak fix, made observable). */
+#define SYS_IPCINFO 49
+static inline uint64_t sys_ipcinfo(void) {
+    return _sc(SYS_IPCINFO, 0, 0, 0, 0, 0);
+}

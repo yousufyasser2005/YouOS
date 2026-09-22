@@ -71,7 +71,15 @@
  * "CPU" sidebar stat was also a hardcoded string. */
 #define SYS_CPUINFO       48
 
-#define SYSCALL_COUNT  49
+/* Number of currently-used ipc.c queue slots out of IPC_MAX_QUEUES (16)
+ * -- added alongside the queue-leak fix (ipc_destroy(), now called from
+ * process_reap() for windowed processes) so it can actually be verified
+ * rather than trusted: open several "newterm" windows and confirm this
+ * count goes back down after closing them, instead of climbing forever.
+ * See ipc_used_count()'s comment in ipc.c. */
+#define SYS_IPCINFO       49
+
+#define SYSCALL_COUNT  50
 
 void syscall_init(void);
 #endif

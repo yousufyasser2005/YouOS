@@ -152,4 +152,12 @@ uint32_t   scheduler_get_cpu_percent(void); /* live "percent busy" for the
                                              * real idle task -- see its
                                              * own comment in scheduler.c. */
 
+/* Frees the term_out_<pid>/term_in_<pid> IPC queues a windowed
+ * process's fd 0/1/2 redirection allocated for it, if any. Implemented
+ * in syscall.c (where the naming convention itself lives -- see
+ * term_queue_name()'s comment there); declared here since process_reap()
+ * (scheduler.c) is the caller. Safe to call for any pid, windowed or
+ * not -- ipc_destroy() itself is a no-op for a name with no queue. */
+void       windowed_ipc_queues_free(uint32_t pid);
+
 #endif
