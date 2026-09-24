@@ -106,13 +106,35 @@ void crash_handle(registers_t* regs) {
      * permanently unreachable and has been removed; see the handoff doc
      * for the verification that made this safe. Without this branch, a
      * real child's fault falls through to the ring-0 halt path below
-     * and takes down the whole machine over a single process's bug. */
+     * and takes down the whole machine over a single process's bug.
+     *
+     * CORRECTED: a previous investigation's writeup claimed this branch
+     * "only ever calls vga_puts_color()" and that the call "genuinely
+     * never executes" for a then-unknown reason. Neither half of that
+     * was actually true -- this branch has never called vga_puts_color()
+     * or anything else that prints, at all; the "[RECOVERED]" string
+     * only ever reached crash_save()'s on-disk log and syslog_write()'s
+     * entry (see make_summary()/crash_read() and the "syslog"/"crashlog"
+     * desktop commands), never anything visible at the moment recovery
+     * actually happens. Even a one-shot vga_puts_color() call here
+     * wouldn't have reliably fixed that anyway: it writes straight into
+     * the single shared framebuffer desktop.c's own compositor repaints
+     * wholesale roughly every frame (see fb_put_pixel() in fb.c), so a
+     * kernel-level print here would be overwritten before a person could
+     * ever see it, on any process that's actually running under
+     * desktop's window manager. Real fix lives in sys_exec() instead --
+     * see its comment in syscall.c -- surfacing this to the process that
+     * actually launched the crashing one (typically an interactive
+     * shell.c inside a real "newterm" window), whose own print()s go
+     * through that window's persistent per-process I/O, not a one-shot
+     * shared-framebuffer draw. */
     if(ring==3&&proc&&proc->real_exit){
         crash_log.recovered=1;
         crash_log.crash_count++;
         crash_save();
         SA2(" [RECOVERED]");
         syslog_write("CRASH",smsg);
+        proc->crashed=1;
         proc->state=PROCESS_DEAD;
         process_exit();
         /* unreachable */

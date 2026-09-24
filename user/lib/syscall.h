@@ -52,6 +52,14 @@ static inline void    sys_shutdown(void)
     { _sc(SYS_SHUTDOWN, 0, 0, 0, 0, 0); }
 static inline void    sys_reboot(void)
     { _sc(SYS_REBOOT, 0, 0, 0, 0, 0); }
+/* Blocking exec: runs `name` from the initrd and waits for it to exit.
+ * Returns 0 on a clean exit, a negative code if it never launched at
+ * all (-1 not found, -2 elf_load failed, -4 process_create failed), or
+ * 2 if it launched fine but was killed by a crash the kernel recovered
+ * from (see crash_handle()'s comment in crash.c) -- distinct from the
+ * negative launch-error codes so a caller checking `r < 0` for "failed
+ * to launch" is unaffected unless it specifically also checks for 2,
+ * the way shell.c's "exec" command does. */
 static inline int64_t sys_exec(const char* name)
     { return (int64_t)_sc(SYS_EXEC, (uint64_t)name, 0, 0, 0, 0); }
 static inline int64_t sys_fbinfo(uint64_t* buf)

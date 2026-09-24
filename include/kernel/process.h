@@ -73,6 +73,21 @@ typedef struct process {
                                      * instead of the legacy sys_exec()
                                      * longjmp mechanism, which only pid 1's
                                      * synchronous exec chain still uses. */
+    int              crashed;      /* Set by crash_handle()'s ring-3 recovery
+                                     * branch (crash.c) just before it calls
+                                     * process_exit() on this process's
+                                     * behalf. Previously there was no way for
+                                     * whoever waited on this process (e.g.
+                                     * sys_exec()) to tell a crash-recovery
+                                     * exit apart from a clean one -- the
+                                     * "[RECOVERED]" string only ever reached
+                                     * the syslog and crash_read()'s history,
+                                     * never anything the process that
+                                     * launched the crashing one could act on
+                                     * or print live. See sys_exec()'s comment
+                                     * in syscall.c for where this is
+                                     * actually surfaced. Defaults to 0 via
+                                     * process_create()'s kzalloc(). */
     uint64_t         user_entry;    /* Ring-3 entry point. Read by
                                      * process_ring3_trampoline(); 0 for
                                      * kernel-only processes. */

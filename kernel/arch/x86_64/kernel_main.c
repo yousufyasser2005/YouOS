@@ -750,8 +750,20 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
             } else {
                 vga_puts_color("  [OK] Jumping to ELF entry...\n", VGA_LIGHT_GREEN, VGA_BLACK);
                 process_wait(child);
+                /* Read before process_reap() frees child -- see
+                 * sys_exec()'s identical comment in syscall.c. This
+                 * console is the raw VGA text-mode buffer (only
+                 * reachable if desktop/shell are both missing from the
+                 * initrd, i.e. before any framebuffer compositor has
+                 * ever run), so unlike crash_handle()'s own comment
+                 * about a shared-framebuffer print getting overwritten,
+                 * a message printed here genuinely persists. */
+                int was_crashed = child->crashed;
                 process_reap(child);
-                vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
+                if (was_crashed)
+                    vga_puts_color("  [!!] Process crashed (recovered)\n", VGA_YELLOW, VGA_BLACK);
+                else
+                    vga_puts_color("  [OK] Process exited\n", VGA_LIGHT_GREEN, VGA_BLACK);
             }
         } else if (line[0]=='d'&&line[1]=='i'&&line[2]=='s'&&line[3]=='k'&&line[4]=='c'&&line[5]=='a'&&line[6]=='t'&&line[7]==' ') {
             const char* fname = line + 8;

@@ -303,9 +303,22 @@ static uint64_t sys_exec(uint64_t path, uint64_t a2, uint64_t a3, uint64_t a4, u
      * do_switch() sets CR3 correctly the moment it picks the child as
      * next, regardless of what the register currently holds. */
     process_wait(child);
+
+    /* Read child->crashed BEFORE reaping -- process_reap() kfree()s the
+     * process_t, so this is the last point it's safe to look at. Closes
+     * the "[RECOVERED] message invisible" backlog item: previously
+     * there was no way to tell a crash-recovery exit apart from a clean
+     * one here at all (both just returned 0), so the caller (typically
+     * an interactive shell.c "exec" -- see its comment for how it uses
+     * this) had no way to report anything, live or otherwise, about
+     * what actually happened. 2 is a new, distinct return value -- not
+     * one of the existing pre-launch error codes above (-1/-2/-4, all
+     * negative), so a caller checking `r < 0` for "failed to launch" is
+     * unaffected unless it's specifically updated to also check for 2. */
+    int was_crashed = child->crashed;
     process_reap(child);
 
-    return 0;
+    return was_crashed ? 2 : 0;
 }
 
 /* Non-blocking counterpart to sys_exec() -- Phase 1 of true concurrent

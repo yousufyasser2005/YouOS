@@ -111,6 +111,17 @@ int main(void) {
         else if (ustrncmp(line, "exec ", 5) == 0) {
             int64_t r = sys_exec(line + 5);
             if (r < 0) { print("exec: not found: "); println(line + 5); }
+            /* Previously silent -- a crash-recovered child looked
+             * completely indistinguishable from a clean exit here, the
+             * actual backlog item this closes (see sys_exec()'s comment
+             * in syscall.c). Printed via this shell's own print()/
+             * println(), so inside a "newterm" window it goes through
+             * that window's normal per-process I/O redirection and
+             * actually stays on screen -- unlike a kernel-level print at
+             * the moment of the crash itself, which would be overwritten
+             * by desktop's own next frame before anyone could see it
+             * (see crash_handle()'s comment in crash.c). */
+            else if (r == 2) { print(line + 5); println(": crashed (recovered)"); }
         } else {
             print("unknown command: "); println(line);
         }
