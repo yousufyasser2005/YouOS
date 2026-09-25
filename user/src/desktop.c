@@ -612,8 +612,8 @@ static void wav_scan_file(const char*path);
 static void open_new_pterm(const char* prog);
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
-    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest",*mm="meminfo",*ii="ipcinfo";
-    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1,mmm=1,mii=1;
+    const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest",*mm="meminfo",*ii="ipcinfo",*pc="proccount";
+    int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1,mmm=1,mii=1,mpc=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
     for(int k=0;yr[k];k++) if(cmd[k]!=yr[k]){myr=0;break;}
@@ -637,7 +637,8 @@ static void tcmd(const char*cmd){
     for(int k=0;kt[k]||cmd[k];k++)  if(kt[k]!=cmd[k])  {mkt=0;break;}
     for(int k=0;mm[k]||cmd[k];k++)  if(mm[k]!=cmd[k])  {mmm=0;break;}
     for(int k=0;ii[k]||cmd[k];k++)  if(ii[k]!=cmd[k])  {mii=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo");
+    for(int k=0;pc[k]||cmd[k];k++)  if(pc[k]!=cmd[k])  {mpc=0;break;}
+    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -763,6 +764,22 @@ static void tcmd(const char*cmd){
         const char*pfx="IPC queues used: ";int k=0;while(pfx[k])out[oi++]=pfx[k++];
         oi=u32_append_dec(out,oi,(unsigned int)used);
         const char*sfx="/16";k=0;while(sfx[k])out[oi++]=sfx[k++];
+        out[oi]=0;
+        tprint(out);
+    }
+    else if(mpc){
+        /* TEMPORARY -- added specifically to verify the
+         * orphan-reparenting fix (reap_orphaned_zombies(), scheduler.c)
+         * with an exact, noise-free number instead of trying to read a
+         * single orphan's small leak out of meminfo's fuzzier free-page
+         * count. Run this before creating an orphan, again right after
+         * (should be one higher -- the orphan itself, now a zombie
+         * nobody's reaping yet), and again after triggering a sweep
+         * (should drop back to the original count). */
+        uint64_t n=sys_procinfo();
+        char out[40];int oi=0;
+        const char*pfx="Tracked processes: ";int k=0;while(pfx[k])out[oi++]=pfx[k++];
+        oi=u32_append_dec(out,oi,(unsigned int)n);
         out[oi]=0;
         tprint(out);
     }

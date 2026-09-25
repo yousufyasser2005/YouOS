@@ -146,6 +146,11 @@ process_t* process_create(const char* name, void (*entry)(void),
     if (!stack_page) { kfree(p); return 0; }
 
     p->pid        = next_pid++;
+    /* process_current() is always non-null here in practice --
+     * scheduler_init() (which sets it) runs long before the first
+     * process_create() call anywhere in this codebase -- but guarded
+     * defensively anyway, matching this file's general style. */
+    p->parent_pid = process_current() ? process_current()->pid : 0;
     p->state      = PROCESS_READY;
     p->as         = as;
     p->real_exit  = 1;
@@ -366,11 +371,67 @@ static void wake_waiter_for(uint32_t pid) {
     } while (p != process_list);
 }
 
+/* Reaps every zombie (PROCESS_DEAD, not yet freed) process whose real
+ * parent is itself gone -- either already fully reaped (unlinked from
+ * process_list entirely) or DEAD-but-not-yet-reaped itself. Never
+ * touches a zombie whose parent is still alive: that's completely
+ * normal, expected zombie state (e.g. a windowed child desktop.c
+ * hasn't polled sys_wait_nonblock() on this exact frame yet), not an
+ * orphan -- parent_pid (process.h) is what makes the distinction
+ * possible at all, tracked for the first time as of this function.
+ *
+ * Called from every place a process can die (process_exit(),
+ * process_kill(), and transitively crash.c's recovery branch via
+ * process_exit()) so an orphan's own eventual death -- whenever it
+ * happens, however much later -- gets swept up by whichever process
+ * next happens to die anywhere in the system, rather than needing a
+ * dedicated background "init reaper" task this single-core cooperative
+ * scheduler has nowhere natural to run. A still-ALIVE orphan is left
+ * completely alone here (nothing to reap yet, and re-parenting it to
+ * pid 1 would actually break this scheme -- pid 1's own process_t is
+ * never itself DEAD in normal operation, so a re-parented child would
+ * stop being recognizable as an orphan the moment it later died,
+ * defeating the whole mechanism); its parent_pid is deliberately left
+ * pointing at its real, now-gone parent, so THIS exact check correctly
+ * catches it whenever it does eventually die.
+ *
+ * Concrete scenario this closes: closing a WIN_PTERM window
+ * (sys_kill(), see its own comment) while its shell happens to be
+ * mid-"exec" of another program immediately orphans that program --
+ * previously permanently unreachable and never freed (leaked pages,
+ * IPC queues, everything process_reap() frees), no matter how much
+ * later it exited on its own.
+ *
+ * current_process is explicitly never a candidate: process_exit() calls
+ * this AFTER marking current_process PROCESS_DEAD but while still
+ * running on ITS OWN kernel stack -- process_reap()-ing yourself mid-exit
+ * would free the very stack this code is executing on. Its real parent
+ * (or, if that's also gone, a LATER call to this same sweep from
+ * elsewhere) reaps it once it's actually safe to. */
+static void reap_orphaned_zombies(void) {
+    if (!process_list) return;
+    int loops = 0;
+    while (loops++ < MAX_PROCESSES) {
+        process_t* found = 0;
+        process_t* p = process_list;
+        do {
+            if (p != current_process && p->state == PROCESS_DEAD) {
+                process_t* parent = process_get(p->parent_pid);
+                if (!parent || parent->state == PROCESS_DEAD) { found = p; break; }
+            }
+            p = p->next;
+        } while (p != process_list);
+        if (!found) return;
+        process_reap(found);
+    }
+}
+
 void process_exit(void) {
     __asm__ volatile ("cli");
     uint32_t my_pid = current_process->pid;
     current_process->state = PROCESS_DEAD;
     wake_waiter_for(my_pid);
+    reap_orphaned_zombies();
     do_switch();
     while (1) __asm__ volatile ("hlt");
 }
@@ -400,12 +461,16 @@ void process_exit(void) {
  * function only flips a flag and returns, which would be wrong for
  * ending yourself).
  *
- * Known, accepted gap shared with every other way a process can end
- * (exit, crash recovery, this): a killed process's OWN children, if
- * it had spawned any, become orphaned -- nothing re-parents them to
- * pid 1 or otherwise reaps them once they themselves exit. Not new
- * here; process_exit() and crash.c's recovery path already have the
- * same limitation. */
+ * CORRECTED: this comment used to note, as a known accepted gap, that a
+ * killed process's own children become permanently orphaned -- nothing
+ * re-parented them or ever reaped them once they themselves exited.
+ * Closed: reap_orphaned_zombies() (called below) sweeps for exactly
+ * this, and the same sweep runs from process_exit() and (transitively,
+ * via process_exit()) crash.c's recovery branch too, so it's covered
+ * regardless of which of the three ways a process's parent can die. See
+ * reap_orphaned_zombies()'s own comment for the full mechanism and the
+ * concrete scenario (closing a WIN_PTERM window mid-"exec") that made
+ * this a real, reachable gap rather than a theoretical one. */
 int process_kill(uint32_t pid) {
     if (pid == 1) return -3;
     process_t* p = process_get(pid);
@@ -414,6 +479,7 @@ int process_kill(uint32_t pid) {
     if (p->state == PROCESS_DEAD) return -2;
     p->state = PROCESS_DEAD;
     wake_waiter_for(pid);
+    reap_orphaned_zombies();
     return 0;
 }
 
@@ -472,6 +538,20 @@ uint32_t scheduler_get_cpu_percent(void) {
     if (di > dt) di = dt;   /* defensive: never report a negative busy% */
     cpu_sample_last_percent = (uint32_t)(100 - (100 * di) / dt);
     return cpu_sample_last_percent;
+}
+
+/* Exact count of process_t entries in process_list -- live processes
+ * and not-yet-reaped zombies both count equally; this deliberately
+ * does NOT distinguish them, since the point is to verify
+ * reap_orphaned_zombies() actually frees entries (any DEAD-but-unreaped
+ * entry it should have caught shows up here exactly the same as a
+ * live one would). */
+uint32_t scheduler_process_count(void) {
+    if (!process_list) return 0;
+    uint32_t n = 0;
+    process_t* p = process_list;
+    do { n++; p = p->next; } while (p != process_list);
+    return n;
 }
 
 process_t* process_get(uint32_t pid) {

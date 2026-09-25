@@ -53,6 +53,19 @@ typedef struct {
 
 typedef struct process {
     uint32_t         pid;
+    uint32_t         parent_pid;   /* Set once, by process_create(), to
+                                     * whichever process was current_process
+                                     * at creation time -- never existed
+                                     * before, so there was no way to look
+                                     * up "who spawned this" or "what are
+                                     * my children" from a process_t at
+                                     * all. Exists so reap_orphaned_zombies()
+                                     * (scheduler.c) can tell a zombie
+                                     * whose real parent is still alive
+                                     * and simply hasn't reaped it yet
+                                     * apart from a genuine orphan whose
+                                     * parent is gone -- see that
+                                     * function's own comment. */
     char             name[PROCESS_NAME_MAX];
     process_state_t  state;
     cpu_context_t    context;
@@ -166,6 +179,12 @@ uint32_t   scheduler_get_cpu_percent(void); /* live "percent busy" for the
                                              * call (0-100), backed by a
                                              * real idle task -- see its
                                              * own comment in scheduler.c. */
+
+/* Exact count of process_t entries currently in process_list -- live
+ * processes and not-yet-reaped zombies both count. See sys_procinfo()'s
+ * comment in syscall.c for why this exists (verifying the
+ * orphan-reparenting fix with a noise-free number). */
+uint32_t   scheduler_process_count(void);
 
 /* Frees the term_out_<pid>/term_in_<pid> IPC queues a windowed
  * process's fd 0/1/2 redirection allocated for it, if any. Implemented

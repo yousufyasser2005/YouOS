@@ -442,6 +442,19 @@ static uint64_t sys_ipcinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, 
     return (uint64_t)ipc_used_count();
 }
 
+/* Exact count of process_t entries currently tracked (live + zombie).
+ * Added specifically to verify the orphan-reparenting fix
+ * (reap_orphaned_zombies(), scheduler.c) with a noise-free integer --
+ * a single orphaned process's leak is only ~20-25 pages, easy to lose
+ * in sys_meminfo()'s free-page count alone against ordinary allocator
+ * fluctuation (the original, much larger memory-leak fix was verified
+ * over 10+ cumulative cycles for exactly this reason; a single orphan
+ * needs a sharper signal than one before/after page-count snapshot). */
+static uint64_t sys_procinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)scheduler_process_count();
+}
+
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3;(void)a4;(void)a5;
     char* out = (char*)buf;
@@ -801,7 +814,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_meminfo,
     sys_mem_total,
     sys_cpuinfo,
-    sys_ipcinfo
+    sys_ipcinfo,
+    sys_procinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

@@ -79,7 +79,18 @@
  * See ipc_used_count()'s comment in ipc.c. */
 #define SYS_IPCINFO       49
 
-#define SYSCALL_COUNT  50
+/* Number of process_t entries currently tracked in process_list --
+ * live processes AND not-yet-reaped zombies both count. Added
+ * specifically to verify the orphan-reparenting fix
+ * (reap_orphaned_zombies(), scheduler.c) with an exact integer, free of
+ * the allocator noise that makes a single orphan's ~20-page leak hard
+ * to distinguish from ordinary fluctuation in sys_meminfo()'s free-page
+ * count alone (unlike the much larger, cumulative memory-leak
+ * verification, or the exact-count IPC queue test). See
+ * scheduler_process_count()'s comment in scheduler.c. */
+#define SYS_PROCCOUNT     50
+
+#define SYSCALL_COUNT  51
 
 void syscall_init(void);
 #endif

@@ -264,3 +264,11 @@ static inline uint64_t sys_cpuinfo(void) {
 static inline uint64_t sys_ipcinfo(void) {
     return _sc(SYS_IPCINFO, 0, 0, 0, 0, 0);
 }
+
+/* Exact count of process_t entries currently tracked (live + zombie).
+ * See sys_procinfo()'s comment in syscall.c (verifying the
+ * orphan-reparenting fix with a noise-free number). */
+#define SYS_PROCCOUNT 50
+static inline uint64_t sys_procinfo(void) {
+    return _sc(SYS_PROCCOUNT, 0, 0, 0, 0, 0);
+}
