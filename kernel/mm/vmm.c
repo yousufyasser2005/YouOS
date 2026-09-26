@@ -138,6 +138,78 @@ void vmm_switch(address_space_t* as)
     );
 }
 
+/* Linker-provided boundaries of the kernel's own executable code -- see
+ * kernel/linker.ld. Everything else in the identity map (the multiboot2
+ * header, .rodata, .data, .bss, the embedded initrd, the kernel heap,
+ * the PMM's own bitmap, and any unused physical RAM up to the 1GB
+ * identity-map limit) is data, never code. */
+extern uint8_t _text_start[];
+extern uint8_t _text_end[];
+
+/* Builds (or, for a fresh user address space, rebuilds an identical
+ * copy of) the identity map's PD entry at granule index `i` -- either a
+ * plain 2MB huge page (executable only if the WHOLE granule is inside
+ * the kernel's own .text, NX otherwise), or, for the one or two
+ * granules that straddle the .text/data boundary (a 2MB granule can't
+ * represent mixed exec/NX permissions on its own), a split into 4KB
+ * pages with NX decided individually per page.
+ *
+ * Shared between vmm_init() (building kernel_as's own PD once, at
+ * boot, before any process exists) and vmm_create_user_as() (rebuilding
+ * the SAME deterministic result fresh for every new process). It's
+ * deliberately recomputed rather than deep-copied from kernel_as's live
+ * PD for this one specific, boot-time split -- see
+ * vmm_create_user_as()'s own comment for why simply copying would leave
+ * a hole in every process's identity map exactly where kernel code/data
+ * lives, which would page-fault the very first syscall trap taken under
+ * that process's own CR3 (SYSCALL doesn't reload CR3). */
+static void build_identity_granule(pte_t* pd, int i) {
+    uint64_t text_start = (uint64_t)_text_start;
+    uint64_t text_end   = (uint64_t)_text_end;
+
+    uint64_t granule_start = (uint64_t)i << 21;
+    uint64_t granule_end   = granule_start + (1ULL << 21);
+    uint64_t nx = nx_supported ? PTE_NO_EXEC : 0;
+
+    int overlaps_text = (granule_start < text_end) && (granule_end > text_start);
+    if (!overlaps_text) {
+        /* Entirely outside .text -- data, NX. */
+        pd[i] = granule_start | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE | nx;
+        return;
+    }
+    if (granule_start >= text_start && granule_end <= text_end) {
+        /* Entirely inside .text -- executable, exactly as before this
+         * fix (this codebase doesn't currently distinguish "writable"
+         * from "executable" for kernel code beyond NX, matching the
+         * same scope the original ELF-segment NX hardening used --
+         * PF_X vs not -- rather than introducing a new, unprecedented
+         * read-only-code scheme here). */
+        pd[i] = granule_start | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
+        return;
+    }
+
+    /* Straddles the boundary -- split into 4KB pages, NX decided
+     * per-page. Reuses the same "allocate a PT, fill it with 4KB
+     * entries covering the same physical range" shape get_or_create()
+     * already uses elsewhere in this file for splitting a huge page
+     * on demand -- this is just done proactively, once, at the exact
+     * one or two indices that need it, instead of reactively. */
+    pte_t* pt = alloc_table();
+    if (!pt) {
+        /* OOM this early in boot is effectively unrecoverable anyway;
+         * fall back to the pre-fix behavior (huge, executable, no NX)
+         * for this one granule rather than leaving it unmapped. */
+        pd[i] = granule_start | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
+        return;
+    }
+    for (int j = 0; j < 512; j++) {
+        uint64_t page_addr = granule_start + (uint64_t)j * PAGE_SIZE;
+        int in_text = (page_addr >= text_start) && (page_addr < text_end);
+        pt[j] = page_addr | PTE_PRESENT | PTE_WRITABLE | (in_text ? 0 : nx);
+    }
+    pd[i] = (uint64_t)pt | PTE_PRESENT | PTE_WRITABLE;
+}
+
 void vmm_init(void)
 {
     /* Allocate PML4 */
@@ -163,9 +235,15 @@ void vmm_init(void)
     if (!pd) return;
     pdp[0] = (uint64_t)pd | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
 
-    /* 512 × 2MB huge pages = 1GB identity map */
+    /* 512 × 2MB huge pages = 1GB identity map, now NX everywhere except
+     * the kernel's own .text -- see build_identity_granule()'s comment
+     * for the full mechanism. This was the one concrete data surface
+     * the original NX-hardening pass explicitly left uncovered
+     * ("distinguishing kernel code from kernel data within that shared
+     * identity map would need more substantial restructuring than this
+     * change") -- this is that restructuring. */
     for (int i = 0; i < 512; i++) {
-        pd[i] = ((uint64_t)i << 21) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
+        build_identity_granule(pd, i);
     }
 
     /* Switch to new page tables */
@@ -205,10 +283,41 @@ address_space_t vmm_create_user_as(void)
                 if (!new_pd) continue;
                 /* Copy all entries — huge pages only (not split PTs).
                    If kpd[j] is already a PT (was split for a previous process),
-                   skip it — this process gets a fresh huge page instead. */
+                   skip it — this process gets a fresh huge page instead.
+                 *
+                 * EXCEPTION, added for NX coverage: a present-but-not-huge
+                 * kpd[j] is either (a) the kernel's own .text/NX boundary
+                 * split, set up once by vmm_init() before ANY process
+                 * exists (see build_identity_granule()'s comment), or (b)
+                 * some other, unrelated runtime split of kernel_as's PD
+                 * from elsewhere (e.g. heap_init()'s later growth). Case
+                 * (b) keeps the pre-existing behavior above unchanged
+                 * (left at 0/not present -- a pre-existing limitation this
+                 * fix doesn't touch). Case (a) CANNOT be left as a hole:
+                 * unlike (b), it's not something "this process gets a
+                 * fresh huge page instead" for -- it's kernel code/data
+                 * that must be identically present in every address
+                 * space, or the very first syscall trap taken under this
+                 * new process's own CR3 (SYSCALL doesn't reload CR3)
+                 * would immediately page-fault. Recomputed fresh via the
+                 * same deterministic function, rather than trying to
+                 * literally copy kpd[j]'s own PT (whose entries could, in
+                 * principle, be case (b)'s too, on a different index) --
+                 * distinguishing the two by re-deriving the boundary from
+                 * the linker symbols directly is simpler and cannot drift
+                 * out of sync with vmm_init()'s own logic. */
                 for (int j = 0; j < 512; j++) {
-                    if ((kpd[j] & PTE_PRESENT) && (kpd[j] & PTE_HUGE))
+                    if ((kpd[j] & PTE_PRESENT) && (kpd[j] & PTE_HUGE)) {
                         new_pd[j] = kpd[j];   /* copy huge page as-is */
+                    } else if (kpd[j] & PTE_PRESENT) {
+                        uint64_t gs = (uint64_t)j << 21;
+                        uint64_t ge = gs + (1ULL << 21);
+                        uint64_t ts = (uint64_t)_text_start, te = (uint64_t)_text_end;
+                        int straddles_text = (gs < te) && (ge > ts) &&
+                                              !(gs >= ts && ge <= te);
+                        if (straddles_text) build_identity_granule(new_pd, j);
+                        /* else leave 0 — vmm_map creates a fresh PT */
+                    }
                     /* else leave 0 — vmm_map creates a fresh PT */
                 }
                 new_pdp[i] = ((uint64_t)new_pd) | (kpdp[i] & 0xFFF);
