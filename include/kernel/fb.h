@@ -28,6 +28,17 @@ void fb_terminal_set_color(uint32_t fg, uint32_t bg);
 void fb_map_into_as(void* as);
 fb_info_t* fb_get_info(void);
 void fb_put_pixel_alpha(int x, int y, uint32_t color, uint8_t alpha);
+
+/* Off-screen double buffering. While a back buffer is active, every
+ * fb_put_pixel()/fb_put_pixel_alpha() call (and therefore every
+ * fb_draw_rect()/fb_fill_rect_alpha() built on them) draws into
+ * ordinary RAM instead of the visible framebuffer; fb_backbuffer_present()
+ * then copies the finished frame to the screen in one pass. `mem` must
+ * be at least width*height uint32_t's, tightly packed (pitch = width*4).
+ * 32bpp only -- begin is a no-op for any other depth. */
+void fb_backbuffer_begin(uint32_t* mem);
+void fb_backbuffer_present(void);
+void fb_backbuffer_end(void);
 void fb_fill_rect_alpha(int x, int y, int w, int h, uint32_t color, uint8_t alpha);
 
 #define FB_COLOR(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))

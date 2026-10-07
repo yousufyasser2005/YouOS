@@ -19,11 +19,38 @@ void fb_init(uint64_t addr, uint32_t width, uint32_t height,
 
 int fb_available(void) { return fb_ready; }
 
+/* Active off-screen target, or NULL to draw straight to the visible
+ * framebuffer (the default). See fb_backbuffer_begin() in fb.h. */
+static uint32_t* fb_back = 0;
+
+void fb_backbuffer_begin(uint32_t* mem)
+{
+    if (!fb_ready || fb.bpp != 32 || !mem) return;
+    fb_back = mem;
+}
+
+void fb_backbuffer_present(void)
+{
+    if (!fb_back) return;
+    for (uint32_t y = 0; y < fb.height; y++) {
+        uint32_t* src = fb_back + (uint64_t)y * fb.width;
+        uint32_t* dst = (uint32_t*)(fb.addr + (uint64_t)y * fb.pitch);
+        for (uint32_t x = 0; x < fb.width; x++) dst[x] = src[x];
+    }
+}
+
+void fb_backbuffer_end(void)
+{
+    fb_backbuffer_present();
+    fb_back = 0;
+}
+
 /* ── Pixel operations ────────────────────────────────────────── */
 void fb_put_pixel(int x, int y, uint32_t color)
 {
     if (!fb_ready || x < 0 || y < 0 ||
         (uint32_t)x >= fb.width || (uint32_t)y >= fb.height) return;
+    if (fb_back) { fb_back[(uint64_t)y * fb.width + (uint32_t)x] = color; return; }
     uint32_t* p = (uint32_t*)(fb.addr + (uint32_t)y * fb.pitch
                               + (uint32_t)x * (fb.bpp / 8));
     *p = color;
@@ -280,8 +307,10 @@ void fb_put_pixel_alpha(int x, int y, uint32_t color, uint8_t alpha)
 {
     if (!fb_ready || x < 0 || y < 0 ||
         (uint32_t)x >= fb.width || (uint32_t)y >= fb.height) return;
-    uint32_t* p = (uint32_t*)(fb.addr + (uint32_t)y * fb.pitch
-                              + (uint32_t)x * (fb.bpp / 8));
+    uint32_t* p = fb_back
+        ? &fb_back[(uint64_t)y * fb.width + (uint32_t)x]
+        : (uint32_t*)(fb.addr + (uint32_t)y * fb.pitch
+                      + (uint32_t)x * (fb.bpp / 8));
     *p = fb_blend(*p, color, alpha);
 }
 
