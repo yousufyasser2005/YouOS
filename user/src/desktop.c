@@ -13,6 +13,13 @@ typedef signed long    s64;
 #include "jpeg_decoder.h"
 #include "mjpeg_container.h"
 static u64 FB_W,FB_H;
+/* UI scale, in percent. The framebuffer is now the display's native
+ * resolution (1920x1080), so layouts authored in pixels at 800 lines
+ * tall come out ~35% too small on screen. SC(v) scales a design-time
+ * pixel size; 100 means "as authored". Set once at startup by
+ * ui_scale_init(). Used for the desktop icons and the sidebar. */
+static int UIS=100;
+#define SC(v) ((v)*UIS/100)
 #define MAX_FB_W 1920
 #define MAX_FB_H 1080
 static u32 buf[MAX_FB_W*MAX_FB_H];
@@ -52,6 +59,83 @@ static void rect_round_alpha(int x,int y,int w,int h,int r,u32 c,int a){
         px_alpha(x+col,y+row,c,a);
     }
 }
+/* Vertical-gradient rect, corners optionally rounded (r=0 for a plain
+ * rectangle -- the corner math below simply never triggers). Used for
+ * the Aero-glass visual pass: window title bars and icon tiles/faces
+ * both use this instead of a single flat fill color, for a sense of
+ * curved, glossy depth rather than a flat painted square. */
+static void rect_vgrad_round(int x,int y,int w,int h,int r,u32 top,u32 bottom){
+    for(int row=0;row<h;row++){
+        int t=(h<=1)?0:(row*255)/(h-1);
+        u32 c=ablend(top,bottom,t);
+        for(int col=0;col<w;col++){
+            int cx=-1,cy=-1;
+            if(col<r&&row<r){cx=r;cy=r;}
+            else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+            else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+            else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+            if(cx>=0){int dx2=col-cx,dy2=row-cy;if(dx2*dx2+dy2*dy2>r*r)continue;}
+            px(x+col,y+row,c);
+        }
+    }
+}
+/* Soft, semi-transparent white sheen across the upper portion of a
+ * rounded surface -- the classic Aero/glossy-button reflection band.
+ * Alpha tapers from a soft peak at the very top to fully gone by the
+ * band's own bottom edge, so it reads as a curved highlight rather
+ * than a hard-edged stripe. Only rounds the TOP corners (r applies to
+ * row<r only) since the band itself never reaches the bottom of a
+ * normally-proportioned tile/bar. */
+static void glass_highlight(int x,int y,int w,int h,int r){
+    int bandh=h*45/100; if(bandh<1)bandh=1;
+    for(int row=0;row<bandh;row++){
+        int a=55-(row*55)/bandh; if(a<0)a=0; if(a==0)continue;
+        for(int col=0;col<w;col++){
+            int cx=-1,cy=-1;
+            if(col<r&&row<r){cx=r;cy=r;}
+            else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+            if(cx>=0){int dx2=col-cx,dy2=row-cy;if(dx2*dx2+dy2*dy2>r*r)continue;}
+            px_alpha(x+col,y+row,0xFFFFFF,a);
+        }
+    }
+}
+/* Same corner math as rect_vgrad_round(), but alpha-blended so the
+ * wallpaper stays faintly visible behind it -- for the widget-panel
+ * glass cards below, replacing their old flat, fully opaque
+ * backgrounds. */
+static void rect_vgrad_round_alpha(int x,int y,int w,int h,int r,u32 top,u32 bottom,int a){
+    for(int row=0;row<h;row++){
+        int t=(h<=1)?0:(row*255)/(h-1);
+        u32 c=ablend(top,bottom,t);
+        for(int col=0;col<w;col++){
+            int cx=-1,cy=-1;
+            if(col<r&&row<r){cx=r;cy=r;}
+            else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+            else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+            else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+            if(cx>=0){int dx2=col-cx,dy2=row-cy;if(dx2*dx2+dy2*dy2>r*r)continue;}
+            px_alpha(x+col,y+row,c,a);
+        }
+    }
+}
+/* Horizontal-gradient rounded bar -- the CPU/MEM progress bars below,
+ * replacing a flat single-color fill with a left-to-right gradient
+ * (and, with r=h/2, fully rounded "pill" ends). */
+static void rect_hgrad_round(int x,int y,int w,int h,int r,u32 left,u32 right){
+    for(int col=0;col<w;col++){
+        int t=(w<=1)?0:(col*255)/(w-1);
+        u32 c=ablend(left,right,t);
+        for(int row=0;row<h;row++){
+            int cx=-1,cy=-1;
+            if(col<r&&row<r){cx=r;cy=r;}
+            else if(col>=w-r&&row<r){cx=w-r-1;cy=r;}
+            else if(col<r&&row>=h-r){cx=r;cy=h-r-1;}
+            else if(col>=w-r&&row>=h-r){cx=w-r-1;cy=h-r-1;}
+            if(cx>=0){int dx2=col-cx,dy2=row-cy;if(dx2*dx2+dy2*dy2>r*r)continue;}
+            px(x+col,y+row,c);
+        }
+    }
+}
 static void outline_round(int x,int y,int w,int h,int r,u32 c){
     for(int row=0;row<h;row++)for(int col=0;col<w;col++){
         int edge=(row==0||row==h-1||col==0||col==w-1);
@@ -67,6 +151,63 @@ static void outline_round(int x,int y,int w,int h,int r,u32 c){
             continue;
         }
         if(edge)px(x+col,y+row,c);
+    }
+}
+/* Shared translucent glass card background for the widget-panel
+ * widgets (clock, system monitor, calendar) -- each used to paint its
+ * own flat, fully opaque rect()+outline() background independently;
+ * now they share one consistent glass-card look, and the panel itself
+ * (draw_panel_bg()) no longer paints a single flat slab behind all of
+ * them, so the actual wallpaper stays visible in the gaps between
+ * cards, matching a real glassmorphic sidebar. */
+static void outline_alpha(int x,int y,int w,int h,u32 c,int a){
+    for(int i=x;i<x+w;i++){px_alpha(i,y,c,a);px_alpha(i,y+h-1,c,a);}
+    for(int i=y+1;i<y+h-1;i++){px_alpha(x,i,c,a);px_alpha(x+w-1,i,c,a);}
+}
+static void panel_card(int x,int y,int w,int h){
+    rect_vgrad_round_alpha(x,y,w,h,SC(16),0x262D3B,0x121720,175);
+    outline_round(x,y,w,h,SC(16),0x323A4B);
+}
+
+/* Small integer sqrt (inputs here are tiny: corner radii squared). */
+static int isqrt_i(int v){int r=0;while((r+1)*(r+1)<=v)r++;return r;}
+
+/* Perimeter-only rounded outline with alpha, optionally skipping any
+ * pixel inside a clip rectangle (clw<=0 disables clipping). Perimeter
+ * only on purpose: outline_round() above walks the whole w*h area,
+ * which is fine for a small button but far too slow to run several
+ * times per frame on a full-size window. */
+static void rr_plot(int x,int y,u32 c,int a,int clx,int cly,int clw,int clh){
+    if(clw>0&&x>=clx&&x<clx+clw&&y>=cly&&y<cly+clh)return;
+    px_alpha(x,y,c,a);
+}
+static void rr_outline_alpha(int x,int y,int w,int h,int r,u32 c,int a,int clx,int cly,int clw,int clh){
+    if(r*2>w)r=w/2; if(r*2>h)r=h/2; if(r<0)r=0;
+    for(int i=x+r;i<x+w-r;i++){rr_plot(i,y,c,a,clx,cly,clw,clh);rr_plot(i,y+h-1,c,a,clx,cly,clw,clh);}
+    for(int j=y+r;j<y+h-r;j++){rr_plot(x,j,c,a,clx,cly,clw,clh);rr_plot(x+w-1,j,c,a,clx,cly,clw,clh);}
+    for(int k=1;k<r;k++){
+        int d=isqrt_i(r*r-k*k);
+        rr_plot(x+r-d,y+r-k,c,a,clx,cly,clw,clh);       rr_plot(x+w-1-r+d,y+r-k,c,a,clx,cly,clw,clh);
+        rr_plot(x+r-d,y+h-1-r+k,c,a,clx,cly,clw,clh);   rr_plot(x+w-1-r+d,y+h-1-r+k,c,a,clx,cly,clw,clh);
+        rr_plot(x+r-k,y+r-d,c,a,clx,cly,clw,clh);       rr_plot(x+w-1-r+k,y+r-d,c,a,clx,cly,clw,clh);
+        rr_plot(x+r-k,y+h-1-r+d,c,a,clx,cly,clw,clh);   rr_plot(x+w-1-r+k,y+h-1-r+d,c,a,clx,cly,clw,clh);
+    }
+}
+/* A band of thickness b hugging the INSIDE of a rounded rectangle
+ * (outer corners radius r, inner edge square), vertical gradient,
+ * alpha-blended: the glass frame that wraps a window. The interior is
+ * left untouched so the window body/title can be drawn separately. */
+static void glass_ring(int x,int y,int w,int h,int b,int r,u32 top,u32 bot,int a){
+    for(int row=0;row<h;row++){
+        int inset=0,rr=-1;
+        if(row<r)rr=row; else if(row>=h-r)rr=h-1-row;
+        if(rr>=0){int t=2*(r-rr)-1;int q=4*r*r-t*t;if(q<0)q=0;inset=r-isqrt_i(q)/2;}
+        u32 c=ablend(top,bot,h>1?(row*255)/(h-1):0);
+        if(row<b||row>=h-b){for(int col=inset;col<w-inset;col++)px_alpha(x+col,y+row,c,a);}
+        else{
+            for(int col=inset;col<b;col++)px_alpha(x+col,y+row,c,a);
+            for(int col=w-b;col<w-inset;col++)px_alpha(x+col,y+row,c,a);
+        }
     }
 }
 static void flush(void){sys_fbwrite(0,0,FB_W,FB_H,buf);}
@@ -195,6 +336,130 @@ static void glyph_bold(int x,int y,char c,u32 fg,u32 bg){
 static void text_bold(int x,int y,const char*str,u32 fg,u32 bg){while(*str){glyph_bold(x,y,*str++,fg,bg);x+=8;}}
 static void text_bold_center(int cx,int y,const char*str,u32 fg,u32 bg){int l=0;const char*p=str;while(*p++)l++;text_bold(cx-l*4,y,str,fg,bg);}
 
+/* ═══ TRANSPARENT-BACKGROUND / DROP-SHADOW TEXT ═══════════════════
+ * glyph()/glyph2x() above always paint a full, opaque background for
+ * every "off" bit in the font cell -- there's no way to draw text
+ * with a transparent background using them. That's exactly why text
+ * drawn directly over the wallpaper or an icon tile (the login
+ * screen's clock and "Select User" heading, icon labels) used to be
+ * preceded by a separately-drawn, tightly-fit solid black rectangle:
+ * matching that rectangle's color to the text's own opaque "bg" made
+ * it look like a text label with a dark backing panel, rather than
+ * exposing the hard rectangle as its own visible box. It reads as a
+ * visible, hard-edged black box because that's exactly what it is.
+ *
+ * These variants skip "off" bits entirely (only ever paint actual
+ * glyph-foreground pixels), so text can sit directly over a photo
+ * background or a colored icon tile with nothing drawn behind it at
+ * all. text_shadow()/text_big_shadow() pair that with a soft, offset,
+ * partially-transparent dark copy drawn first -- a floating drop
+ * shadow for legibility instead of a flat panel. */
+static void glyph_nobg(int x,int y,char c,u32 fg){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++)if(b&(0x80>>col))px(x+col,y+r,fg);}
+}
+static void text_nobg(int x,int y,const char*str,u32 fg){while(*str){glyph_nobg(x,y,*str++,fg);x+=8;}}
+static void text_nobg_center(int cx,int y,const char*str,u32 fg){int l=0;const char*p=str;while(*p++)l++;text_nobg(cx-l*4,y,str,fg);}
+static void glyph_bold_nobg(int x,int y,char c,u32 fg){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++){
+        if(b&(0x80>>col)){px(x+col,y+r,fg);if(col<7)px(x+col+1,y+r,fg);}
+    }}
+}
+static void text_bold_nobg(int x,int y,const char*str,u32 fg){while(*str){glyph_bold_nobg(x,y,*str++,fg);x+=8;}}
+static void text_bold_nobg_center(int cx,int y,const char*str,u32 fg){int l=0;const char*p=str;while(*p++)l++;int x=cx-l*4;while(*str){glyph_bold_nobg(x,y,*str++,fg);x+=8;}}
+static void glyph_nobg_alpha(int x,int y,char c,u32 fg,int a){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++)if(b&(0x80>>col))px_alpha(x+col,y+r,fg,a);}
+}
+static void text_nobg_alpha(int x,int y,const char*str,u32 fg,int a){while(*str){glyph_nobg_alpha(x,y,*str++,fg,a);x+=8;}}
+/* Two soft shadow passes at different offsets/alphas rather than one
+ * hard-edged copy -- approximates a little blur without an actual
+ * blur pass. */
+static void text_shadow(int x,int y,const char*str,u32 fg){
+    text_nobg_alpha(x+2,y+2,str,0x000000,90);
+    text_nobg_alpha(x+1,y+1,str,0x000000,130);
+    text_nobg(x,y,str,fg);
+}
+static void text_shadow_center(int cx,int y,const char*str,u32 fg){int l=0;const char*p=str;while(*p++)l++;text_shadow(cx-l*4,y,str,fg);}
+
+static void glyph2x_nobg(int x,int y,char c,u32 fg){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++){
+        if(!(b&(0x80>>col)))continue;
+        px(x+col*2,y+r*2,fg);px(x+col*2+1,y+r*2,fg);
+        px(x+col*2,y+r*2+1,fg);px(x+col*2+1,y+r*2+1,fg);
+    }}
+}
+static void text_big_nobg(int x,int y,const char*str,u32 fg){while(*str){glyph2x_nobg(x,y,*str++,fg);x+=16;}}
+static void glyph2x_nobg_alpha(int x,int y,char c,u32 fg,int a){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    for(int r=0;r<16;r++){u8 b=font[idx][r];for(int col=0;col<8;col++){
+        if(!(b&(0x80>>col)))continue;
+        px_alpha(x+col*2,y+r*2,fg,a);px_alpha(x+col*2+1,y+r*2,fg,a);
+        px_alpha(x+col*2,y+r*2+1,fg,a);px_alpha(x+col*2+1,y+r*2+1,fg,a);
+    }}
+}
+static void text_big_nobg_alpha(int x,int y,const char*str,u32 fg,int a){while(*str){glyph2x_nobg_alpha(x,y,*str++,fg,a);x+=16;}}
+static void text_big_shadow(int x,int y,const char*str,u32 fg){
+    text_big_nobg_alpha(x+3,y+3,str,0x000000,90);
+    text_big_nobg_alpha(x+2,y+2,str,0x000000,130);
+    text_big_nobg(x,y,str,fg);
+}
+static void text_big_shadow_center(int cx,int y,const char*str,u32 fg){int l=0;const char*p=str;while(*p++)l++;text_big_shadow(cx-l*8,y,str,fg);}
+
+/* ═══ FRACTIONAL-SCALE TEXT ═══════════════════════════════════════
+ * The bitmap font is 8x16 and only exists at 1x. Scaling it by a
+ * non-integer UI factor by replication would give uneven, lumpy
+ * strokes, so each destination pixel instead averages a 4x4 grid of
+ * samples from the source bitmap (box filter) and is drawn with that
+ * coverage as alpha -- smooth, evenly weighted text at any scale. At
+ * UIS=100 every sample lands inside one source pixel, so it is
+ * identical to the normal font. The sample->source mapping is
+ * precomputed once per scale (no per-pixel division). */
+static u8 sc_colmap[96], sc_rowmap[160];
+static void sc_text_init(void){
+    for(int i=0;i<96;i++) sc_colmap[i]=(u8)((i*25)/UIS>15?15:(i*25)/UIS);
+    for(int i=0;i<160;i++)sc_rowmap[i]=(u8)((i*25)/UIS>31?31:(i*25)/UIS);
+}
+static int sc_gw(void){return (8*UIS+99)/100;}
+static void glyph_sc(int x,int y,char c,u32 fg,int bold,int amul){
+    int idx=(u8)c-32;if(idx<0||idx>=96)idx=0;
+    int gw=sc_gw()+(bold?1:0), gh=(16*UIS+99)/100;
+    for(int dy=0;dy<gh;dy++)for(int dx=0;dx<gw;dx++){
+        int cnt=0;
+        for(int sy=0;sy<4;sy++){
+            int row=sc_rowmap[dy*4+sy]; if(row>15)continue;
+            u8 b=font[idx][row];
+            for(int sx=0;sx<4;sx++){
+                int col=sc_colmap[dx*4+sx];
+                int on=(col<8&&(b&(0x80>>col)))||(bold&&col>=1&&col<=8&&(b&(0x80>>(col-1))));
+                cnt+=on?1:0;
+            }
+        }
+        if(cnt){int a=(cnt*255/16)*amul/255; if(a>0)px_alpha(x+dx,y+dy,fg,a);}
+    }
+}
+static int text_sc_w(const char*str){int l=0;while(*str++)l++;return (l*8*UIS)/100;}
+static void text_sc_a(int x,int y,const char*str,u32 fg,int bold,int amul){
+    for(int i=0;str[i];i++)glyph_sc(x+(i*8*UIS)/100,y,str[i],fg,bold,amul);
+}
+static void text_sc(int x,int y,const char*str,u32 fg,int bold){text_sc_a(x,y,str,fg,bold,255);}
+static void text_sc_center(int cx,int y,const char*str,u32 fg,int bold){text_sc(cx-text_sc_w(str)/2,y,str,fg,bold);}
+static void text_sc_shadow(int x,int y,const char*str,u32 fg){
+    text_sc_a(x+2,y+2,str,0x000000,0,90);
+    text_sc_a(x+1,y+1,str,0x000000,0,130);
+    text_sc(x,y,str,fg,0);
+}
+static void ui_scale_init(void){
+    int u=(int)(FB_H*100/800);
+    u=(u+2)/5*5;
+    if(FB_H<900||u<100)u=100;
+    if(u>160)u=160;
+    UIS=u;
+    sc_text_init();
+}
+
 static int slen(const char*s){int n=0;while(s[n])n++;return n;}
 
 static s64 isin(int deg){
@@ -249,7 +514,7 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define NC_MAX_VISIBLE 5
 #define NC_X (TBAR_BELL_X+TBAR_BELL_SZ-NC_W)
 #define NC_Y (TBAR_PILL_Y-NC_H-12)
-#define PANEL_W    240
+#define PANEL_W    SC(240)
 #define PANEL_X    ((int)FB_W-PANEL_W)
 #define TITLEBAR_H 28
 #define RESIZE_GRIP 8
@@ -470,18 +735,39 @@ static int wm_draw_frame(int i){
         dx=dx+(dw-nw)/2;dy=dy+(dh-nh)/2;dw=nw;dh=nh;
         w->anim--;
     }
-    if(!w->minimized){
-        int sh1=dh;if(dy+4+sh1>(int)FB_H-TBAR_H)sh1=((int)FB_H-TBAR_H)-(dy+4);if(sh1<0)sh1=0;
-        int sh2=dh;if(dy+2+sh2>(int)FB_H-TBAR_H)sh2=((int)FB_H-TBAR_H)-(dy+2);if(sh2<0)sh2=0;
-        rect(dx+4,dy+4,dw,sh1,0x000000);
-        rect(dx+2,dy+2,dw,sh2,0x080808);
-        rect(dx,dy,dw,dh,0x0D1117);
+    /* Aero-style glass frame. The window body stays fully opaque (every
+     * window's content renderer draws edge-to-edge and assumes that),
+     * so the glass lives in a dark, translucent ring just OUTSIDE the
+     * window rect, wrapping the whole window with rounded outer
+     * corners. Nothing here changes any window's content geometry or
+     * hit-testing. */
+    const int FB=5, FR=10;
+    int frame_h=w->minimized?TITLEBAR_H:dh;
+    int fx=dx-FB, fy=dy-FB, fw=dw+2*FB, fh=frame_h+2*FB;
+    /* Soft shadow: faint rounded outlines stepping outward, nudged
+     * 3px down for depth, clipped so nothing is drawn over the frame
+     * itself. Symmetric left/right (the previous version offset its
+     * layers sideways too, which left a dark strip beside the right
+     * edge). */
+    for(int k=1;k<=8;k++){
+        int sa=34-k*4; if(sa<4)sa=4;
+        rr_outline_alpha(fx-k,fy-k+3,fw+2*k,fh+2*k,FR+k,0x000000,sa,fx,fy,fw,fh);
     }
-    u32 tbar_bg=foc?0x1C2128:0x13161B;
+    if(!w->minimized)rect(dx,dy+TITLEBAR_H,dw,dh-TITLEBAR_H,0x0D1117);
     u32 bord=foc?w->accent:BORDER;
-    rect(dx,dy,dw,TITLEBAR_H,tbar_bg);
+    /* dark tint; a touch of the accent colour only when focused */
+    u32 ring_top=foc?ablend(0x1B212D,w->accent,38):0x171B24;
+    u32 ring_bot=foc?ablend(0x0C0F15,w->accent,22):0x0B0E13;
+    glass_ring(fx,fy,fw,fh,FB,FR,ring_top,ring_bot,foc?182:158);
+    rr_outline_alpha(fx,fy,fw,fh,FR,0xFFFFFF,foc?60:34,0,0,0,0);   /* outer rim light */
+    outline_alpha(dx-1,dy-1,dw+2,frame_h+2,0x000000,120);           /* inner edge      */
+    for(int r2=0;r2<FB;r2++)rect_alpha(fx+FR/2,fy+r2,fw-FR,1,0xFFFFFF,26-r2*5); /* top sheen */
+    /* Translucent glass title bar (blends with the wallpaper/whatever
+     * lies behind the window) plus the same glossy sheen the desktop
+     * icons use. */
+    rect_vgrad_round_alpha(dx,dy,dw,TITLEBAR_H,0,foc?0x2B323E:0x1D222B,foc?0x12161C:0x0E1116,foc?190:175);
+    glass_highlight(dx,dy,dw,TITLEBAR_H,0);
     hline(dx,dy+TITLEBAR_H,dw,bord);
-    outline(dx,dy,dw,w->minimized?TITLEBAR_H:dh,bord);
     if(foc)hline(dx,dy,dw,w->accent);
     if(foc&&!w->minimized){
         u32 g1=0x2D333B,g2=0x404850;
@@ -499,7 +785,7 @@ static int wm_draw_frame(int i){
     btn_icon(dx+15,dy+14,0,hcl?0x7A0000:0xC0392B);
     btn_icon(dx+31,dy+14,1,hmn?0x7A4000:0x9A6000);
     btn_icon(dx+47,dy+14,2,hmx?0x007A00:0x1A7A1A);
-    text_bold_center(dx+dw/2,dy+6,w->title,foc?TEXT:DIM,tbar_bg);
+    text_bold_nobg_center(dx+dw/2,dy+6,w->title,foc?TEXT:DIM);
     return !w->minimized;
 }
 
@@ -1700,6 +1986,14 @@ static void draw_about_content(int i){
 /* ═══ Wallpaper: BMP loader ═════════════════════════════════════ */
 static u32 wallpaper_pixels[MAX_FB_W*MAX_FB_H];
 static int wallpaper_loaded=0;
+/* Loads a 24-bit BMP of ANY size up to MAX_FB_W x MAX_FB_H and scales
+ * it to fill the screen ("cover": uniform scale, centred, overflow
+ * cropped), with bilinear filtering. It used to reject any bitmap whose
+ * dimensions weren't EXACTLY the screen's, which meant changing the
+ * display resolution silently threw the wallpaper away. The bitmap is
+ * first decoded top-down into buf[] (the frame backbuffer, which is
+ * fully repainted every frame anyway, so borrowing it as scratch space
+ * is free), then resampled into wallpaper_pixels[]. */
 static int load_wallpaper_bmp(const char*path){
     u64 fd=sys_open(path,0);
     if((s64)fd<0)return 0;
@@ -1710,7 +2004,7 @@ static int load_wallpaper_bmp(const char*path){
     int width    =(int)((u32)hdr[18]|((u32)hdr[19]<<8)|((u32)hdr[20]<<16)|((u32)hdr[21]<<24));
     int height   =(int)((u32)hdr[22]|((u32)hdr[23]<<8)|((u32)hdr[24]<<16)|((u32)hdr[25]<<24));
     u16 bpp      =(u16)hdr[28]|((u16)hdr[29]<<8);
-    if((u64)width!=FB_W||(u64)height!=FB_H||bpp!=24){sys_close(fd);return 0;}
+    if(bpp!=24||width<=0||height<=0||width>MAX_FB_W||height>MAX_FB_H||pix_off<54){sys_close(fd);return 0;}
     u64 skip=pix_off-54;
     u8 skipbuf[64];
     while(skip>0){
@@ -1729,13 +2023,50 @@ static int load_wallpaper_bmp(const char*path){
             got+=(u64)r;
         }
         if(pad){u8 padbuf[4];sys_fread(fd,padbuf,pad);}
-        int screen_y=height-1-row;
+        int sy=height-1-row;   /* BMP rows are stored bottom-up */
         for(int x=0;x<width;x++){
             u8 b=rowbuf[x*3+0],g=rowbuf[x*3+1],r=rowbuf[x*3+2];
-            wallpaper_pixels[screen_y*(int)FB_W+x]=((u32)r<<16)|((u32)g<<8)|b;
+            buf[sy*width+x]=((u32)r<<16)|((u32)g<<8)|b;
         }
     }
     sys_close(fd);
+
+    int fw=(int)FB_W, fh=(int)FB_H;
+    if(width==fw&&height==fh){
+        for(int i=0;i<fw*fh;i++)wallpaper_pixels[i]=buf[i];
+        return 1;
+    }
+    /* cover scale, 8.8 fixed point: screen px -> source px = 256/sc */
+    u64 sc_x=((u64)fw*256)/(u64)width, sc_y=((u64)fh*256)/(u64)height;
+    u64 sc=sc_x>sc_y?sc_x:sc_y;                 /* screen px per source px, x256 */
+    /* source-space (x256) size of the visible window, and crop offsets */
+    s64 vis_w=(s64)(((u64)fw*256*256)/sc), vis_h=(s64)(((u64)fh*256*256)/sc);
+    s64 off_x=((s64)width*256-vis_w)/2, off_y=((s64)height*256-vis_h)/2;
+    static int xi[MAX_FB_W],xf[MAX_FB_W];
+    for(int x=0;x<fw;x++){
+        s64 sx=off_x+(((s64)x*2+1)*256*256)/(2*(s64)sc)-128;
+        if(sx<0)sx=0;
+        if(sx>(s64)(width-1)*256)sx=(s64)(width-1)*256;
+        xi[x]=(int)(sx>>8);xf[x]=(int)(sx&255);
+    }
+    for(int y=0;y<fh;y++){
+        s64 sy=off_y+(((s64)y*2+1)*256*256)/(2*(s64)sc)-128;
+        if(sy<0)sy=0;
+        if(sy>(s64)(height-1)*256)sy=(s64)(height-1)*256;
+        int y0=(int)(sy>>8),fy=(int)(sy&255),y1=y0+1<height?y0+1:y0;
+        for(int x=0;x<fw;x++){
+            int x0=xi[x],fx=xf[x],x1=x0+1<width?x0+1:x0;
+            u32 p00=buf[y0*width+x0],p10=buf[y0*width+x1],p01=buf[y1*width+x0],p11=buf[y1*width+x1];
+            u32 out=0;
+            for(int sh=0;sh<=16;sh+=8){
+                int c00=(p00>>sh)&255,c10=(p10>>sh)&255,c01=(p01>>sh)&255,c11=(p11>>sh)&255;
+                int top=c00*(256-fx)+c10*fx, bot=c01*(256-fx)+c11*fx;
+                int v=(top*(256-fy)+bot*fy)>>16;
+                out|=(u32)v<<sh;
+            }
+            wallpaper_pixels[y*fw+x]=out;
+        }
+    }
     return 1;
 }
 
@@ -1752,49 +2083,75 @@ static void wallpaper(void){
     for(int y=0;y<(int)FB_H;y+=80)for(int x=0;x<PANEL_X;x++)px(x,y,0x161B22);
     for(int x=0;x<PANEL_X;x+=80)for(int y=0;y<(int)FB_H;y++)px(x,y,0x161B22);
 }
-static void draw_panel_bg(void){rect(PANEL_X,0,PANEL_W,(int)FB_H-TBAR_H,PANEL_BG);vline(PANEL_X,0,(int)FB_H-TBAR_H,BORDER);}
+/* Was: one flat, fully opaque rect covering the whole panel -- exactly
+ * the "flat design... out of place" complaint. A soft, low-alpha wash
+ * instead: enough to keep panel text/cards readable against a busy
+ * wallpaper, while the wallpaper itself stays visible behind and
+ * between the individual glass cards (panel_card()) drawn on top of
+ * this, matching a real glassmorphic sidebar rather than a solid
+ * panel bolted onto the desktop. */
+/* bottom edge of the last card: the same sum of scaled terms the main loop's layout uses */
+#define PANEL_CARDS_BOTTOM (SC(20)+SC(228)+SC(16)+SC(112)+SC(16)+SC(196))
+static void draw_panel_bg(void){
+    /* A rounded, dark glass panel floating behind the widget cards and
+     * sized to hug them (not a full-height slab), so it reads as part
+     * of the dark theme and the wallpaper stays visible above and
+     * below it. */
+    int px0=PANEL_X+SC(4), py0=SC(8), pw=PANEL_W-SC(8), ph=PANEL_CARDS_BOTTOM+SC(14)-py0;
+    rect_vgrad_round_alpha(px0,py0,pw,ph,SC(20),0x161B26,0x090B10,170);
+    rr_outline_alpha(px0,py0,pw,ph,SC(20),0xFFFFFF,28,0,0,0,0);
+}
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
-    for(int deg=0;deg<360;deg+=2){
+    for(int deg=0;deg<360;deg+=1){
         px(cx+(int)(icos(deg)*r/1000),cy-(int)(isin(deg)*r/1000),BORDER);
         px(cx+(int)(icos(deg)*(r-1)/1000),cy-(int)(isin(deg)*(r-1)/1000),BORDER);
     }
     for(int dy=-r+2;dy<r-1;dy++)for(int dx=-r+2;dx<r-1;dx++)if(dx*dx+dy*dy<(r-2)*(r-2))px(cx+dx,cy+dy,0x161B22);
-    for(int i=0;i<12;i++){int deg=i*30;line_aa(cx+(int)(icos(deg)*(r-4)/1000),cy-(int)(isin(deg)*(r-4)/1000),cx+(int)(icos(deg)*(r-10)/1000),cy-(int)(isin(deg)*(r-10)/1000),(i==0||i==3||i==6||i==9)?WHITE:DIM);}
-    int hdeg=(hh*30+mm/2)-90;
-    line_aa(cx,cy,cx+(int)(icos(hdeg)*(r-28)/1000),cy-(int)(isin(hdeg)*(r-28)/1000),WHITE);
-    line_aa(cx,cy,cx+(int)(icos(hdeg+1)*(r-28)/1000),cy-(int)(isin(hdeg+1)*(r-28)/1000),WHITE);
-    int mdeg=mm*6-90;
-    line_aa(cx,cy,cx+(int)(icos(mdeg)*(r-18)/1000),cy-(int)(isin(mdeg)*(r-18)/1000),ACCENT);
-    line_aa(cx,cy,cx+(int)(icos(mdeg+1)*(r-18)/1000),cy-(int)(isin(mdeg+1)*(r-18)/1000),ACCENT);
-    line_aa(cx,cy,cx+(int)(icos(ss*6-90)*(r-14)/1000),cy-(int)(isin(ss*6-90)*(r-14)/1000),RED);
-    rect(cx-3,cy-3,6,6,WHITE);
+    /* 0 units must point due NORTH and advance CLOCKWISE; icos/isin use
+     * the maths convention (0 = east, counter-clockwise positive), so
+     * every angle is "90 - units". (The earlier "units - 90" put 12:00
+     * pointing down and ran the hands backwards.) All lengths scale
+     * with the UI scale. */
+    for(int i=0;i<12;i++){int deg=90-i*30;line_aa(cx+(int)(icos(deg)*(r-SC(4))/1000),cy-(int)(isin(deg)*(r-SC(4))/1000),cx+(int)(icos(deg)*(r-SC(10))/1000),cy-(int)(isin(deg)*(r-SC(10))/1000),(i==0||i==3||i==6||i==9)?WHITE:DIM);}
+    int hdeg=90-(hh*30+mm/2), hl=r-SC(28), ml=r-SC(18), sl=r-SC(14);
+    for(int t=0;t<(UIS>=130?3:2);t++){
+        line_aa(cx,cy,cx+(int)(icos(hdeg-t)*hl/1000),cy-(int)(isin(hdeg-t)*hl/1000),WHITE);
+        line_aa(cx,cy,cx+(int)(icos(90-mm*6-t)*ml/1000),cy-(int)(isin(90-mm*6-t)*ml/1000),ACCENT);
+    }
+    line_aa(cx,cy,cx+(int)(icos(90-ss*6)*sl/1000),cy-(int)(isin(90-ss*6)*sl/1000),RED);
+    rect(cx-SC(3),cy-SC(3),SC(6),SC(6),WHITE);
 }
 static const char*months[]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 static const int days_in_month[]={31,28,31,30,31,30,31,31,30,31,30,31};
 static const char*day_names[]={"Mo","Tu","We","Th","Fr","Sa","Su"};
-static void draw_calendar(int x,int y,int month,int year,int today){
-    rect(x,y,PANEL_W-8,160,0x0D1117);outline(x,y,PANEL_W-8,160,BORDER);
+static void draw_calendar(int x,int y,int w,int month,int year,int today){
     char hdr[16];const char*mn=months[month-1];int k=0;
     hdr[k++]=mn[0];hdr[k++]=mn[1];hdr[k++]=mn[2];hdr[k++]=' ';
     hdr[k++]='0'+year/1000;hdr[k++]='0'+(year/100)%10;hdr[k++]='0'+(year/10)%10;hdr[k++]='0'+year%10;hdr[k]=0;
-    text_bold_center(x+PANEL_W/2-4,y+4,hdr,TEXT,0x0D1117);hline(x,y+20,PANEL_W-8,BORDER);
-    for(int d=0;d<7;d++)text(x+4+d*30,y+24,day_names[d],DIM,0x0D1117);
-    hline(x,y+38,PANEL_W-8,0x21262D);
+    text_sc_center(x+w/2,y,hdr,TEXT,1);
+    for(int d=0;d<7;d++)text_sc(x+SC(4)+d*SC(30),y+SC(22),day_names[d],DIM,0);
     int col=4,row=0,days=days_in_month[month-1];
     for(int d=1;d<=days;d++){
-        int dx=x+4+col*30,dy=y+42+row*18;u32 fg=TEXT,bg2=0x0D1117;
-        if(d==today){rect(dx-2,dy-1,18,16,ACCENT);fg=0x0D1117;bg2=ACCENT;}else if(col>=5)fg=RED;
+        int dx=x+SC(4)+col*SC(30),dy=y+SC(44)+row*SC(20);u32 fg=TEXT;
         char ds[3];ds[0]=(d<10)?' ':'0'+d/10;ds[1]='0'+d%10;ds[2]=0;
-        text(dx,dy,ds,fg,bg2);if(++col==7){col=0;row++;}
+        if(d==today){
+            rect_round(dx-SC(3),dy-SC(2),SC(20),SC(18),SC(6),ACCENT);
+            text_sc(dx,dy,ds,0x0D1117,0);
+        }else{
+            if(col>=5)fg=RED;
+            text_sc(dx,dy,ds,fg,0);
+        }
+        if(++col==7){col=0;row++;}
     }
 }
-static void draw_digital_clock(int x,int y,u64 secs){
+static void draw_digital_clock(int x,int y,u64 secs){ /* x is the horizontal CENTER */
     u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
     char t[9];t[0]='0'+hh/10;t[1]='0'+hh%10;t[2]=':';t[3]='0'+mm/10;t[4]='0'+mm%10;t[5]=':';t[6]='0'+ss/10;t[7]='0'+ss%10;t[8]=0;
-    int cx=x+PANEL_W/2-4;
-    for(int i=0;t[i];i++){int gx=cx-36+i*14;glyph(gx,y,t[i],ACCENT,PANEL_BG);glyph(gx,y+8,t[i],ACCENT,PANEL_BG);}
-    text_center(cx,y+28,"Fri May 29 2026",DIM,PANEL_BG);
+    /* 8 glyphs on a 14px (scaled) pitch; total span = 7*pitch + one glyph */
+    int span=7*SC(14)+sc_gw();
+    for(int i=0;t[i];i++)glyph_sc(x-span/2+i*SC(14),y,t[i],ACCENT,1,255);
+    text_sc_center(x,y+SC(28),"Fri May 29 2026",DIM,0);
 }
 /* Real, live figures via sys_cpuinfo()/sys_meminfo()/sys_mem_total() --
  * both bars were hardcoded ("8%"/"50%", fixed bar widths) until this
@@ -1803,15 +2160,19 @@ static void draw_digital_clock(int x,int y,u64 secs){
  * main render loop), so sys_cpuinfo()'s own "since the previous call"
  * delta window naturally tracks roughly one frame's worth of load --
  * no separate polling/throttle logic needed here. */
-static void draw_stats(int x,int y){
-    rect(x,y,PANEL_W-8,60,0x0D1117);outline(x,y,PANEL_W-8,60,BORDER);
-    text_bold(x+6,y+4,"System",DIM,0x0D1117);
+static void draw_stats(int x,int y,int w){
+    text_sc(x,y,"System Monitor",DIM,1);
+
+    int bar_x=x, bar_w=w, bh=SC(8), br=SC(4), mn=SC(8);
 
     u32 cpu_pct=(u32)sys_cpuinfo();
     if(cpu_pct>100)cpu_pct=100;
-    int cpu_w=(int)(cpu_pct*150/100);
+    int cpu_w=(int)((u32)bar_w*cpu_pct/100); if(cpu_w<mn)cpu_w=mn;
     char cpu_s[8];int ci=0;ci=u32_append_dec(cpu_s,ci,cpu_pct);cpu_s[ci++]='%';cpu_s[ci]=0;
-    text(x+6,y+20,"CPU",DIM,0x0D1117);rect(x+36,y+22,150,8,0x21262D);rect(x+36,y+22,cpu_w,8,GREEN);text(x+190,y+20,cpu_s,DIM,0x0D1117);
+    text_sc(x,y+SC(26),"CPU",DIM,0);
+    rect_round(bar_x,y+SC(40),bar_w,bh,br,0x252B38);
+    rect_hgrad_round(bar_x,y+SC(40),cpu_w,bh,br,0x3B82F6,0x60A5FA);
+    text_sc(x+w-text_sc_w(cpu_s),y+SC(26),cpu_s,DIM,0);
 
     u64 free_pages=sys_meminfo();
     u64 total_pages=sys_mem_total();
@@ -1821,9 +2182,12 @@ static void draw_stats(int x,int y){
         mem_pct=(u32)((used_pages*100)/total_pages);
     }
     if(mem_pct>100)mem_pct=100;
-    int mem_w=(int)(mem_pct*150/100);
+    int mem_w=(int)((u32)bar_w*mem_pct/100); if(mem_w<mn)mem_w=mn;
     char mem_s[8];int mi=0;mi=u32_append_dec(mem_s,mi,mem_pct);mem_s[mi++]='%';mem_s[mi]=0;
-    text(x+6,y+36,"MEM",DIM,0x0D1117);rect(x+36,y+38,150,8,0x21262D);rect(x+36,y+38,mem_w,8,ACCENT);text(x+190,y+36,mem_s,DIM,0x0D1117);
+    text_sc(x,y+SC(58),"RAM",DIM,0);
+    rect_round(bar_x,y+SC(72),bar_w,bh,br,0x252B38);
+    rect_hgrad_round(bar_x,y+SC(72),mem_w,bh,br,0x22C55E,0x2DD4BF);
+    text_sc(x+w-text_sc_w(mem_s),y+SC(58),mem_s,DIM,0);
 }
 
 /* ═══ ICONS ═════════════════════════════════════════════════════ */
@@ -1831,20 +2195,20 @@ typedef struct{int x,y;const char*name;u32 color;}Icon;
 static Icon icons[]={{60,80,"Terminal",ACCENT},{60,180,"Files",GREEN},{60,280,"About",PURPLE},{60,380,"Notepad",YELLOW},{60,480,"Calc",0x58A6FF}};
 #define N_ICONS 5
 static void resolve_icon_pos(int idx,int ax,int ay,int*oax,int*oay){
-    int pad=8;
+    int pad=SC(8);
     for(int attempt=0;attempt<20;attempt++){
         int collided=0;
         for(int j=0;j<N_ICONS;j++){
             if(j==idx)continue;
             int sx=icons[j].x,sy=icons[j].y;
-            if(ax<sx+72+pad&&ax+72+pad>sx&&ay<sy+72+pad&&ay+72+pad>sy){ax=sx+72+pad;collided=1;break;}
+            int ts=SC(72);if(ax<sx+ts+pad&&ax+ts+pad>sx&&ay<sy+ts+pad&&ay+ts+pad>sy){ax=sx+ts+pad;collided=1;break;}
         }
         if(!collided)break;
     }
     if(ax<4)ax=4;
-    if(ax>PANEL_X-68)ax=PANEL_X-68;
+    if(ax>PANEL_X-SC(68))ax=PANEL_X-SC(68);
     if(ay<4)ay=4;
-    if(ay>(int)FB_H-TBAR_H-68)ay=(int)FB_H-TBAR_H-68;
+    if(ay>(int)FB_H-TBAR_H-SC(68))ay=(int)FB_H-TBAR_H-SC(68);
     *oax=ax;*oay=ay;
 }
 static int icon_hovered=-1;
@@ -1857,6 +2221,60 @@ static void circle_outline(int cx,int cy,int r,u32 c){
 }
 
 /* ── icon pictographs, idx matches icons[] order ───────────────── */
+/* Icon pictograms. Drawn from rounded shapes and anti-aliased lines
+ * (line_aa, rect_round, filled circles) rather than the earlier
+ * hard-edged rectangles, and drawn twice: first as a slightly darker
+ * copy offset 2px down (a soft "emboss" shadow so the glyph sits on
+ * the glossy face instead of being stamped flat onto it), then the
+ * real glyph. `bgcol` is the face color, used for cut-outs. */
+static void icon_glyph_raw(int idx,int cx,int cy,u32 fg,u32 bgcol,int sc){
+#define K(v) ((v)*sc/100)
+    if(idx==0){        /* terminal: > prompt and cursor bar */
+        int th=(2*sc+50)/100; if(th<2)th=2;
+        for(int t=0;t<th;t++){
+            line_aa(cx-K(13)+t,cy-K(9),cx-K(3)+t,cy,fg);
+            line_aa(cx-K(3)+t,cy,cx-K(13)+t,cy+K(9),fg);
+        }
+        rect_round(cx+K(1),cy+K(6),K(13),K(4),K(2),fg);
+    }else if(idx==1){  /* folder: tab + body with lighter front edge */
+        rect_round(cx-K(16),cy-K(12),K(13),K(8),K(3),fg);
+        rect_round(cx-K(16),cy-K(8),K(32),K(22),K(4),fg);
+        hline(cx-K(13),cy-K(5),K(26),ablend(fg,bgcol,70));
+    }else if(idx==2){  /* info: filled disc with an "i" cut-out */
+        circle(cx,cy,K(14),fg);
+        circle(cx,cy-K(6),K(2),bgcol);
+        rect_round(cx-K(2),cy-K(2),K(4),K(12),K(1),bgcol);
+    }else if(idx==3){  /* document: page with text lines */
+        rect_round(cx-K(11),cy-K(15),K(22),K(30),K(3),fg);
+        rect_round(cx-K(7),cy-K(9),K(14),K(3),K(1),bgcol);
+        rect_round(cx-K(7),cy-K(3),K(14),K(3),K(1),bgcol);
+        rect_round(cx-K(7),cy+K(3),K(14),K(3),K(1),bgcol);
+        rect_round(cx-K(7),cy+K(9),K(8),K(3),K(1),bgcol);
+    }else if(idx==4){  /* calculator: body, display, key grid */
+        rect_round(cx-K(13),cy-K(16),K(26),K(32),K(4),fg);
+        rect_round(cx-K(10),cy-K(13),K(20),K(8),K(2),bgcol);
+        for(int row=0;row<3;row++)for(int col=0;col<3;col++)
+            rect_round(cx-K(10)+col*K(7),cy-K(1)+row*K(7),K(5),K(5),K(1),bgcol);
+    }else if(idx==5){  /* settings: gear */
+        for(int k=0;k<8;k++){
+            int ang=k*45;
+            int tx=cx+(int)(icos(ang)*K(12)/1000), ty=cy-(int)(isin(ang)*K(12)/1000);
+            rect_round(tx-K(3),ty-K(3),K(6),K(6),K(2),fg);
+        }
+        circle(cx,cy,K(10),fg);
+        circle(cx,cy,K(4),bgcol);
+    }
+#undef K
+}
+static void draw_tile_glyph(int idx,int cx,int cy,u32 fg,u32 bgcol,int sc){
+    u32 sh=ablend(bgcol,0x000000,120);
+    icon_glyph_raw(idx,cx,cy+(2*sc+50)/100,sh,sh,sc);
+    icon_glyph_raw(idx,cx,cy,fg,bgcol,sc);
+}
+
+/* Original small flat glyphs, still used by the taskbar and window
+ * previews (deliberately unchanged -- the taskbar was not part of the
+ * redesign). The large desktop/start-menu tiles use draw_tile_glyph(). */
 static void draw_icon_glyph(int idx,int cx,int cy,u32 fg,u32 bgcol){
     if(idx==0){
         text(cx-8,cy-8,">_",fg,bgcol);
@@ -1891,18 +2309,41 @@ static void draw_icon_glyph(int idx,int cx,int cy,u32 fg,u32 bgcol){
     }
 }
 
+/* One app icon tile: soft shadow, frosted rounded backdrop, glossy
+ * gradient face, glyph, sheen. (x,y) is the icon's origin (the tile
+ * extends 4px up/left of it). Shared by the desktop icons and the
+ * start menu so the two are pixel-identical by construction -- they
+ * used to be drawn by two unrelated pieces of code and had drifted
+ * apart (glossy tiles on the desktop, flat squares in the menu). */
+static void draw_app_icon(int idx,int x,int y,int hov,u32 color,int sc){
+#define K(v) ((v)*sc/100)
+    int tx=x-K(4),ty=y-K(4),tw=K(72),th=K(72),tr=K(14);
+    rect_round_alpha(tx+K(3),ty+K(4),tw,th,tr,0x000000,35);
+    rect_round_alpha(tx+K(2),ty+K(3),tw,th,tr,0x000000,50);
+    rect_round_alpha(tx+K(1),ty+K(2),tw,th,tr,0x000000,65);
+    if(hov){
+        rect_round_alpha(tx-K(4),ty-K(4),tw+K(8),th+K(8),tr+K(4),ACCENT,35);
+        rect_round_alpha(tx-K(2),ty-K(2),tw+K(4),th+K(4),tr+K(2),ACCENT,55);
+    }
+    u32 panel_top=hov?0x2D333B:0x21262D, panel_bot=hov?0x1C2128:0x161B22;
+    rect_vgrad_round(tx,ty,tw,th,tr,panel_top,panel_bot);
+    outline_round(tx,ty,tw,th,tr,hov?ACCENT:BORDER);
+    int fx=x+K(10),fy=y+K(10),fw=K(52),fh=K(40),fr=K(8);
+    u32 ctop=ablend(color,0xFFFFFF,70);
+    u32 cbot=ablend(color,0x000000,60);
+    rect_vgrad_round(fx,fy,fw,fh,fr,ctop,cbot);
+    outline_round(fx,fy,fw,fh,fr,ablend(color,0x000000,120));
+    draw_tile_glyph(idx,x+K(36),y+K(30),TEXT,color,sc);
+    glass_highlight(fx,fy,fw,fh,fr);
+#undef K
+}
+
 static void draw_icons(void){
     for(int i=0;i<N_ICONS;i++){
-        Icon*ic=&icons[i];u32 bg=(i==icon_hovered)?0x21262D:BG;
-        rect(ic->x-4,ic->y-4,72,72,bg);outline(ic->x-4,ic->y-4,72,72,i==icon_hovered?ACCENT:BORDER);
-        rect(ic->x+10,ic->y+10,52,40,ic->color);
-        for(int r=ic->y+12;r<ic->y+48;r++)for(int c2=ic->x+12;c2<ic->x+60;c2++){
-            u32 col=buf[r*(int)FB_W+c2];u32 rr=(col>>16)&0xFF,gg=(col>>8)&0xFF,bb=col&0xFF;
-            buf[r*(int)FB_W+c2]=((rr/2)<<16)|((gg/2)<<8)|(bb/2);
-        }
-        draw_icon_glyph(i,ic->x+36,ic->y+30,TEXT,ic->color);
-        int llen=0;const char*p=ic->name;while(*p++)llen++;
-        text(ic->x+(64-llen*8)/2,ic->y+66,ic->name,TEXT,BG);
+        Icon*ic=&icons[i];
+        draw_app_icon(i,ic->x,ic->y,i==icon_hovered,ic->color,UIS);
+        int lw=text_sc_w(ic->name);
+        text_sc_shadow(ic->x+(SC(64)-lw)/2,ic->y+SC(72),ic->name,TEXT);
     }
 }
 
@@ -1961,10 +2402,10 @@ static void draw_menu(void){
         u32 bg=hov?0x21262D:PANEL_BG;
         rect_round(gx,gy,SM_CELL-16,SM_CELL-16,12,bg);
         if(hov)outline_round(gx,gy,SM_CELL-16,SM_CELL-16,12,cfg_accent);
-        rect_round(gx+(SM_CELL-16-56)/2,gy+12,56,56,12,sm_colors[idx]);
-        draw_icon_glyph(idx,gx+(SM_CELL-16)/2,gy+12+28,TEXT,sm_colors[idx]);
+        int ms=UIS>120?120:UIS, mts=72*ms/100;
+        draw_app_icon(idx,gx+((SM_CELL-16)-mts)/2+4*ms/100,gy+12,hov,sm_colors[idx],ms);
         int nlen=slen(menu_items[idx]);
-        text(gx+((SM_CELL-16)-nlen*8)/2,gy+76,menu_items[idx],TEXT,bg);
+        text(gx+((SM_CELL-16)-nlen*8)/2,gy+12-4*ms/100+mts+6,menu_items[idx],TEXT,bg);
     }
     if(sm_filtered_n==0)text_center(sx+SM_W/2,sy+200,"No results",DIM,PANEL_BG);
     int pry=sy+SM_H-56,pbw=(SM_W-40-24)/4;
@@ -2907,6 +3348,10 @@ static void open_media_player(const char*path, const char*shortname){
 }
 
 /* ═══ MAIN ══════════════════════════════════════════════════════ */
+/* Default desktop icon grid, scaled with the UI. */
+static void icons_apply_default_layout(void){
+    for(int i=0;i<N_ICONS;i++){icons[i].x=SC(60);icons[i].y=SC(80)+i*SC(100);}
+}
 typedef struct{u32 magic;u32 accent;u32 h24;u32 secs;int icon_x[N_ICONS];int icon_y[N_ICONS];u32 wallpaper_on;}CfgBlob;
 #define CFG_MAGIC 0xC0DE5E17U
 static void cfg_save(void){
@@ -3000,6 +3445,16 @@ static void cfg_load(void){
     if(n!=(u64)sizeof(b)||b.magic!=CFG_MAGIC)return;
     cfg_accent=b.accent;cfg_24h=(int)b.h24;cfg_showsecs=(int)b.secs;
     for(int i=0;i<N_ICONS;i++){icons[i].x=b.icon_x[i];icons[i].y=b.icon_y[i];}
+    /* A saved layout that is still the untouched default grid (x=60,
+     * y=80+100*i) was written when icons were 72px tiles; with larger
+     * tiles it would overlap their labels, so move it to the scaled
+     * default grid. Positions the user has moved themselves are kept
+     * as they are. */
+    if(UIS!=100){
+        int is_default=1;
+        for(int i=0;i<N_ICONS;i++)if(icons[i].x!=60||icons[i].y!=80+100*i)is_default=0;
+        if(is_default)icons_apply_default_layout();
+    }
     wallpaper_loaded=(int)b.wallpaper_on&&load_wallpaper_bmp("/ycfs/wall.bmp");
 }
 static void open_calc(void){
@@ -3705,10 +4160,10 @@ static int lock_screen_run(int mode){
             rect_alpha(0,0,(int)FB_W,(int)FB_H,0x000000,60);
             {u64 hh=(ticks/100/3600)%24,mm=(ticks/100/60)%60;
              char cl[6];cl[0]='0'+hh/10;cl[1]='0'+hh%10;cl[2]=':';cl[3]='0'+mm/10;cl[4]='0'+mm%10;cl[5]=0;
-             text_big_center((int)FB_W/2,60,cl,TEXT,BG);}
-            text_big_center((int)FB_W/2,gy0-56,"Select User",TEXT,BG);
+             text_big_shadow_center((int)FB_W/2,60,cl,TEXT);}
+            text_big_shadow_center((int)FB_W/2,gy0-56,"Select User",TEXT);
             if(ucount==0){
-                text_center((int)FB_W/2,gy0+40,"No accounts exist yet.",DIM,BG);
+                text_shadow_center((int)FB_W/2,gy0+40,"No accounts exist yet.",DIM);
             }
             for(int i=0;i<ucount;i++){
                 int col=i%LOGIN_COLS,row=i/LOGIN_COLS;
@@ -3728,8 +4183,14 @@ static int lock_screen_run(int mode){
             int pw_x=LOCK_X,pw_y=LOCK_Y,pw_w=LOCK_W,pw_h=LOCK_H;
             int bbx=pw_x+24,bby=pw_y+pw_h-56,bbw=pw_w-48,bbh=32;
             int backx=pw_x+24,backy=pw_y+20,backw=60,backh=22;
-            int eyex=pw_x+pw_w-70,eyey=pw_y+150,eyew=46,eyeh=22;
-            int fbx=pw_x+24,fby=pw_y+120,fbw=pw_w-48-eyew-8,fbh=30;
+            /* Vertical rhythm (top to bottom): avatar 28-88, name 98-114,
+             * field+Show button 130-164 sharing ONE row (same y, same
+             * height -- the Show button used to sit 30px lower than the
+             * field, and the name overlapped the field's top edge),
+             * error line 172-188, Sign In 204-236. */
+            int fbx=pw_x+24,fby=pw_y+130,fbh=34,eyew=46,eyeh=fbh;
+            int fbw=pw_w-48-eyew-8;
+            int eyex=fbx+fbw+8,eyey=fby;
 
             if(click){
                 if(mode!=LOCK_MODE_LOCK && in_box(mx,my,backx,backy,backw,backh)){screen=0;sel_idx=-1;}
@@ -3766,18 +4227,18 @@ static int lock_screen_run(int mode){
                 text(backx,backy+4,"< Back",hovb?TEXT:DIM,PANEL_BG);
             }
             if(sel_idx>=0){
-                draw_avatar(pw_x+pw_w/2,pw_y+70,32,t.users[sel_idx].username,cfg_accent);
-                text_center(pw_x+pw_w/2,pw_y+108,t.users[sel_idx].username,TEXT,PANEL_BG);
+                draw_avatar(pw_x+pw_w/2,pw_y+58,30,t.users[sel_idx].username,cfg_accent);
+                text_center(pw_x+pw_w/2,pw_y+98,t.users[sel_idx].username,TEXT,PANEL_BG);
             }
-            rect(fbx,fby,fbw,fbh,0x0D1117);outline(fbx,fby,fbw,fbh,cfg_accent);
-            if(show_pw)text(fbx+10,fby+8,pw_buf,TEXT,0x0D1117);
-            else draw_masked(fbx+10,fby+8,pw_len,TEXT,0x0D1117);
+            rect_round(fbx,fby,fbw,fbh,8,0x0D1117);outline_round(fbx,fby,fbw,fbh,8,cfg_accent);
+            if(show_pw)text(fbx+12,fby+9,pw_buf,TEXT,0x0D1117);
+            else draw_masked(fbx+12,fby+9,pw_len,TEXT,0x0D1117);
             {int hove=in_box(mx,my,eyex,eyey,eyew,eyeh);
-             rect(eyex,eyey,eyew,eyeh,hove?0x21262D:0x161B22);outline(eyex,eyey,eyew,eyeh,BORDER);
-             text_center(eyex+eyew/2,eyey+4,show_pw?"Hide":"Show",hove?TEXT:DIM,hove?0x21262D:0x161B22);}
-            if(pw_err[0])text(pw_x+24,pw_y+166,pw_err,RED,PANEL_BG);
+             rect_round(eyex,eyey,eyew,eyeh,8,hove?0x21262D:0x161B22);outline_round(eyex,eyey,eyew,eyeh,8,BORDER);
+             text_center(eyex+eyew/2,eyey+9,show_pw?"Hide":"Show",hove?TEXT:DIM,hove?0x21262D:0x161B22);}
+            if(pw_err[0])text(pw_x+24,pw_y+174,pw_err,RED,PANEL_BG);
             {int hov=in_box(mx,my,bbx,bby,bbw,bbh);
-             rect(bbx,bby,bbw,bbh,hov?cfg_accent:0x161B22);outline(bbx,bby,bbw,bbh,cfg_accent);
+             rect_round(bbx,bby,bbw,bbh,8,hov?cfg_accent:0x161B22);outline_round(bbx,bby,bbw,bbh,8,cfg_accent);
              text_center(bbx+bbw/2,bby+9,"Sign In",hov?BG:TEXT,hov?cfg_accent:0x161B22);}
             draw_cursor(mx,my);
             flush();sys_yield();
@@ -3863,6 +4324,8 @@ int main(void){
     FB_W=info[1];FB_H=info[2];
     if(FB_W>MAX_FB_W)FB_W=MAX_FB_W;
     if(FB_H>MAX_FB_H)FB_H=MAX_FB_H;
+    ui_scale_init();
+    icons_apply_default_layout();
     draw_loading_splash(0);
     sha256_self_test();
     hmac_sha256_self_test();pbkdf2_self_test();auth_self_test();
@@ -4615,7 +5078,7 @@ int main(void){
             /* desktop icons */
             for(int i=0;i<N_ICONS;i++){
                 Icon*ic=&icons[i];
-                if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72)){
+                if(in_box(mouse_x,mouse_y,ic->x-SC(4),ic->y-SC(4),SC(72),SC(72))){
                     drag_icon=i;drag_icon_ox=mouse_x-ic->x;drag_icon_oy=mouse_y-ic->y;
                     drag_icon_sx=mouse_x;drag_icon_sy=mouse_y;
                     goto click_done;
@@ -4766,7 +5229,7 @@ int main(void){
             if(hover_preview_group>=0)hover_preview_win=taskbar_groups[hover_preview_group].rep;
         }
         icon_hovered=-1;
-        for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-4,ic->y-4,72,72))icon_hovered=i;}
+        for(int i=0;i<N_ICONS;i++){Icon*ic=&icons[i];if(in_box(mouse_x,mouse_y,ic->x-SC(4),ic->y-SC(4),SC(72),SC(72)))icon_hovered=i;}
         menu_sel=-1;
         if(menu_open){int mx2=TBAR_SB_X,my2=(int)FB_H-TBAR_H-N_MENU*32-8;for(int i=0;i<N_MENU;i++){int iy=my2+20+i*32;if(in_box(mouse_x,mouse_y,mx2+2,iy,216,28))menu_sel=i;}}
         for(int fi2=0;fi2<win_count;fi2++){
@@ -4836,11 +5299,26 @@ int main(void){
 
         rebuild_taskbar_groups();
         wallpaper();draw_icons();draw_panel_bg();
-        int px2=PANEL_X+4;
-        draw_analog_clock(PANEL_X+PANEL_W/2,95,80,secs);
-        draw_digital_clock(px2,182,secs);
-        draw_calendar(px2,220,5,2026,29);
-        draw_stats(px2,392);
+        /* Glass-card layout for the sidebar. Every vertical position is
+         * derived from the previous card's bottom edge plus a fixed gap
+         * (SGAP), and each card's height comfortably exceeds its
+         * content, so nothing can crowd or overlap its neighbour --
+         * the old layout put the date line 10px above the calendar's
+         * top edge, which is why they appeared to collide. */
+        {
+            const int SGAP=SC(16);
+            int cardx=PANEL_X+SC(16), cardw=PANEL_W-SC(32), ccx=PANEL_X+PANEL_W/2;
+            int y0=SC(20),  h0=SC(228);   /* clock card:  circle + time + date */
+            int y1=y0+h0+SGAP, h1=SC(112);  /* system monitor card */
+            int y2=y1+h1+SGAP, h2=SC(196);  /* calendar card (6 date rows max) */
+            panel_card(cardx,y0,cardw,h0);
+            draw_analog_clock(ccx,y0+SC(20)+SC(62),SC(62),secs);
+            draw_digital_clock(ccx,y0+SC(20)+SC(124)+SC(18),secs);
+            panel_card(cardx,y1,cardw,h1);
+            draw_stats(cardx+SC(16),y1+SC(16),cardw-SC(32));
+            panel_card(cardx,y2,cardw,h2);
+            draw_calendar(cardx+SC(2),y2+SC(16),cardw-SC(4),5,2026,29);
+        }
         wm_sort();
         for(int si=0;si<win_count;si++){
             int i=z_order[si];if(!wins[i].visible||wins[i].minimized)continue;

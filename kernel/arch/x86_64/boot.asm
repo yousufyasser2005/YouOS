@@ -11,16 +11,20 @@ mb2_start:
     ; Framebuffer tag — width/height 0 turned out to make GRUB's
     ; multiboot2 loader fall back to a hardcoded 800x600x24 default in
     ; this environment rather than "best available", so instead we
-    ; request 1280x800 (the EDID-reported preferred/native mode here)
-    ; explicitly. desktop.c reads whatever the *actual* negotiated
-    ; size ends up being at runtime rather than assuming this exact
-    ; value, so this is a hint/preference, not a hard requirement.
+    ; request 1920x1080 explicitly. This used to be 1280x800, which
+    ; QEMU's window then stretched to fit a 1080p display -- the source
+    ; of the blurry/pixelated look. Rendering at the display's own
+    ; resolution removes the stretch. desktop.c, the mouse driver and
+    ; the boot animation all read whatever size is actually negotiated
+    ; at runtime rather than assuming this exact value, so this is a
+    ; hint/preference, not a hard requirement. To go back, change the
+    ; two numbers below to 1280 / 800.
     align 8
     dw 5                    ; tag type: framebuffer
     dw 0                    ; flags
     dd 20                   ; size
-    dd 1280                 ; width
-    dd 800                  ; height
+    dd 1920                 ; width
+    dd 1080                 ; height
     dd 32                   ; depth (bits per pixel)
 
     ; End tag
