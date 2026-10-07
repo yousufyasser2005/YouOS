@@ -499,7 +499,8 @@ static void line_aa(int x0,int y0,int x1,int y1,u32 c){
 #define TBAR_WINBTN_X0 (TBAR_SB_X+TBAR_SB_SZ+12)
 #define TBAR_WINBTN_W  (TBAR_PILL_H-8)
 #define TBAR_WINBTN_GAP 8
-#define TBAR_CLOCK_X (TBAR_PILL_X+TBAR_PILL_W-80)
+#define TBAR_CLOCK_R (TBAR_PILL_X+TBAR_PILL_W-16)  /* clock text's right edge */
+#define TBAR_CLOCK_X (TBAR_CLOCK_R-104)             /* room for "12:34:56 PM" */
 #define TBAR_CLOCK_Y (TBAR_PILL_Y+27)
 #define TBAR_BELL_SZ 36
 #define TBAR_BELL_X (TBAR_CLOCK_X-TBAR_BELL_SZ-16)
@@ -896,9 +897,23 @@ static void do_restart(void);
 static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
 static void open_new_pterm(const char* prog);
+static int g_rtc_ok; /* defined with the clock code further down */
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
     const char*help="help",*clr="clear",*abt="about",*sd="shutdown",*rb="reboot",*shl="shell",*ls="ls",*ipc="ipc",*crl="crashlog",*sll="syslog",*mdb="mousedbg",*wvd="wavdbg",*rsl="restartlog",*wsc="wavscan",*yr="yourun ",*spt="spawntest",*iot="iotest",*nt="newterm",*kt="killtest",*mm="meminfo",*ii="ipcinfo",*pc="proccount";
+    if(cmd[0]=='d'&&cmd[1]=='a'&&cmd[2]=='t'&&cmd[3]=='e'&&!cmd[4]){
+        static const char hx[]="0123456789abcdef";
+        u64 v[3];v[0]=sys_rtc();v[1]=sys_rtc_debug(0);v[2]=sys_rtc_debug(1);
+        const char*nm[3]={"packed ","raw    ","cent/rc"};
+        for(int q=0;q<3;q++){
+            char ln[40];int k=0;for(int j=0;nm[q][j];j++)ln[k++]=nm[q][j];
+            ln[k++]=' ';ln[k++]='0';ln[k++]='x';
+            for(int sh=60;sh>=0;sh-=4)ln[k++]=hx[(v[q]>>sh)&15];
+            ln[k]=0;tprint(ln);
+        }
+        tprint(g_rtc_ok?"rtc: OK (showing wall clock)":"rtc: FAILED (showing uptime)");
+        return;
+    }
     int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1,mmm=1,mii=1,mpc=1;
     /* yourun takes an argument, so this is a starts-with check, not the
        exact-match style every other command above/below uses. */
@@ -924,7 +939,7 @@ static void tcmd(const char*cmd){
     for(int k=0;mm[k]||cmd[k];k++)  if(mm[k]!=cmd[k])  {mmm=0;break;}
     for(int k=0;ii[k]||cmd[k];k++)  if(ii[k]!=cmd[k])  {mii=0;break;}
     for(int k=0;pc[k]||cmd[k];k++)  if(pc[k]!=cmd[k])  {mpc=0;break;}
-    if(mh)tprint("Commands: help clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
+    if(mh)tprint("Commands: help date clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -2101,6 +2116,51 @@ static void draw_panel_bg(void){
     rect_vgrad_round_alpha(px0,py0,pw,ph,SC(20),0x161B26,0x090B10,170);
     rr_outline_alpha(px0,py0,pw,ph,SC(20),0xFFFFFF,28,0,0,0,0);
 }
+/* ── wall-clock time (CMOS RTC via sys_rtc) ─────────────────────── */
+static int g_rtc_ok=0;
+static int g_yr=2026,g_mo=5,g_dy=29,g_hh=0,g_mi=0,g_ss=0;
+static u64 g_rtc_tick=0;
+static int g_rtc_polled=0;
+/* Re-read the RTC every 25 ticks (~250ms) so the displayed second
+ * changes within a quarter-second of the real one. */
+static void time_refresh(u64 ticks){
+    if(g_rtc_polled&&ticks-g_rtc_tick<25)return;
+    g_rtc_polled=1;g_rtc_tick=ticks;
+    u64 r=sys_rtc();
+    if(!r){g_rtc_ok=0;return;}
+    g_yr=(int)(r>>40);g_mo=(int)((r>>32)&0xFF);g_dy=(int)((r>>24)&0xFF);
+    g_hh=(int)((r>>16)&0xFF);g_mi=(int)((r>>8)&0xFF);g_ss=(int)(r&0xFF);
+    g_rtc_ok=1;
+}
+/* Seconds since midnight: real time if the RTC works, else uptime. */
+static u64 clock_secs(u64 ticks){
+    time_refresh(ticks);
+    if(g_rtc_ok)return (u64)g_hh*3600+(u64)g_mi*60+(u64)g_ss;
+    return ticks/100;
+}
+/* Format a time of day honouring the Settings toggles: 12h/24h
+ * (cfg_24h) and show/hide seconds (cfg_showsecs). `o` needs 12 bytes.
+ * with_ampm appends " AM"/" PM" in 12h mode. Returns the length. */
+static int fmt_clock(char*o,u64 secs,int with_ampm){
+    int h=(int)((secs/3600)%24),m=(int)((secs/60)%60),sc=(int)(secs%60),k=0,pm=h>=12;
+    if(!cfg_24h){h%=12;if(!h)h=12;if(h>=10)o[k++]='0'+h/10;o[k++]='0'+h%10;}
+    else{o[k++]='0'+h/10;o[k++]='0'+h%10;}
+    o[k++]=':';o[k++]='0'+m/10;o[k++]='0'+m%10;
+    if(cfg_showsecs){o[k++]=':';o[k++]='0'+sc/10;o[k++]='0'+sc%10;}
+    if(with_ampm&&!cfg_24h){o[k++]=' ';o[k++]=pm?'P':'A';o[k++]='M';}
+    o[k]=0;return k;
+}
+static int is_leap(int y){return (y%4==0&&y%100!=0)||y%400==0;}
+static int month_days(int m,int y){
+    static const int d[]={31,28,31,30,31,30,31,31,30,31,30,31};
+    return (m==2&&is_leap(y))?29:d[m-1];
+}
+/* Day of week, 0=Sunday (Sakamoto's algorithm). */
+static int day_of_week(int y,int m,int d){
+    static const int t[]={0,3,2,5,0,3,5,1,4,6,2,4};
+    if(m<3)y--;
+    return (y+y/4-y/100+y/400+t[m-1]+d)%7;
+}
 static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     int hh=(secs/3600)%12,mm=(secs/60)%60,ss=secs%60;
     for(int deg=0;deg<360;deg+=1){
@@ -2123,7 +2183,6 @@ static void draw_analog_clock(int cx,int cy,int r,u64 secs){
     rect(cx-SC(3),cy-SC(3),SC(6),SC(6),WHITE);
 }
 static const char*months[]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-static const int days_in_month[]={31,28,31,30,31,30,31,31,30,31,30,31};
 static const char*day_names[]={"Mo","Tu","We","Th","Fr","Sa","Su"};
 static void draw_calendar(int x,int y,int w,int month,int year,int today){
     char hdr[16];const char*mn=months[month-1];int k=0;
@@ -2131,7 +2190,7 @@ static void draw_calendar(int x,int y,int w,int month,int year,int today){
     hdr[k++]='0'+year/1000;hdr[k++]='0'+(year/100)%10;hdr[k++]='0'+(year/10)%10;hdr[k++]='0'+year%10;hdr[k]=0;
     text_sc_center(x+w/2,y,hdr,TEXT,1);
     for(int d=0;d<7;d++)text_sc(x+SC(4)+d*SC(30),y+SC(22),day_names[d],DIM,0);
-    int col=4,row=0,days=days_in_month[month-1];
+    int col=(day_of_week(year,month,1)+6)%7,row=0,days=month_days(month,year);
     for(int d=1;d<=days;d++){
         int dx=x+SC(4)+col*SC(30),dy=y+SC(44)+row*SC(20);u32 fg=TEXT;
         char ds[3];ds[0]=(d<10)?' ':'0'+d/10;ds[1]='0'+d%10;ds[2]=0;
@@ -2146,12 +2205,26 @@ static void draw_calendar(int x,int y,int w,int month,int year,int today){
     }
 }
 static void draw_digital_clock(int x,int y,u64 secs){ /* x is the horizontal CENTER */
-    u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
-    char t[9];t[0]='0'+hh/10;t[1]='0'+hh%10;t[2]=':';t[3]='0'+mm/10;t[4]='0'+mm%10;t[5]=':';t[6]='0'+ss/10;t[7]='0'+ss%10;t[8]=0;
-    /* 8 glyphs on a 14px (scaled) pitch; total span = 7*pitch + one glyph */
-    int span=7*SC(14)+sc_gw();
-    for(int i=0;t[i];i++)glyph_sc(x-span/2+i*SC(14),y,t[i],ACCENT,1,255);
-    text_sc_center(x,y+SC(28),"Fri May 29 2026",DIM,0);
+    char t[12];int n=fmt_clock(t,secs,0);
+    const char*ap=cfg_24h?0:(((secs/3600)%24>=12)?"PM":"AM");
+    /* n glyphs on a 14px (scaled) pitch; span = (n-1)*pitch + one glyph;
+     * in 12h mode an AM/PM tag follows and the whole group is centred. */
+    int span=(n-1)*SC(14)+sc_gw();
+    int tot=span+(ap?SC(8)+text_sc_w(ap):0);
+    int x0=x-tot/2;
+    for(int i=0;t[i];i++)glyph_sc(x0+i*SC(14),y,t[i],ACCENT,1,255);
+    if(ap)text_sc(x0+span+SC(8),y,ap,ACCENT,1);
+    {
+        static const char*wd3[]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+        char ds[20];int k=0;const char*w=wd3[day_of_week(g_yr,g_mo,g_dy)],*m=months[g_mo-1];
+        ds[k++]=w[0];ds[k++]=w[1];ds[k++]=w[2];ds[k++]=' ';
+        ds[k++]=m[0];ds[k++]=m[1];ds[k++]=m[2];ds[k++]=' ';
+        if(g_dy>=10)ds[k++]='0'+g_dy/10;
+        ds[k++]='0'+g_dy%10;ds[k++]=' ';
+        ds[k++]='0'+g_yr/1000;ds[k++]='0'+(g_yr/100)%10;ds[k++]='0'+(g_yr/10)%10;ds[k++]='0'+g_yr%10;
+        ds[k]=0;
+        text_sc_center(x,y+SC(28),ds,DIM,0);
+    }
 }
 /* Real, live figures via sys_cpuinfo()/sys_meminfo()/sys_mem_total() --
  * both bars were hardcoded ("8%"/"50%", fixed bar widths) until this
@@ -2576,9 +2649,8 @@ static void draw_taskbar(u64 secs){
         char nc2[3];nc2[0]=notif_count<10?('0'+notif_count):'9';nc2[1]=notif_count<10?0:'+';nc2[2]=0;
         text(TBAR_BELL_X+TBAR_BELL_SZ-9,TBAR_BELL_Y-3,nc2,TEXT,RED);
     }
-    u64 hh=(secs/3600)%24,mm=(secs/60)%60,ss=secs%60;
-    char clk[9];clk[0]='0'+hh/10;clk[1]='0'+hh%10;clk[2]=':';clk[3]='0'+mm/10;clk[4]='0'+mm%10;clk[5]=':';clk[6]='0'+ss/10;clk[7]='0'+ss%10;clk[8]=0;
-    text(TBAR_CLOCK_X,TBAR_CLOCK_Y,clk,TEXT,TASKBAR);
+    char clk[12];int cn=fmt_clock(clk,secs,1);
+    text(TBAR_CLOCK_R-cn*8,TBAR_CLOCK_Y,clk,TEXT,TASKBAR);
 }
 
 /* ═══ CURSOR ════════════════════════════════════════════════════ */
@@ -4158,8 +4230,8 @@ static int lock_screen_run(int mode){
 
             wallpaper();
             rect_alpha(0,0,(int)FB_W,(int)FB_H,0x000000,60);
-            {u64 hh=(ticks/100/3600)%24,mm=(ticks/100/60)%60;
-             char cl[6];cl[0]='0'+hh/10;cl[1]='0'+hh%10;cl[2]=':';cl[3]='0'+mm/10;cl[4]='0'+mm%10;cl[5]=0;
+            {u64 cs=clock_secs(ticks);
+             char cl[12];int sv=cfg_showsecs;cfg_showsecs=0;fmt_clock(cl,cs,1);cfg_showsecs=sv;
              text_big_shadow_center((int)FB_W/2,60,cl,TEXT);}
             text_big_shadow_center((int)FB_W/2,gy0-56,"Select User",TEXT);
             if(ucount==0){
@@ -4343,7 +4415,7 @@ int main(void){
     while(1){
         u64 ticks=sys_ticks();
         g_now_ticks=ticks;
-        u64 secs=ticks/100;
+        u64 secs=clock_secs(ticks);
 
         /* TEMPORARY -- Phase 1 regression check for true concurrent
          * multi-program execution. Non-blocking poll, cheap enough to
@@ -5317,7 +5389,7 @@ int main(void){
             panel_card(cardx,y1,cardw,h1);
             draw_stats(cardx+SC(16),y1+SC(16),cardw-SC(32));
             panel_card(cardx,y2,cardw,h2);
-            draw_calendar(cardx+SC(2),y2+SC(16),cardw-SC(4),5,2026,29);
+            draw_calendar(cardx+SC(2),y2+SC(16),cardw-SC(4),g_mo,g_yr,g_dy);
         }
         wm_sort();
         for(int si=0;si<win_count;si++){

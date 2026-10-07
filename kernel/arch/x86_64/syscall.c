@@ -13,6 +13,7 @@
 #include <kernel/fb.h>
 #include <kernel/mouse.h>
 #include <kernel/pmm.h>
+#include <kernel/rtc.h>
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
 static uint8_t syscall_kernel_stack[262144];
@@ -455,6 +456,18 @@ static uint64_t sys_procinfo(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
     return (uint64_t)scheduler_process_count();
 }
 
+/* Wall-clock time, see SYS_RTC in syscall.h. */
+static uint64_t sys_rtc(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    if (a1 == 1) return rtc_debug(0);   /* diagnostics for the 'date' command */
+    if (a1 == 2) return rtc_debug(1);
+    rtc_time_t t;
+    if (rtc_read(&t) != 0) return 0;
+    return ((uint64_t)t.year << 40) | ((uint64_t)t.month << 32) |
+           ((uint64_t)t.day << 24)  | ((uint64_t)t.hour << 16) |
+           ((uint64_t)t.minute << 8) | (uint64_t)t.second;
+}
+
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3;(void)a4;(void)a5;
     char* out = (char*)buf;
@@ -815,7 +828,8 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_mem_total,
     sys_cpuinfo,
     sys_ipcinfo,
-    sys_procinfo
+    sys_procinfo,
+    sys_rtc
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

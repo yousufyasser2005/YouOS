@@ -90,7 +90,12 @@
  * scheduler_process_count()'s comment in scheduler.c. */
 #define SYS_PROCCOUNT     50
 
-#define SYSCALL_COUNT  51
+/* Wall-clock time from the CMOS RTC, packed into one u64:
+ *   year<<40 | month<<32 | day<<24 | hour<<16 | minute<<8 | second
+ * Returns 0 if the RTC is unreadable (year is never 0 on success). */
+#define SYS_RTC           51
+
+#define SYSCALL_COUNT  52
 
 void syscall_init(void);
 #endif

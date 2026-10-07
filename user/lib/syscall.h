@@ -272,3 +272,14 @@ static inline uint64_t sys_ipcinfo(void) {
 static inline uint64_t sys_procinfo(void) {
     return _sc(SYS_PROCCOUNT, 0, 0, 0, 0, 0);
 }
+
+/* Wall-clock time from the CMOS RTC, packed:
+ *   year<<40 | month<<32 | day<<24 | hour<<16 | minute<<8 | second
+ * 0 = RTC unreadable. */
+#define SYS_RTC 51
+static inline uint64_t sys_rtc(void) {
+    return _sc(SYS_RTC, 0, 0, 0, 0, 0);
+}
+static inline uint64_t sys_rtc_debug(int mode) {
+    return _sc(SYS_RTC, (uint64_t)mode + 1, 0, 0, 0, 0);
+}
