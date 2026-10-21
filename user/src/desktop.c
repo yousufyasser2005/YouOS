@@ -1,4 +1,7 @@
 #include "start_icon.h"
+/* Compile-time stamp of THIS build. Shown in the transfer window and printed to the serial
+ * console at start-up, so it is always obvious which desktop binary is really running. */
+#define YOUOS_BUILD __DATE__ " " __TIME__
 #include "../lib/syscall.h"
 
 typedef unsigned int   u32;
@@ -536,6 +539,7 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
 #define WIN_IMGVIEW  6
 #define WIN_VIDEOPLAYER 7
 #define WIN_MEDIAPLAYER 8
+#define WIN_TRANSFER 10   /* file copy progress dialog (see FILE TRANSFER below) */
 #define WIN_PTERM 9  /* Phase 3 of true concurrent multi-program
                        * execution: a window backed by a REAL, separate
                        * process (spawned via sys_spawn_windowed()) as
@@ -544,7 +548,8 @@ static int in_box(int px2,int py,int x,int y,int w,int h){
                        * Multiple WIN_PTERM windows can be open and
                        * running concurrently -- that's the whole point. */
 static const int win_glyph_map[7]={0,2,1,3,5,4,1};
-static int win_glyph_idx(int wid){if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
+static int win_glyph_idx(int wid){if(wid==WIN_TRANSFER)return win_glyph_map[2]; /* same icon as the file manager */
+    if(wid<0||wid>6)return 0;return win_glyph_map[wid];}
 #define NOTIF_MAX 20
 #define NOTIF_POPUP_TICKS 500
 static char notif_title[NOTIF_MAX][32];
@@ -604,9 +609,8 @@ static int  cfg_24h=1,cfg_showsecs=1;
 static int  rctx_open=0,rctx_x=0,rctx_y=0,rctx_target=-1,rctx_hov=-1;
 /* Shared across all File Manager instances (real clipboard semantics —
  * copy in one window, paste in another, like a normal desktop). */
-static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0;
+static char fm_clip[32];static int fm_clip_cut=0,fm_has_clip=0,fm_clip_is_dir=0;
 static char fm_clip_path[200];  /* subdirectory the clipboard item was copied FROM, mirrors fm_path */
-static char fm_cpbuf[4096];
 typedef struct{
     int  ctx_open,ctx_x,ctx_y,ctx_hov;
     int  dialog;
@@ -682,11 +686,24 @@ typedef struct{
 static PTerm pterm_states[MAX_WINDOWS];
 
 
+/* Window slots. A window that was closed and is made NEW every time it is
+ * opened (file manager, notepad, calculator, terminal) is freed with
+ * id = WIN_FREE and its slot is reused here. Before this, closing only hid
+ * a window and its slot was never given back, so after 12 windows had been
+ * opened in a session -- however many were closed -- every open silently
+ * failed until a reboot. */
+#define WIN_FREE (-1)
+static void zero_bytes(void*p,unsigned long n){char*q=(char*)p;for(unsigned long k=0;k<n;k++)q[k]=0;}
 static int wm_new(int id,int x,int y,int w,int h,const char*title,u32 accent){
-    if(win_count>=MAX_WINDOWS)return -1;
-    int i=win_count++;
+    int i=-1;
+    for(int k=0;k<win_count;k++)if(wins[k].id==WIN_FREE){i=k;break;}
+    if(i<0){
+        if(win_count>=MAX_WINDOWS)return -1;
+        i=win_count++;
+    }
+    int ztop=0;for(int k=0;k<win_count;k++)if(k!=i&&wins[k].z>=ztop)ztop=wins[k].z+1;
     wins[i].id=id;wins[i].x=x;wins[i].y=y;wins[i].w=w;wins[i].h=h;
-    wins[i].visible=1;wins[i].minimized=0;wins[i].z=i;wins[i].accent=accent;
+    wins[i].visible=1;wins[i].minimized=0;wins[i].z=ztop;wins[i].accent=accent;
     wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;
     wins[i].min_w=200;wins[i].min_h=120;
     int k=0;while(title[k]&&k<39){wins[i].title[k]=title[k];k++;}wins[i].title[k]=0;
@@ -897,6 +914,7 @@ static void do_restart(void);
 static void wav_debug_print(void);
 static void wav_scan_file(const char*path);
 static void open_new_pterm(const char* prog);
+static void open_new_pterm_arg(const char* prog,const char* arg);
 static int g_rtc_ok; /* defined with the clock code further down */
 static void tcmd(const char*cmd){
     char echo[134];echo[0]='$';echo[1]=' ';int i=0;while(cmd[i]&&i<126){echo[i+2]=cmd[i];i++;}echo[i+2]=0;tprint(echo);
@@ -912,6 +930,12 @@ static void tcmd(const char*cmd){
             ln[k]=0;tprint(ln);
         }
         tprint(g_rtc_ok?"rtc: OK (showing wall clock)":"rtc: FAILED (showing uptime)");
+        return;
+    }
+    if(cmd[0]=='s'&&cmd[1]=='e'&&cmd[2]=='e'&&cmd[3]=='k'&&cmd[4]=='t'&&cmd[5]=='e'&&cmd[6]=='s'&&cmd[7]=='t'&&(cmd[8]==' '||!cmd[8])){
+        const char*pa=cmd+8;while(*pa==' ')pa++;
+        if(!*pa)tprint("usage: seektest <path>   e.g. seektest /ycfs/big.bin");
+        else{open_new_pterm_arg("seektest",pa);tprint("seektest: running in a new terminal window.");}
         return;
     }
     int mh=1,mc=1,ma=1,ms=1,mrb=1,msh=1,ml=1,mi=1,mcrl=1,msll=1,mmdb=1,mwvd=1,mrsl=1,mwsc=1,myr=1,mspt=1,miot=1,mnt=1,mkt=1,mmm=1,mii=1,mpc=1;
@@ -939,7 +963,7 @@ static void tcmd(const char*cmd){
     for(int k=0;mm[k]||cmd[k];k++)  if(mm[k]!=cmd[k])  {mmm=0;break;}
     for(int k=0;ii[k]||cmd[k];k++)  if(ii[k]!=cmd[k])  {mii=0;break;}
     for(int k=0;pc[k]||cmd[k];k++)  if(pc[k]!=cmd[k])  {mpc=0;break;}
-    if(mh)tprint("Commands: help date clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
+    if(mh)tprint("Commands: help date seektest clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -1297,6 +1321,36 @@ static void draw_pterm_content(int i){
 /* ═══ FILE MANAGER ══════════════════════════════════════════════ */
 typedef struct{char name[32];unsigned int size;unsigned char is_dir;}Dirent;
 #define MAX_FILES 64
+#define FT_DIRENT_DEFINED
+/* Millisecond clock for pacing file copies. The kernel runs every syscall with
+ * interrupts OFF, so the 100 Hz tick falls behind during a long disk write and
+ * would make a copy look much faster than it is. The CPU's cycle counter keeps
+ * running regardless; it is calibrated once against the tick (which is accurate
+ * while we are spinning in user mode, interrupts on). */
+static int fmt_u64(char*o,u64 v);   /* defined further down */
+static inline unsigned long long ft_rdtsc(void){unsigned lo,hi;__asm__ volatile("rdtsc":"=a"(lo),"=d"(hi));return((unsigned long long)hi<<32)|lo;}
+static unsigned long long ft_tsc_per_ms=0;
+static void ft_tsc_calibrate(void){
+    if(ft_tsc_per_ms)return;
+    unsigned long long t0=sys_ticks(),c0=ft_rdtsc();
+    while(sys_ticks()-t0<6){}                       /* ~50-60 ms, once */
+    unsigned long long t1=sys_ticks(),c1=ft_rdtsc();
+    unsigned long long ms=(t1-t0)*10ULL;
+    ft_tsc_per_ms=ms?(c1-c0)/ms:0;
+    if(ft_tsc_per_ms<1000||ft_tsc_per_ms>20000000ULL)ft_tsc_per_ms=0;   /* implausible (<1 MHz or >20 GHz): keep using the tick */
+    {   /* one line on the serial console so a wrong calibration is visible */
+        char b[64];int k=0;const char*t="[xfer] cycle counter: ";for(int j=0;t[j];j++)b[k++]=t[j];
+        char nb[24];int nl=fmt_u64(nb,ft_tsc_per_ms);for(int j=0;j<nl;j++)b[k++]=nb[j];
+        const char*u=" kHz";for(int j=0;u[j];j++)b[k++]=u[j];
+        b[k++]='\n';b[k]=0;sys_write(1,b,(u64)k);
+    }
+}
+static unsigned long long ft_now_ms(void){
+    if(!ft_tsc_per_ms)return (unsigned long long)sys_ticks()*10ULL;
+    return ft_rdtsc()/ft_tsc_per_ms;
+}
+#define FT_NOW() ft_now_ms()
+#include "fs_tree.h"
 typedef struct{
     Dirent entries[MAX_FILES];
     int count,scroll,hovered,loaded;
@@ -1524,6 +1578,7 @@ typedef struct{
     char text[NP_BUFSIZE];
     int  text_len,cursor,scroll;
     char filename[48];
+    char path[200];   /* full /ycfs/... path of the open file; empty = root folder (new / Save-As files) */
     int  modified,mode,save_flash;
     char dlg_buf[32];
     int  dlg_len,dlg_hov,dlg_scroll;
@@ -1584,6 +1639,7 @@ static void np_load(const char*path,const char*shortname){
     np.text[np.text_len]=0;sys_close(fd);
     np.cursor=0;np.scroll=0;np.modified=0;
     int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
+    k=0;while(path[k]&&k<199){np.path[k]=path[k];k++;}np.path[k]=0;
 }
 /* ═══ WAV PLAYBACK (streaming-engine redesign) ═══════════════════
  * Previous architecture: chunked userspace polling, one
@@ -1807,8 +1863,10 @@ static void wav_poll(void){
     }
 }
 static void np_do_save(void){
-    char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
-    int k=6,j=0;while(np.filename[j]&&k<55){path[k++]=np.filename[j++];}path[k]=0;
+    char path[200];int j=0;
+    if(np.path[0]){int k=0;while(np.path[k]&&k<199){path[k]=np.path[k];k++;}path[k]=0;}
+    else{path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
+        int k=6;while(np.filename[j]&&k<199){path[k++]=np.filename[j++];}path[k]=0;}
     sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
     np.modified=0;np.save_flash=80;
     for(int fk=0;fk<MAX_WINDOWS;fk++)fml_states[fk].loaded=0;
@@ -1848,6 +1906,7 @@ static void np_do_saveas(void){
         return;
     }
     int ci=0;while(name[ci]&&ci<47){np.filename[ci]=name[ci];ci++;}np.filename[ci]=0;
+    np.path[0]=0;   /* Save As: new file in the root folder */
     np_do_save();np.mode=0;np.dlg_len=0;np.dlg_buf[0]=0;np.mode3_err=0;
 }
 
@@ -3060,14 +3119,16 @@ static void open_terminal(void){int i=find_win(WIN_TERMINAL);if(i>=0){wins[i].vi
  * multiple can be open and genuinely running concurrently at once,
  * same pattern open_files()/open_notepad() already use for their own
  * multi-instance windows. */
-static void open_new_pterm(const char* prog){
+static void open_new_pterm(const char* prog){open_new_pterm_arg(prog,0);}
+static void open_new_pterm_arg(const char* prog,const char* arg){
     int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_PTERM)cnt++;
     int ox=160+(cnt%6)*24,oy=90+(cnt%6)*24;
     int i=wm_new(WIN_PTERM,ox,oy,600,400,"Terminal",cfg_accent);
     if(i<0)return;
     PTerm*p=&pterm_states[i];
+    zero_bytes(p,sizeof(*p));
     p->trow=0;p->tlines[0][0]=0;p->exited=0;
-    int64_t pid=sys_spawn_windowed(prog);
+    int64_t pid=arg?sys_spawn_windowed_arg(prog,arg):sys_spawn_windowed(prog);
     p->pid=pid;
     if(pid<0){
         p->exited=1;
@@ -3082,24 +3143,288 @@ static void open_files(void){
     int i=wm_new(WIN_FILES,ox,oy,560,420,"File Manager",GREEN);
     if(i<0)return;
     fm_current=i;
+    zero_bytes(&fm_states[i],sizeof(fm_states[i]));   /* slots are reused: no leftovers from a closed window */
     fm_states[i].use_fat16=0;
     fm_loaded=0;fm_path_len=0;fm_path[0]=0;
 }
-static void open_notepad(const char*fn){
+static void open_notepad_p(const char*fn,const char*full){
     int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD)cnt++;
     int ox=150+(cnt%6)*24,oy=70+(cnt%6)*24;
     int i=wm_new(WIN_NOTEPAD,ox,oy,580,460,"YC Notepad",YELLOW);
     if(i<0)return;
     np_current=i;
+    zero_bytes(&np_states[i],sizeof(np_states[i]));
     np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
-    np.modified=0;np.mode=0;np.filename[0]=0;
+    np.modified=0;np.mode=0;np.filename[0]=0;np.path[0]=0;
     np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
     if(fn&&fn[0]){
         char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
         int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
-        np_load(path,fn);
+        np_load(full&&full[0]?full:path,fn);
         j=0;while(fn[j]&&j<39){wins[i].title[j]=fn[j];j++;}wins[i].title[j]=0;
     }
+}
+static void open_notepad(const char*fn){open_notepad_p(fn,0);}
+
+/* ═══ FILE TRANSFER ═════════════════════════════════════════════════
+ * Copy + Paste hands the work to the incremental job engine in fs_tree.h
+ * (ft_job_*). xfer_pump() gives it a small slice of time every frame, so
+ * the desktop keeps drawing, the clock keeps ticking and every other
+ * window stays usable while files copy. The progress window can be
+ * minimized like any other and a notification is posted when it finishes.
+ * (Cut + Paste is a single rename and never needs a transfer window.) */
+static int  xfer_win=-1;
+static char xfer_name[40];
+
+static int fmt_u64(char*o,u64 v){char t[24];int n=0;if(!v)t[n++]='0';while(v){t[n++]=(char)('0'+(int)(v%10));v/=10;}int k=0;while(n)o[k++]=t[--n];o[k]=0;return k;}
+/* "512 B", "48.0 KB", "20.0 MB", "1.2 GB" */
+static void fmt_bytes(char*o,u64 b){
+    u64 whole,tenth,div;const char*u;
+    if(b<1024){int k=fmt_u64(o,b);o[k++]=' ';o[k++]='B';o[k]=0;return;}
+    if(b<1024ULL*1024){div=1024ULL;u="KB";}
+    else if(b<1024ULL*1024*1024){div=1024ULL*1024;u="MB";}
+    else{div=1024ULL*1024*1024;u="GB";}
+    whole=b/div;tenth=(b%div)*10/div;
+    int k=fmt_u64(o,whole);o[k++]='.';o[k++]=(char)('0'+(int)tenth);o[k++]=' ';o[k++]=u[0];o[k++]=u[1];o[k]=0;
+}
+static void xfer_refresh_filemanagers(void){
+    int sv=fm_current;
+    for(int k=0;k<win_count;k++)if(wins[k].id==WIN_FILES&&wins[k].visible){fm_current=k;fm_load();}
+    fm_current=sv;
+}
+static void xfer_hide_window(void){
+    if(xfer_win<0)return;
+    wins[xfer_win].visible=0;
+    focused=-1;int bz=-1;
+    for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
+}
+static void xfer_notify(const char*head,const char*tail){
+    char m[64];int k=0,j=0;
+    while(head[j]&&k<40){m[k++]=head[j++];}
+    j=0;while(xfer_name[j]&&k<62){m[k++]=xfer_name[j++];}
+    j=0;while(tail&&tail[j]&&k<62){m[k++]=tail[j++];}
+    m[k]=0;
+    notif_add("File transfer",m);
+}
+/* Start copying src -> dst (dst must not exist). 0 = started; -1 = refused,
+ * with the reason in ft_err. */
+static unsigned long long xfer_input_ms=0;   /* when the user last touched the mouse or keyboard */
+static void xfer_open_window(const char*name,const char*title){
+    {int k=0;while(name[k]&&k<39){xfer_name[k]=name[k];k++;}xfer_name[k]=0;}
+    int i=find_win(WIN_TRANSFER);
+    if(i<0)i=wm_new(WIN_TRANSFER,(int)FB_W/2-210,(int)FB_H/2-110,420,190,title,GREEN);
+    if(i>=0){
+        wins[i].visible=1;wins[i].minimized=0;wins[i].w=420;wins[i].h=190;
+        wins[i].min_w=420;wins[i].min_h=190;wins[i].accent=GREEN;
+        wins[i].anim=ANIM_TICKS;wins[i].anim_type=1;
+        {int k=0;while(title[k]&&k<30){wins[i].title[k]=title[k];k++;}wins[i].title[k]=0;}
+        wm_focus(i);
+    }
+    xfer_win=i;
+}
+static int xfer_begin(const char*src,const char*dst,int is_dir,const char*name){
+    ft_tsc_calibrate();
+    xfer_input_ms=ft_now_ms();
+    if(ft_job_start(src,dst,is_dir)!=0)return -1;
+    xfer_open_window(name,"Copying");
+    return 0;
+}
+/* Delete a folder (and everything in it) without freezing the desktop. */
+static int xfer_begin_delete(const char*path,int is_dir,const char*name){
+    ft_tsc_calibrate();
+    xfer_input_ms=ft_now_ms();
+    if(ft_job_start_delete(path,is_dir)!=0)return -1;
+    xfer_open_window(name,"Deleting");
+    return 0;
+}
+static void xfer_set_title(const char*prefix,int pct){
+    if(xfer_win<0)return;
+    char*t=wins[xfer_win].title;int k=0,j=0;
+    while(prefix[j]&&k<30)t[k++]=prefix[j++];
+    if(pct>=0){t[k++]=' ';char nb[8];int nl=fmt_u64(nb,(u64)pct);for(int q=0;q<nl;q++)t[k++]=nb[q];t[k++]='%';}
+    t[k]=0;
+}
+/* Called once per frame, before drawing.
+ *
+ * Pacing. Every disk operation runs with interrupts off and can take tens of
+ * milliseconds, so how much of each frame the job may use decides how the
+ * desktop feels:
+ *   - while the user is active (mouse moved/clicked, key pressed in the last
+ *     600 ms) a job gets ONE short slice, and only when at least three times
+ *     the last slice has passed since it ended -- at most ~25% of the time --
+ *     so dragging windows and clicking stay smooth;
+ *   - when nobody is touching the machine it gets up to 70 ms per frame and
+ *     finishes as fast as the disk allows.
+ * Once a second it prints one timing line to the serial console. */
+static unsigned long long xfer_slice_end=0,xfer_slice_ms=0;
+static unsigned long long xfer_dbg_t=0,xfer_dbg_last=0,xfer_dbg_copy=0,xfer_dbg_maxf=0;
+static unsigned xfer_dbg_frames=0;
+static void xfer_dbg_print(int idle){
+    char b[160];int k=0;
+    const char*t="[xfer] ";for(int j=0;t[j];j++)b[k++]=t[j];
+    unsigned long long span=xfer_dbg_last-xfer_dbg_t;if(!span)span=1;
+    unsigned long long f=xfer_dbg_frames?xfer_dbg_frames:1;
+    char nb[24];
+    #define PUTS(str) {const char*q_=str;for(int j_=0;q_[j_];j_++)b[k++]=q_[j_];}
+    #define PUTN(v) {int nl_=fmt_u64(nb,(u64)(v));for(int j_=0;j_<nl_;j_++)b[k++]=nb[j_];}
+    PUTS("frames=");PUTN(xfer_dbg_frames);
+    PUTS(" avg=");PUTN(span/f);PUTS("ms max=");PUTN(xfer_dbg_maxf);PUTS("ms");
+    PUTS(" copy=");PUTN(xfer_dbg_copy/f);PUTS("ms/frame");
+    PUTS(idle?" idle":" busy");
+    if(ft_job.kind==FTK_DELETE){PUTS(" items=");PUTN(ft_job.done_items);PUTS("/");PUTN(ft_job.total_items);}
+    else{PUTS(" chunk=");PUTN(ft_job.chunk_len/1024);PUTS("KB last=");PUTN(ft_job.last_chunk_ms);PUTS("ms");
+         PUTS(" rate=");PUTN(ft_job.rate_bpms);PUTS("KB/s");}
+    b[k++]='\n';b[k]=0;
+    #undef PUTS
+    #undef PUTN
+    sys_write(1,b,(u64)k);
+}
+static void xfer_pump(void){
+    if(!ftj_active())return;
+    unsigned long long now=ft_now_ms();
+    static int pmx=-1,pmy=-1,pbtn=0;
+    if(mouse_x!=pmx||mouse_y!=pmy||mouse_btn!=pbtn){xfer_input_ms=now;pmx=mouse_x;pmy=mouse_y;pbtn=mouse_btn;}
+    int idle=(now-xfer_input_ms)>600;
+
+    /* frame statistics for the once-a-second serial line */
+    if(!xfer_dbg_t){xfer_dbg_t=now;xfer_dbg_last=now;xfer_dbg_frames=0;xfer_dbg_copy=0;xfer_dbg_maxf=0;}
+    else{unsigned long long fm=now-xfer_dbg_last;if(fm>xfer_dbg_maxf)xfer_dbg_maxf=fm;}
+    xfer_dbg_last=now;xfer_dbg_frames++;
+
+    int run=1;
+    if(!idle&&xfer_slice_ms&&now-xfer_slice_end<3*xfer_slice_ms)run=0;     /* let the desktop have the next few frames */
+    if(run){
+        ft_job.target_ms=idle?400:200;                                     /* longest allowed round trip: short while the user is active */
+        unsigned long long t0=ft_now_ms();
+        ft_job_step_n(idle?100:1,idle?4:1);                  /* time budget AND a hard iteration cap: idle frames stay ~150 ms so the progress keeps moving */
+        unsigned long long t1=ft_now_ms();
+        xfer_slice_ms=t1-t0;xfer_slice_end=t1;xfer_dbg_copy+=xfer_slice_ms;
+    }
+    if(now-xfer_dbg_t>=1000){xfer_dbg_print(idle);xfer_dbg_t=0;}
+
+    if(ftj_active()){
+        int isdel=ft_job.kind==FTK_DELETE;
+        xfer_set_title(isdel?"Deleting":(ft_job.state==FTJ_SCAN?"Preparing":"Copying"),ft_job.state==FTJ_SCAN||(isdel&&!ft_job.total_known)?-1:ft_job_percent());
+        return;
+    }
+    xfer_dbg_t=0;
+    /* the job just ended */
+    int isdel=ft_job.kind==FTK_DELETE;
+    if(ft_job.state==FTJ_DONE){
+        xfer_hide_window();
+        xfer_notify(isdel?"Deleted ":"Copied ",0);
+    } else if(ft_job.state==FTJ_ERROR){
+        xfer_set_title(isdel?"Delete failed":"Copy failed",-1);
+        if(xfer_win>=0&&!wins[xfer_win].visible){wins[xfer_win].visible=1;wins[xfer_win].minimized=0;wm_focus(xfer_win);}
+        xfer_notify(isdel?"Delete failed: ":"Copy failed: ",0);
+    }
+    xfer_refresh_filemanagers();
+}
+static void xfer_cancel(void){
+    if(!ftj_active())return;
+    int isdel=ft_job.kind==FTK_DELETE;
+    ft_job_cancel();
+    xfer_hide_window();
+    xfer_notify(isdel?"Stopped deleting ":"Cancelled copying ",0);
+    xfer_refresh_filemanagers();
+}
+/* Close window i: stop what backs it, release per-window references, and
+ * give its slot back if the window type is created fresh on every open
+ * (file manager, notepad, calculator, terminal, media player). */
+static void wm_close(int i){
+    Win*w=&wins[i];
+    int id=w->id;
+    if(id==WIN_TRANSFER&&ftj_active()){xfer_cancel();return;}      /* closing a running copy cancels it */
+    if(id==WIN_PTERM){
+        if(!pterm_states[i].exited){
+            sys_kill(pterm_states[i].pid);
+            sys_wait_nonblock(pterm_states[i].pid);
+            pterm_states[i].exited=1;
+        }
+        pterm_states[i].pid=-1;
+    }
+    if(id==WIN_NOTEPAD){np_current=i;np.mode=0;}
+    if(id==WIN_SETTINGS)settings_win_idx=-1;
+    if(id==WIN_CALC)calc_current=-1;
+    if(id==WIN_MEDIAPLAYER&&i==media_win)media_win=-1;   /* the player reuses its window only while it is open */
+    w->visible=0;w->minimized=0;
+    if(id==WIN_FILES||id==WIN_NOTEPAD||id==WIN_CALC||id==WIN_PTERM||id==WIN_MEDIAPLAYER)w->id=WIN_FREE;
+    focused=-1;int bz=-1;
+    for(int k=0;k<win_count;k++)if(wins[k].visible&&wins[k].z>bz){bz=wins[k].z;focused=k;}
+}
+static void draw_transfer_content(int i){
+    Win*w=&wins[i];
+    int x=w->x+16,y=w->y+TITLEBAR_H+14,cw=w->w-32;
+    int st=ft_job.state;
+    char ln[96];int k=0,j=0;
+    int isdel=ft_job.kind==FTK_DELETE;
+    const char*verb=st==FTJ_SCAN?"Preparing: ":st==FTJ_COPY?(isdel?"Deleting: ":"Copying: "):st==FTJ_DONE?"Finished: ":st==FTJ_ERROR?(isdel?"Delete failed: ":"Copy failed: "):"Cancelled: ";
+    while(verb[j]&&k<40)ln[k++]=verb[j++];
+    j=0;while(xfer_name[j]&&k<47)ln[k++]=xfer_name[j++];
+    ln[k]=0;
+    text(x,y,ln,TEXT,0x0D1117);
+
+    int pct=ft_job_percent();
+    int by=y+28;
+    rect_round(x,by,cw,16,8,0x21262D);
+    int fw=cw*pct/100;if(pct>0&&fw<16)fw=16;
+    if(isdel&&!ft_job.total_known&&ftj_active()){      /* too big to count: a block that sweeps back and forth */
+        int seg=80,span=cw-seg,ph=(int)(ft_job.done_items*6%(unsigned)(2*span));if(ph>span)ph=2*span-ph;
+        rect_round(x+ph,by,seg,16,8,ACCENT);
+    } else
+    if(fw>0)rect_round(x,by,fw,16,8,st==FTJ_ERROR?RED:ACCENT);
+    outline_round(x,by,cw,16,8,BORDER);
+
+    char a[24],b[24],num[24],l2[80];
+    fmt_bytes(a,ft_job.done_bytes);fmt_bytes(b,ft_job.total_bytes);
+    k=0;
+    if(isdel&&!ft_job.total_known&&st!=FTJ_DONE){const char*m="working...  ";for(j=0;m[j];j++)l2[k++]=m[j];}
+    else{int nl=fmt_u64(num,(u64)pct);for(int q=0;q<nl;q++)l2[k++]=num[q];l2[k++]='%';l2[k++]=' ';l2[k++]=' ';}
+    if(st==FTJ_SCAN){const char*m="counting files...";for(j=0;m[j];j++)l2[k++]=m[j];}
+    else if(isdel){int nl=fmt_u64(num,ft_job.done_items);for(int q=0;q<nl;q++)l2[k++]=num[q];
+        const char*m=" items removed";for(j=0;m[j];j++)l2[k++]=m[j];}
+    else{for(j=0;a[j];j++)l2[k++]=a[j];l2[k++]=' ';l2[k++]='o';l2[k++]='f';l2[k++]=' ';for(j=0;b[j];j++)l2[k++]=b[j];}
+    l2[k]=0;
+    text(x,by+26,l2,TEXT,0x0D1117);
+
+    /* speed and time left (only once enough time has passed to be meaningful) */
+    u64 el=ft_now_ms()-ft_job.t_start;               /* milliseconds, from the cycle counter */
+    if(!isdel&&st==FTJ_COPY&&el>=500&&ft_job.done_bytes>0){
+        u64 bps=ft_job.done_bytes*1000/el;
+        char sp[24],sl[40];fmt_bytes(sp,bps);
+        k=0;for(j=0;sp[j];j++)sl[k++]=sp[j];sl[k++]='/';sl[k++]='s';
+        if(bps>0&&ft_job.total_bytes>ft_job.done_bytes){
+            u64 left=(ft_job.total_bytes-ft_job.done_bytes)/bps;
+            sl[k++]=' ';sl[k++]='-';sl[k++]=' ';
+            if(left>=60){int nl=fmt_u64(num,left/60);for(int q=0;q<nl;q++)sl[k++]=num[q];sl[k++]='m';sl[k++]=' ';}
+            {int nl=fmt_u64(num,left%60);for(int q=0;q<nl;q++)sl[k++]=num[q];sl[k++]='s';}
+            sl[k++]=' ';sl[k++]='l';sl[k++]='e';sl[k++]='f';sl[k++]='t';
+        }
+        sl[k]=0;
+        text(x+cw-k*8,by+26,sl,DIM,0x0D1117);
+    }
+    /* file count */
+    if(!isdel){char fa[16],fb[16],fl[48];k=0;
+     int n1=fmt_u64(fa,ft_job.done_files),n2=fmt_u64(fb,ft_job.total_files);
+     const char*pf="Files: ";for(j=0;pf[j];j++)fl[k++]=pf[j];
+     for(int q=0;q<n1;q++)fl[k++]=fa[q];fl[k++]=' ';fl[k++]='o';fl[k++]='f';fl[k++]=' ';for(int q=0;q<n2;q++)fl[k++]=fb[q];fl[k]=0;
+     text(x,by+46,fl,DIM,0x0D1117);}
+    if(st==FTJ_ERROR)text(x,by+66,ft_job.err,RED,0x0D1117);
+    else if(!isdel&&st==FTJ_COPY&&ft_job.last_chunk_ms>0){      /* small diagnostic: how the disk is doing */
+        char dg[48];int q=0;const char*t1="step ";for(j=0;t1[j];j++)dg[q++]=t1[j];
+        char cb[16];fmt_bytes(cb,(u64)ft_job.chunk_len);for(j=0;cb[j];j++)dg[q++]=cb[j];
+        dg[q++]=' ';dg[q++]='/';dg[q++]=' ';{int nl=fmt_u64(num,ft_job.last_chunk_ms);for(int z=0;z<nl;z++)dg[q++]=num[z];}
+        dg[q++]=' ';dg[q++]='m';dg[q++]='s';dg[q]=0;
+        text(x,by+66,dg,0x484F58,0x0D1117);
+    }
+
+    /* Cancel while running, Close once it has ended */
+    int bx=w->x+w->w-16-84,by2=w->y+w->h-14-28;
+    int hov=in_box(mouse_x,mouse_y,bx,by2,84,28);
+    rect_round(bx,by2,84,28,8,hov?0x2D333B:0x21262D);
+    outline_round(bx,by2,84,28,8,hov?0x79C0FF:BORDER);
+    text_center(bx+42,by2+6,ftj_active()?"Cancel":"Close",TEXT,hov?0x2D333B:0x21262D);
+    text(x,by2+8,"build " YOUOS_BUILD,0x484F58,0x0D1117);   /* which binary is this? */
 }
 
 /* ═══ IMAGE VIEWER (PNG/JPEG) ═══════════════════════════════════════
@@ -3535,6 +3860,7 @@ static void open_calc(void){
     int i=wm_new(WIN_CALC,ox,oy,280,380,"Calculator",ACCENT);
     if(i<0)return;
     calc_current=i;
+    zero_bytes(&calc_states[i],sizeof(calc_states[i]));
     calc.expr_len=0;calc.expr[0]=0;calc.has_result=0;
     calc.error=0;calc.hist_count=0;
 }
@@ -4392,6 +4718,7 @@ static void draw_loading_splash(int spin_deg){
 }
 int main(void){
     u64 info[5];
+    {const char*bl="[desktop] build " YOUOS_BUILD "\n";int n=0;while(bl[n])n++;sys_write(1,bl,(u64)n);}
     if(sys_fbinfo(info)!=0)return 1;
     FB_W=info[1];FB_H=info[2];
     if(FB_W>MAX_FB_W)FB_W=MAX_FB_W;
@@ -4557,13 +4884,7 @@ int main(void){
                         Win*rw=&wins[rctx_target];
                         if(ci2==0){rw->minimized=!rw->minimized;rw->anim=ANIM_TICKS;rw->anim_type=rw->minimized?3:1;}
                         else if(ci2==1){if(rw->w<700){rw->x=0;rw->y=0;rw->w=(int)FB_W;rw->h=(int)FB_H-TBAR_H;}else{rw->x=100;rw->y=60;rw->w=560;rw->h=420;}}
-                        else if(ci2==2){
-                            rw->visible=0;
-                            if(wins[rctx_target].id==WIN_NOTEPAD){np_current=rctx_target;np.mode=0;}
-                            if(wins[rctx_target].id==WIN_SETTINGS)settings_win_idx=-1;
-                            focused=-1;int cbz=-1;
-                            for(int ck=0;ck<win_count;ck++)if(wins[ck].visible&&wins[ck].z>cbz){cbz=wins[ck].z;focused=ck;}
-                        }
+                        else if(ci2==2)wm_close(rctx_target);
                     }
                 }
                 ciy+=CTX_ITEM_H;
@@ -4667,18 +4988,7 @@ int main(void){
                      * need to wait for the per-frame poll to notice)
                      * -- matches how a real terminal emulator closes
                      * even with a foreground process still running. */
-                    if(wins[hit].id==WIN_PTERM&&!pterm_states[hit].exited){
-                        sys_kill(pterm_states[hit].pid);
-                        sys_wait_nonblock(pterm_states[hit].pid);
-                        pterm_states[hit].exited=1;
-                    }
-                    w->visible=0;
-                    if(wins[hit].id==WIN_NOTEPAD){np_current=hit;np.mode=0;}
-                    if(wins[hit].id==WIN_SETTINGS)settings_win_idx=-1;
-                    if(wins[hit].id==WIN_CALC)calc_current=-1;
-                    if(wins[hit].id==WIN_PTERM)pterm_states[hit].pid=-1;
-                    focused=-1;int bz=-1;
-                    for(int i=0;i<win_count;i++)if(wins[i].visible&&wins[i].z>bz){bz=wins[i].z;focused=i;}
+                    wm_close(hit);
                     goto click_done;
                 }
                 /* minimize */
@@ -4733,7 +5043,7 @@ int main(void){
                     int bary=w->y+TITLEBAR_H;
                     if(in_box(mouse_x,mouse_y,w->x+4,bary+4,40,20)){
                         np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
-                        np.modified=0;np.filename[0]=0;np.mode=0;
+                        np.modified=0;np.filename[0]=0;np.path[0]=0;np.mode=0;
                         if(np_current>=0){int j=0;const char*t="YC Notepad";while(t[j]&&j<39){wins[np_current].title[j]=t[j];j++;}wins[np_current].title[j]=0;}
                         goto click_done;
                     }
@@ -4785,6 +5095,15 @@ int main(void){
                             if(np.cursor>np.text_len)np.cursor=np.text_len;
                             goto click_done;
                         }
+                    }
+                }
+                /* file transfer window: Cancel / Close button */
+                if(w->id==WIN_TRANSFER&&!w->minimized){
+                    int tbx=w->x+w->w-16-84,tby=w->y+w->h-14-28;
+                    if(in_box(mouse_x,mouse_y,tbx,tby,84,28)){
+                        if(ftj_active())xfer_cancel();
+                        else{xfer_hide_window();}
+                        goto click_done;
                     }
                 }
                 /* calculator window */
@@ -4870,7 +5189,15 @@ int main(void){
                         if(in_box(mouse_x,mouse_y,ddx+30,ddy+60,80,22)){
                             char dpath[220];
                             fm_build_path(dpath,sizeof(dpath),fm_path,fm_entries[fm_selected].name);
-                            sys_unlink(dpath);fm_selected=-1;fm_dialog=0;fm_load();
+                            ft_err="";
+                            int drc;
+                            if(fm_entries[fm_selected].is_dir){
+                                /* A folder can hold thousands of files: remove it in the background
+                                 * with a progress window instead of freezing the desktop. */
+                                drc=xfer_begin_delete(dpath,1,fm_entries[fm_selected].name);
+                            } else drc=ft_remove_tree(dpath,0,0);          /* one file: a single quick unlink */
+                            fm_selected=-1;fm_dialog=0;fm_load();
+                            if(drc!=0){int ei=0;while(ft_err[ei]&&ei<47){fm_paste_err[ei]=ft_err[ei];ei++;}fm_paste_err[ei]=0;}
                         } else fm_dialog=0;
                         goto click_done;
                     }
@@ -4999,64 +5326,46 @@ int main(void){
                             fm_dialog=3;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
                         } else if(clicked==2&&fm_selected>=0){
                             int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
-                            fm_has_clip=1;fm_clip_cut=0;
+                            fm_has_clip=1;fm_clip_cut=0;fm_clip_is_dir=fm_entries[fm_selected].is_dir;
                             {int cpi=0;while(fm_path[cpi]&&cpi<63){fm_clip_path[cpi]=fm_path[cpi];cpi++;}fm_clip_path[cpi]=0;}
                         } else if(clicked==3&&fm_selected>=0){
                             int ci=0;while(fm_entries[fm_selected].name[ci]&&ci<31){fm_clip[ci]=fm_entries[fm_selected].name[ci];ci++;}fm_clip[ci]=0;
-                            fm_has_clip=1;fm_clip_cut=1;
+                            fm_has_clip=1;fm_clip_cut=1;fm_clip_is_dir=fm_entries[fm_selected].is_dir;
                             {int cpi=0;while(fm_path[cpi]&&cpi<63){fm_clip_path[cpi]=fm_path[cpi];cpi++;}fm_clip_path[cpi]=0;}
                         } else if(clicked==4&&fm_has_clip){
                             char spath[220];
                             fm_build_path(spath,sizeof(spath),fm_clip_path,fm_clip);
-                            u64 fd=sys_open(spath,0);
-                            if((s64)fd>=0){
-                                /* Destination name: use the original name by
-                                 * default (correct for Cut/move always, and
-                                 * for Copy into a different location). Only
-                                 * fall back to a "copy_" prefix for Copy when
-                                 * a file with the exact same name already
-                                 * exists at the destination — previously this
-                                 * prefix was applied unconditionally, which
-                                 * both looked wrong for ordinary copies and
-                                 * broke Cut (a moved file should keep its own
-                                 * name, not become "copy_name"). */
-                                char dpath_probe[220];
-                                fm_build_path(dpath_probe,sizeof(dpath_probe),fm_path,fm_clip);
-                                u64 probe_fd=sys_open(dpath_probe,0);
-                                int name_collision=((s64)probe_fd>=0);
-                                if(name_collision)sys_close(probe_fd);
-
+                            char dpath_probe[220];
+                            fm_build_path(dpath_probe,sizeof(dpath_probe),fm_path,fm_clip);
+                            int name_collision=ft_exists(dpath_probe);
+                            ft_err="";
+                            int rc=0;
+                            if(!ft_exists(spath)){
+                                ft_err="source no longer exists";rc=-1;
+                            } else if(fm_clip_cut){
+                                /* Cut + Paste = MOVE. One rename: instant, no size
+                                 * limit, and a folder keeps everything inside it.
+                                 * (It used to read the item as a file, write a copy
+                                 * and unlink the original -- for a folder that
+                                 * produced an empty file and orphaned the contents.) */
+                                int same=1;{int q=0;while(fm_clip_path[q]||fm_path[q]){if(fm_clip_path[q]!=fm_path[q]){same=0;break;}q++;}}
+                                if(same){ /* pasted back where it came from: nothing to move */ }
+                                else if(name_collision){ft_err="an item with that name exists here";rc=-1;}
+                                else if(sys_rename(spath,dpath_probe)!=0){ft_err="move failed (into itself, or no access)";rc=-1;}
+                                if(rc==0)fm_has_clip=0;
+                            } else {
+                                /* Copy keeps the original name unless that name is taken
+                                 * at the destination, then it gets a "copy_" prefix. */
                                 char dname[40];int di=0;
-                                if(name_collision&&!fm_clip_cut){
-                                    dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';
-                                }
+                                if(name_collision){dname[di++]='c';dname[di++]='o';dname[di++]='p';dname[di++]='y';dname[di++]='_';}
                                 int sj=0;while(fm_clip[sj]&&di<38){dname[di++]=fm_clip[sj++];}dname[di]=0;
                                 char dpath[220];
                                 fm_build_path(dpath,sizeof(dpath),fm_path,dname);
-                                int total=0;s64 nr;
-                                /* Bounded against sizeof(fm_cpbuf) — the previous
-                                 * version had no capacity check at all and would
-                                 * silently overflow this static buffer for any
-                                 * source file larger than 4096 bytes (e.g. a
-                                 * ~3MB wallpaper BMP), corrupting adjacent static
-                                 * data badly enough to hang the whole system. */
-                                while(total<(int)sizeof(fm_cpbuf)){
-                                    int room=(int)sizeof(fm_cpbuf)-total;
-                                    int chunk=room<128?room:128;
-                                    nr=(s64)sys_fread(fd,fm_cpbuf+total,(u64)chunk);
-                                    if(nr<=0)break;
-                                    total+=(int)nr;
-                                }
-                                sys_close(fd);
-                                if(total>=(int)sizeof(fm_cpbuf)){
-                                    const char*em="File too large to copy (max 4KB)";
-                                    int ei=0;while(em[ei]&&ei<47){fm_paste_err[ei]=em[ei];ei++;}fm_paste_err[ei]=0;
-                                } else {
-                                    sys_save_file((u64)dpath,(u64)fm_cpbuf,(u64)total);
-                                    if(fm_clip_cut){sys_unlink(spath);fm_has_clip=0;}
-                                    fm_load();
-                                }
+                                if(name_collision&&ft_exists(dpath)){ft_err="copy_ name already exists here";rc=-1;}
+                                else rc=xfer_begin(spath,dpath,fm_clip_is_dir,dname);   /* non-blocking: progress window */
                             }
+                            fm_load();
+                            if(rc!=0){int ei=0;while(ft_err[ei]&&ei<47){fm_paste_err[ei]=ft_err[ei];ei++;}fm_paste_err[ei]=0;}
                         } else if(clicked==5&&fm_selected>=0){
                             fm_dialog=2;fm_dlg_len=0;fm_dlg_buf[0]=0;fm_dlg_has_err=0;
                         } else if(clicked==6&&fm_selected>=0){
@@ -5104,7 +5413,7 @@ int main(void){
                                 } else if(!fm_entries[fi].is_dir){
                                     char*n=fm_entries[fi].name;int nl=slen(n);
                                     if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
-                                        open_notepad(n);
+                                        {char full[220];fm_build_path(full,sizeof(full),fm_path,n);open_notepad_p(n,full);}
                                     else if((nl>4&&n[nl-4]=='.'&&n[nl-3]=='w'&&n[nl-2]=='a'&&n[nl-1]=='v')
                                           ||(nl>4&&n[nl-4]=='.'&&n[nl-3]=='p'&&n[nl-2]=='n'&&n[nl-1]=='g')
                                           ||(nl>4&&n[nl-4]=='.'&&n[nl-3]=='j'&&n[nl-2]=='p'&&n[nl-1]=='g')
@@ -5161,6 +5470,7 @@ int main(void){
 
         /* keyboard */
         s64 ch=sys_keypoll();
+        if(ch!=0)xfer_input_ms=ft_now_ms();   /* typing counts as activity for copy pacing */
         if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch);}
         if(ch!=0&&menu_open){
             if(ch>0&&ch<256){
@@ -5391,6 +5701,7 @@ int main(void){
             panel_card(cardx,y2,cardw,h2);
             draw_calendar(cardx+SC(2),y2+SC(16),cardw-SC(4),g_mo,g_yr,g_dy);
         }
+        xfer_pump();   /* give a running file copy its slice of this frame */
         wm_sort();
         for(int si=0;si<win_count;si++){
             int i=z_order[si];if(!wins[i].visible||wins[i].minimized)continue;
@@ -5403,6 +5714,7 @@ int main(void){
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
             else if(wins[i].id==WIN_MEDIAPLAYER)draw_mediaplayer_content(i);
             else if(wins[i].id==WIN_PTERM)draw_pterm_content(i);
+            else if(wins[i].id==WIN_TRANSFER)draw_transfer_content(i);
             if(hover_preview_group>=0){
                 for(int gk=0;gk<taskbar_groups[hover_preview_group].count;gk++)
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);

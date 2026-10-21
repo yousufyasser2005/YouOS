@@ -62,6 +62,11 @@ int  fat16_is_initialized(void);
 int  fat16_open(const char* path);
 int  fat16_read(int fd, void* buf, uint32_t size);
 int  fat16_close(int fd);
+/* Reposition a read-only fd to absolute byte `pos` (clamped to file
+ * size). 0 on success, -1 on a bad fd, a writable fd, or a corrupt
+ * cluster chain. */
+int      fat16_seek(int fd, uint32_t pos);
+uint32_t fat16_file_size(int fd);
 int  fat16_write(int fd, const void* buf, uint32_t size);
 int  fat16_create(const char* path);
 

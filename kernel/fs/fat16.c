@@ -23,13 +23,26 @@ static int write_sector(uint32_t lba, const void* buf) {
 }
 
 /* ── FAT helpers ─────────────────────────────────────────────── */
+/* One-sector FAT cache. Following a cluster chain used to cost a full
+ * disk-sector read PER LINK; a sector holds 256 entries, so consecutive
+ * links almost always hit the same one. Every code path that writes the
+ * FAT must call fat_cache_invalidate() after its write_sector() calls. */
+static uint32_t fat_cache_lba = 0xFFFFFFFFu;
+static uint8_t  fat_cache_buf[512];
+static void fat_cache_invalidate(void) { fat_cache_lba = 0xFFFFFFFFu; }
+
 static uint16_t fat_get(uint16_t cluster) {
     uint32_t fat_offset = cluster * 2;
     uint32_t fat_sector = fat_start_lba + fat_offset / 512;
     uint32_t offset_in_sector = fat_offset % 512;
-    uint8_t buf[512];
-    read_sector(fat_sector, buf);
-    return *(uint16_t*)(buf + offset_in_sector);
+    if (fat_cache_lba != fat_sector) {
+        if (read_sector(fat_sector, fat_cache_buf) != 0) {
+            fat_cache_invalidate();
+            return 0xFFFF; /* unreadable FAT: treat as end-of-chain */
+        }
+        fat_cache_lba = fat_sector;
+    }
+    return *(uint16_t*)(fat_cache_buf + offset_in_sector);
 }
 
 static void fat_set(uint16_t cluster, uint16_t value) {
@@ -43,6 +56,7 @@ static void fat_set(uint16_t cluster, uint16_t value) {
     /* Write second FAT copy too */
     uint32_t fat2 = fat_sector + bpb.sectors_per_fat;
     write_sector(fat2, buf);
+    fat_cache_invalidate();
 }
 
 static uint16_t fat_alloc_cluster(void) {
@@ -59,6 +73,7 @@ static uint16_t fat_alloc_cluster(void) {
                 entries[i] = 0xFFFF; /* mark end-of-chain */
                 write_sector(fat_start_lba + s, buf);
                 write_sector(fat_start_lba + s + bpb.sectors_per_fat, buf);
+                fat_cache_invalidate();
                 return cluster;
             }
         }
@@ -673,4 +688,47 @@ int fat16_list_dir(const char* path, fat16_entry_t* entries, int max_entries) {
     }
 done:
     return count;
+}
+
+uint32_t fat16_file_size(int fd) {
+    if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return 0;
+    return fds[fd].file_size;
+}
+
+/* Walk the cluster chain to the cluster containing `pos` and park the
+ * fd's cursor there, so the next fat16_read() continues from `pos`.
+ * Walks forward from the current cluster when the target is ahead of
+ * it, otherwise restarts from the file's first cluster. */
+int fat16_seek(int fd, uint32_t pos) {
+    if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return -1;
+    fat16_fd_t* f = &fds[fd];
+    if (f->writable) return -1;
+    if (pos > f->file_size) pos = f->file_size;
+
+    uint32_t cs         = sectors_per_cluster * 512;
+    uint32_t target_idx = pos / cs;
+    uint32_t target_off = pos % cs;
+    uint32_t cur_idx    = (f->position - f->cluster_offset) / cs;
+
+    uint16_t c;
+    uint32_t idx;
+    if (f->cur_cluster >= 2 && f->cur_cluster < FAT16_EOC && target_idx >= cur_idx) {
+        c = f->cur_cluster; idx = cur_idx;
+    } else {
+        c = f->first_cluster; idx = 0;
+    }
+    while (idx < target_idx) {
+        if (c < 2 || c >= FAT16_EOC) return -1;   /* chain ended early */
+        c = fat_get(c);
+        idx++;
+    }
+    /* Anywhere before EOF needs a real cluster to read from. Exactly at
+     * EOF the chain may legitimately have ended (c == EOC), which is the
+     * same state fat16_read() itself leaves after reading the last byte. */
+    if (pos < f->file_size && (c < 2 || c >= FAT16_EOC)) return -1;
+
+    f->cur_cluster    = c;
+    f->cluster_offset = target_off;
+    f->position       = pos;
+    return 0;
 }

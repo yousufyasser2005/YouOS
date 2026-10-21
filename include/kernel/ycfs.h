@@ -7,9 +7,19 @@
  * YCFS — Yousuf-Claude File System
  * Phase 1: read-only, real nested directories, bitmap-based free space.
  *
- * Lives in a fixed 16MB region starting 64MB into disk.img (well past
- * FAT16's own 32MB extent) — no second physical drive needed, since the
- * ATA driver only supports one. Mounted at /ycfs alongside FAT16's /disk.
+ * Starts 64MB into the disk (well past FAT16's own extent) and runs to
+ * the end of the disk -- its size comes from the superblock, so the same
+ * driver handles anything from a 16MB test image to a multi-TB drive.
+ * No second physical drive needed, since the ATA driver only supports
+ * one. Mounted at /ycfs alongside FAT16's /disk.
+ *
+ * Format versions:
+ *   v1  one-block bitmaps (max 128MB), files up to 12 direct + 1 indirect
+ *       block (~4MB).
+ *   v2  multi-block bitmaps (any size up to 16TB), persistent allocation
+ *       hints, plus a double-indirect block per inode (files up to ~4GB).
+ * The driver reads both; v1 superblocks simply have zeros in the new
+ * fields, which mean "one bitmap block, hint 0".
  */
 
 #define YCFS_MAGIC          0x59434653u   /* "YCFS" */
@@ -38,7 +48,12 @@ typedef struct {
     uint32_t root_inode;
     uint32_t journal_start_block;  /* phase 3 */
     uint32_t journal_num_blocks;   /* 0 = no journal (old/unformatted) */
-    uint8_t  reserved[4096 - 60];
+    /* ---- v2 fields (all zero in a v1 image) ---- */
+    uint32_t block_bitmap_blocks;  /* length of the block bitmap in blocks; 0 = 1 */
+    uint32_t inode_bitmap_blocks;  /* length of the inode bitmap in blocks; 0 = 1 */
+    uint32_t block_hint;           /* where the next free-block search starts */
+    uint32_t inode_hint;           /* where the next free-inode search starts */
+    uint8_t  reserved[4096 - 76];
 } __attribute__((packed)) ycfs_superblock_t;
 
 /* ---- Phase 3: journaling ----
@@ -91,7 +106,8 @@ typedef struct {
     uint32_t uid;            /* owner user ID (0 = root) */
     uint32_t gid;            /* owner group ID (0 = root group) */
     uint16_t perm;           /* rwxrwxrwx permission bits */
-    uint8_t  reserved[128 - (4+8+4+4+48+4+8+4+4+2)];
+    uint32_t dindirect;      /* v2: block of pointers to indirect blocks (0 = none) */
+    uint8_t  reserved[128 - (4+8+4+4+48+4+8+4+4+2+4)];
 } __attribute__((packed)) ycfs_inode_t;
 
 typedef struct {
@@ -137,6 +153,8 @@ int ycfs_rename(const char* old_path, const char* new_path);
 int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out);
 int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries);
 int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size);
+/* Piecewise write: offset 0 creates/empties the file, later offsets append. */
+int64_t ycfs_write_chunk(const char* path, uint64_t offset, const void* buf, uint32_t len);
 int64_t ycfs_read_file(const char* path, void* buf, uint32_t max_size);
 
 #endif

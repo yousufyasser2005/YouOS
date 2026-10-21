@@ -283,3 +283,27 @@ static inline uint64_t sys_rtc(void) {
 static inline uint64_t sys_rtc_debug(int mode) {
     return _sc(SYS_RTC, (uint64_t)mode + 1, 0, 0, 0, 0);
 }
+
+/* lseek()/size for open files. whence: 0=SET 1=CUR 2=END. The position
+ * is clamped to [0, size]. fseek returns the new offset or -1; fsize
+ * returns the size in bytes or -1. */
+#define SYS_FSEEK 52
+#define SYS_FSIZE 53
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+static inline int64_t sys_fseek(int64_t fd, int64_t off, int whence) {
+    return (int64_t)_sc(SYS_FSEEK, (uint64_t)fd, (uint64_t)off, (uint64_t)whence, 0, 0);
+}
+static inline int64_t sys_fsize(int64_t fd) {
+    return (int64_t)_sc(SYS_FSIZE, (uint64_t)fd, 0, 0, 0, 0);
+}
+
+/* Write one piece of a /ycfs file: offset 0 creates the file (or empties
+ * an existing one), later offsets continue it. Returns bytes written or -1. */
+#define SYS_SAVECHUNK 54
+static inline int64_t sys_save_chunk(const char* path, const void* buf, uint64_t len, uint64_t offset) {
+    return (int64_t)_sc(SYS_SAVECHUNK, (uint64_t)path, (uint64_t)buf, len, offset, 0);
+}

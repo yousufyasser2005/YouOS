@@ -95,7 +95,18 @@
  * Returns 0 if the RTC is unreadable (year is never 0 on success). */
 #define SYS_RTC           51
 
-#define SYSCALL_COUNT  52
+/* lseek()/fstat-size for open files (see vfs_seek()/vfs_size()).
+ * SYS_FSEEK(fd, offset(int64), whence 0=SET 1=CUR 2=END) -> new offset or -1.
+ * SYS_FSIZE(fd) -> file size in bytes, or -1. */
+#define SYS_FSEEK         52
+#define SYS_FSIZE         53
+
+/* SYS_SAVECHUNK(path, buf, len, offset): write one piece of a /ycfs file.
+ * offset 0 creates the file (or empties an existing one); later offsets
+ * continue it. Returns bytes written or -1. */
+#define SYS_SAVECHUNK     54
+
+#define SYSCALL_COUNT  55
 
 void syscall_init(void);
 #endif

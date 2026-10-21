@@ -19,10 +19,54 @@ static void ycfs_journal_replay(void);
 
 #define SECTORS_PER_BLOCK (YCFS_BLOCK_SIZE / 512)
 
+/* Pointers per pointer-block, and bits per bitmap block. */
+#define PPB          (YCFS_BLOCK_SIZE / 4)
+#define BITS_PER_BM  (YCFS_BLOCK_SIZE * 8)
+
+/* 64-bit LBA math: a block number can reach 2^32 (16TB) and the sector
+ * index of block N is N*8, which overflows 32 bits from 2TB up. */
 static int read_block(uint32_t block_num, void* buf) {
-    uint32_t lba = YCFS_START_LBA + block_num * SECTORS_PER_BLOCK;
+    uint64_t lba = (uint64_t)YCFS_START_LBA + (uint64_t)block_num * SECTORS_PER_BLOCK;
     return ata_read_sectors(lba, (uint8_t)SECTORS_PER_BLOCK, buf);
 }
+
+static uint32_t bbm_blocks(void) { return sb.block_bitmap_blocks ? sb.block_bitmap_blocks : 1; }
+static uint32_t ibm_blocks(void) { return sb.inode_bitmap_blocks ? sb.inode_bitmap_blocks : 1; }
+
+/* Cache of the two pointer blocks a block lookup walks (slot 0: the
+ * indirect block, or the double-indirect root; slot 1: the leaf pointer
+ * block under it). Without this every data block of a large file costs
+ * up to two extra disk reads. A slot is valid when blk != 0 (block 0 is
+ * the superblock, never a pointer block). All writes to pointer blocks go
+ * through ps_store()/ps_create(), which keep the cache coherent. */
+typedef struct { uint32_t blk; int dirty; uint32_t p[PPB]; } ptrslot_t;
+static ptrslot_t ps[2];
+/* While ycfs_write() runs it sets defer_ptr: updates to a pointer block are
+ * then kept in the cache (dirty) and written once, when the slot is reused
+ * or the call ends, instead of after every single new data block. */
+static int defer_ptr = 0;
+static int ps_store(int slot);
+static int ps_flush_all(void) {
+    int rc = 0;
+    for (int i = 0; i < 2; i++)
+        if (ps[i].blk && ps[i].dirty && ps_store(i) != 0) rc = -1;
+    return rc;
+}
+static void ps_invalidate(void) {
+    ps_flush_all();
+    ps[0].blk = 0; ps[1].blk = 0; ps[0].dirty = 0; ps[1].dirty = 0;
+}
+static int ps_load(int slot, uint32_t blk) {
+    if (ps[slot].blk == blk) return 0;
+    if (ps[slot].blk && ps[slot].dirty && ps_store(slot) != 0) return -1;
+    ps[slot].blk = 0; ps[slot].dirty = 0;
+    if (read_block(blk, ps[slot].p) != 0) return -1;
+    ps[slot].blk = blk;
+    return 0;
+}
+/* Logical block `idx` of `inode` -> physical block. alloc=0: a hole
+ * yields *out = 0 and success; alloc=1 allocates what is missing. */
+static int bmap(ycfs_inode_t* inode, uint32_t idx, int alloc, uint32_t* out);
 
 static int read_inode(uint32_t inode_num, ycfs_inode_t* out) {
     if (inode_num == 0 || inode_num >= sb.total_inodes) return -1;
@@ -49,7 +93,23 @@ int ycfs_init(void) {
         vga_puts_color("  [!!] YCFS: bad magic (not formatted?)\n", VGA_LIGHT_RED, VGA_BLACK);
         return -1;
     }
+    if (s->version != 1 && s->version != 2) {
+        vga_puts_color("  [!!] YCFS: unsupported format version\n", VGA_LIGHT_RED, VGA_BLACK);
+        return -1;
+    }
+    if (s->block_size != YCFS_BLOCK_SIZE) {
+        vga_puts_color("  [!!] YCFS: unsupported block size\n", VGA_LIGHT_RED, VGA_BLACK);
+        return -1;
+    }
     sb = *s;
+    /* The bitmaps must be long enough to cover every block/inode, or the
+     * allocator would index past them. */
+    if ((uint64_t)bbm_blocks() * BITS_PER_BM < sb.total_blocks ||
+        (uint64_t)ibm_blocks() * BITS_PER_BM < sb.total_inodes) {
+        vga_puts_color("  [!!] YCFS: bitmap too short for geometry\n", VGA_LIGHT_RED, VGA_BLACK);
+        return -1;
+    }
+    ps_invalidate();
     initialized = 1;
     ycfs_journal_replay();
     vga_puts_color("  [OK] YCFS filesystem mounted\n", VGA_LIGHT_GREEN, VGA_BLACK);
@@ -61,7 +121,8 @@ uint32_t ycfs_root_inode(void) {
 }
 
 /* Read `size` bytes starting at `offset` from the given inode's data,
- * walking direct pointers and (if needed) the single indirect block. */
+ * walking direct, indirect and double-indirect pointers. A hole (zero
+ * pointer) ends the read early, same as before. */
 int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf) {
     if (!initialized) return -1;
     ycfs_inode_t inode;
@@ -70,26 +131,13 @@ int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf)
     uint8_t* dst = (uint8_t*)buf;
     uint32_t bytes_read = 0;
     static uint8_t blockbuf[YCFS_BLOCK_SIZE];
-    static uint32_t indirect_ptrs[YCFS_BLOCK_SIZE / 4];
-    uint32_t cached_indirect_block = 0xFFFFFFFFu;
 
     while (bytes_read < size && offset < inode.size) {
         uint32_t block_idx = (uint32_t)(offset / YCFS_BLOCK_SIZE);
         uint32_t block_off = (uint32_t)(offset % YCFS_BLOCK_SIZE);
         uint32_t phys_block;
 
-        if (block_idx < YCFS_DIRECT_BLOCKS) {
-            phys_block = inode.direct[block_idx];
-        } else {
-            uint32_t indirect_idx = block_idx - YCFS_DIRECT_BLOCKS;
-            uint32_t ptrs_per_block = YCFS_BLOCK_SIZE / 4;
-            if (indirect_idx >= ptrs_per_block || inode.indirect == 0) break;
-            if (cached_indirect_block != inode.indirect) {
-                if (read_block(inode.indirect, indirect_ptrs) != 0) break;
-                cached_indirect_block = inode.indirect;
-            }
-            phys_block = indirect_ptrs[indirect_idx];
-        }
+        if (bmap(&inode, block_idx, 0, &phys_block) != 0) break;
         if (!phys_block) break;
         if (read_block(phys_block, blockbuf) != 0) break;
 
@@ -150,8 +198,23 @@ int ycfs_lookup(uint32_t dir_inode, const char* name,
 /* ==================== Phase 2: writes ==================== */
 
 static int raw_write_block(uint32_t block_num, const void* buf) {
-    uint32_t lba = YCFS_START_LBA + block_num * SECTORS_PER_BLOCK;
+    uint64_t lba = (uint64_t)YCFS_START_LBA + (uint64_t)block_num * SECTORS_PER_BLOCK;
     return ata_write_sectors(lba, (uint8_t)SECTORS_PER_BLOCK, buf);
+}
+
+/* Write `count` consecutive blocks starting at `start`. One ATA command (and
+ * one drive-cache flush) per up-to-31 blocks instead of one per block:
+ * 31 blocks = 248 sectors, the most a single ATA command can carry (255). */
+#define WRUN_BLOCKS 31
+static int raw_write_blocks(uint32_t start, uint32_t count, const void* buf) {
+    const uint8_t* p = (const uint8_t*)buf;
+    while (count) {
+        uint32_t n = count > WRUN_BLOCKS ? WRUN_BLOCKS : count;
+        uint64_t lba = (uint64_t)YCFS_START_LBA + (uint64_t)start * SECTORS_PER_BLOCK;
+        if (ata_write_sectors(lba, (uint8_t)(n * SECTORS_PER_BLOCK), p) != 0) return -1;
+        start += n; count -= n; p += (uint64_t)n * YCFS_BLOCK_SIZE;
+    }
+    return 0;
 }
 
 /* ---- journaling machinery ----
@@ -174,15 +237,18 @@ static int txn_wrapped = 0;
 static int journal_log(uint32_t txn_id, uint32_t target_block, const void* data) {
     if (sb.journal_num_blocks == 0) return -1; /* unformatted / no journal */
     if (journal_pos + 2 > sb.journal_num_blocks) { txn_wrapped = 1; journal_pos = 0; }
-    ycfs_journal_hdr_t hdr;
-    uint8_t* hp = (uint8_t*)&hdr;
-    for (uint32_t i = 0; i < sizeof(hdr); i++) hp[i] = 0;
-    hdr.magic        = YCFS_JOURNAL_MAGIC;
-    hdr.txn_id       = txn_id;
-    hdr.target_block = target_block;
-    hdr.type         = YCFS_JTYPE_DESC;
-    raw_write_block(sb.journal_start_block + journal_pos, &hdr);
-    raw_write_block(sb.journal_start_block + journal_pos + 1, data);
+    /* Descriptor + logged data go out as ONE two-block write (same on-disk
+     * layout as before: descriptor block, then the data block). */
+    static uint8_t jbuf[2 * YCFS_BLOCK_SIZE];
+    for (uint32_t i = 0; i < YCFS_BLOCK_SIZE; i++) jbuf[i] = 0;
+    ycfs_journal_hdr_t* hdr = (ycfs_journal_hdr_t*)jbuf;
+    hdr->magic        = YCFS_JOURNAL_MAGIC;
+    hdr->txn_id       = txn_id;
+    hdr->target_block = target_block;
+    hdr->type         = YCFS_JTYPE_DESC;
+    const uint8_t* d = (const uint8_t*)data;
+    for (uint32_t i = 0; i < YCFS_BLOCK_SIZE; i++) jbuf[YCFS_BLOCK_SIZE + i] = d[i];
+    raw_write_blocks(sb.journal_start_block + journal_pos, 2, jbuf);
     journal_pos += 2;
     return 0;
 }
@@ -239,11 +305,12 @@ static void txn_commit(void) {
          * in it has already been durably applied, removes that window
          * entirely -- mirrors the same zero-fill idiom
          * ycfs_journal_replay() already uses at its own end. */
-        static uint8_t zero[YCFS_BLOCK_SIZE];
-        for (uint32_t i = 0; i < YCFS_BLOCK_SIZE; i++) zero[i] = 0;
+        static uint8_t zeros[WRUN_BLOCKS * YCFS_BLOCK_SIZE];   /* .bss: already zero */
         uint32_t wipe_count = txn_wrapped ? sb.journal_num_blocks : commit_pos;
-        for (uint32_t i = 0; i < wipe_count; i++)
-            raw_write_block(sb.journal_start_block + i, zero);
+        for (uint32_t i = 0; i < wipe_count; i += WRUN_BLOCKS) {
+            uint32_t n = wipe_count - i > WRUN_BLOCKS ? WRUN_BLOCKS : wipe_count - i;
+            raw_write_blocks(sb.journal_start_block + i, n, zeros);
+        }
         journal_pos = 0;
     }
     current_txn_id = 0;
@@ -306,10 +373,14 @@ static void ycfs_journal_replay(void) {
         }
     }
 
-    static uint8_t zero[YCFS_BLOCK_SIZE];
-    for (int i = 0; i < YCFS_BLOCK_SIZE; i++) zero[i] = 0;
-    for (uint32_t i = 0; i < sb.journal_num_blocks; i++)
-        raw_write_block(sb.journal_start_block + i, zero);
+    /* Wipe the whole journal region (one command per 31 blocks, not per block). */
+    {
+        static uint8_t zeros[WRUN_BLOCKS * YCFS_BLOCK_SIZE];      /* .bss: already zero */
+        for (uint32_t i = 0; i < sb.journal_num_blocks; i += WRUN_BLOCKS) {
+            uint32_t n = sb.journal_num_blocks - i > WRUN_BLOCKS ? WRUN_BLOCKS : sb.journal_num_blocks - i;
+            raw_write_blocks(sb.journal_start_block + i, n, zeros);
+        }
+    }
     journal_pos = 0;
 
     if (replayed_any)
@@ -381,25 +452,103 @@ static int write_inode(uint32_t inode_num, const ycfs_inode_t* in) {
     return write_block(block, blockbuf);
 }
 
-/* Find and claim the first free bit in a bitmap block. Caller updates
- * the relevant sb.free_* counter and persists the superblock. */
-static int alloc_bit(uint32_t bitmap_block, uint32_t total_bits, uint32_t* out_idx) {
-    static uint8_t bm[YCFS_BLOCK_SIZE];
-    if (read_block(bitmap_block, bm) != 0) return -1;
-    for (uint32_t i = 0; i < total_bits; i++) {
-        if (!(bm[i / 8] & (1 << (i % 8)))) {
-            bm[i / 8] |= (1 << (i % 8));
-            if (write_block(bitmap_block, bm) != 0) return -1;
-            *out_idx = i;
-            return 0;
+/* ---- bitmap allocator ----
+ * Bitmaps can span many blocks (a 1TB disk has 32MB of block bitmap), so
+ * one block at a time is cached. Allocation writes through immediately
+ * (a crash must never leave a used block marked free); freeing is
+ * deferred -- the caller batches many frees and calls free_flush() --
+ * since a crash mid-free only leaks blocks, which is harmless. */
+static uint8_t  bm_buf[YCFS_BLOCK_SIZE];
+static uint32_t bm_blk   = 0xFFFFFFFFu;   /* which block bm_buf holds */
+static int      bm_dirty = 0;
+static int      sb_dirty = 0;             /* superblock counters need writing */
+
+static int bm_flush(void) {
+    if (bm_blk != 0xFFFFFFFFu && bm_dirty) {
+        bm_dirty = 0;
+        return write_block(bm_blk, bm_buf);
+    }
+    return 0;
+}
+static int bm_load(uint32_t blk) {
+    if (bm_blk == blk) return 0;
+    if (bm_flush() != 0) return -1;
+    bm_blk = 0xFFFFFFFFu;
+    if (read_block(blk, bm_buf) != 0) return -1;
+    bm_blk = blk;
+    return 0;
+}
+
+/* Find and claim a free bit, searching forward from `hint` and wrapping
+ * once. Caller updates the relevant sb.free_* counter and persists the
+ * superblock. Skips fully-used 64-bit words, so a mostly-full bitmap is
+ * scanned quickly. */
+static int alloc_bit(uint32_t bitmap_start, uint32_t nbm, uint32_t total_bits,
+                     uint32_t hint, uint32_t* out_idx, int flush) {
+    uint32_t nblocks = (uint32_t)(((uint64_t)total_bits + BITS_PER_BM - 1) / BITS_PER_BM);
+    if (nblocks > nbm) nblocks = nbm;
+    if (hint >= total_bits) hint = 0;
+    uint32_t start_blk = hint / BITS_PER_BM;
+
+    for (uint32_t k = 0; k <= nblocks; k++) {
+        uint32_t bi = (start_blk + k) % nblocks;
+        if (bm_load(bitmap_start + bi) != 0) return -1;
+        uint32_t from  = (k == 0) ? (hint % BITS_PER_BM) : 0;
+        uint64_t base  = (uint64_t)bi * BITS_PER_BM;
+        uint32_t limit = BITS_PER_BM;
+        if (base + limit > total_bits) limit = (uint32_t)(total_bits - base);
+        uint32_t i = from;
+        while (i < limit) {
+            if ((i & 63) == 0 && i + 64 <= limit &&
+                *(uint64_t*)(bm_buf + (i >> 3)) == ~0ull) { i += 64; continue; }
+            if (!(bm_buf[i >> 3] & (1u << (i & 7)))) {
+                bm_buf[i >> 3] |= (uint8_t)(1u << (i & 7));
+                bm_dirty = 1;
+                if (flush && bm_flush() != 0) return -1;
+                *out_idx = (uint32_t)(base + i);
+                return 0;
+            }
+            i++;
         }
     }
     return -1; /* full */
 }
 
+static int free_bit(uint32_t bitmap_start, uint32_t idx) {
+    if (bm_load(bitmap_start + idx / BITS_PER_BM) != 0) return -1;
+    bm_buf[(idx % BITS_PER_BM) >> 3] &= (uint8_t)~(1u << (idx & 7));
+    bm_dirty = 1;
+    return 0;
+}
+
+/* ---- batch block reservation ----
+ * Allocating blocks one at a time costs a bitmap write and a superblock
+ * write EACH (and every disk write also costs a drive-cache flush). A write
+ * of many blocks instead claims them up front: bits are set in the cached
+ * bitmap block (written once per bitmap block touched) and the superblock
+ * counters are written once. alloc_block_num() then hands the claimed
+ * blocks out one by one; pool_release() gives back any that were not
+ * needed. A crash in between can only leak blocks, never double-use them. */
+#define POOL_MAX 256   /* one 1MB write can claim all its blocks in a single bitmap write */
+static uint32_t pool[POOL_MAX];
+static uint32_t pool_n = 0, pool_i = 0;
+static uint32_t pool_want = 0;          /* blocks the running write still expects to need */
+static int pool_fill(uint32_t n);       /* defined after the free helpers */
+static void pool_release(void);
+
 static int alloc_block_num(uint32_t* out_block) {
+    if (pool_i < pool_n) { *out_block = pool[pool_i++]; return 0; }
+    if (pool_want > 0) {
+        if (pool_fill(pool_want) == 0) {
+            pool_want -= (pool_n < pool_want) ? pool_n : pool_want;
+            *out_block = pool[pool_i++];
+            return 0;
+        }
+    }
     if (sb.free_blocks == 0) return -1;
-    if (alloc_bit(sb.block_bitmap_block, sb.total_blocks, out_block) != 0) return -1;
+    if (alloc_bit(sb.block_bitmap_block, bbm_blocks(), sb.total_blocks,
+                  sb.block_hint, out_block, 1) != 0) return -1;
+    sb.block_hint = *out_block + 1;
     sb.free_blocks--;
     write_superblock();
     return 0;
@@ -407,48 +556,103 @@ static int alloc_block_num(uint32_t* out_block) {
 
 static int alloc_inode_num(uint32_t* out_inode) {
     if (sb.free_inodes == 0) return -1;
-    if (alloc_bit(sb.inode_bitmap_block, sb.total_inodes, out_inode) != 0) return -1;
+    if (alloc_bit(sb.inode_bitmap_block, ibm_blocks(), sb.total_inodes,
+                  sb.inode_hint, out_inode, 1) != 0) return -1;
+    sb.inode_hint = *out_inode + 1;
     sb.free_inodes--;
     write_superblock();
     return 0;
 }
 
-/* Return the physical block backing logical block `block_idx` of
- * `inode`, allocating it (and updating inode->direct[]/indirect) if it
- * doesn't exist yet. Only one indirect level — matches ycfs_read's cap. */
-static int get_block_for_write(ycfs_inode_t* inode, uint32_t block_idx, uint32_t* out_phys) {
-    if (block_idx < YCFS_DIRECT_BLOCKS) {
-        if (inode->direct[block_idx] == 0) {
-            uint32_t nb;
+/* Allocate a fresh, zeroed pointer block into cache slot `slot`. */
+static int ps_create(int slot, uint32_t* out_blk, ycfs_inode_t* inode) {
+    uint32_t nb;
+    if (alloc_block_num(&nb) != 0) return -1;
+    if (ps[slot].blk && ps[slot].dirty) ps_store(slot);
+    ps[slot].blk = 0; ps[slot].dirty = 0;
+    for (uint32_t i = 0; i < PPB; i++) ps[slot].p[i] = 0;
+    if (write_block(nb, ps[slot].p) != 0) return -1;
+    ps[slot].blk = nb;
+    inode->blocks_used++;
+    *out_blk = nb;
+    return 0;
+}
+static int ps_store(int slot) {
+    int rc = write_block(ps[slot].blk, ps[slot].p);
+    ps[slot].dirty = 0;
+    return rc;
+}
+/* Persist a change to a cached pointer block now, or note it for later. */
+static int ps_commit(int slot) {
+    if (defer_ptr) { ps[slot].dirty = 1; return 0; }
+    return ps_store(slot);
+}
+
+/* Return the physical block backing logical block `idx` of `inode`,
+ * walking 12 direct pointers, then the single-indirect block (1024
+ * entries), then the double-indirect block (1024 x 1024 entries) --
+ * ~4GB per file. With alloc=1, missing data and pointer blocks are
+ * allocated and inode->direct/indirect/dindirect/blocks_used updated
+ * (the caller persists the inode). With alloc=0 a hole is reported as
+ * *out = 0 with a success return. */
+static int bmap(ycfs_inode_t* inode, uint32_t idx, int alloc, uint32_t* out) {
+    uint32_t nb;
+    if (idx < YCFS_DIRECT_BLOCKS) {
+        if (inode->direct[idx] == 0) {
+            if (!alloc) { *out = 0; return 0; }
             if (alloc_block_num(&nb) != 0) return -1;
-            inode->direct[block_idx] = nb;
+            inode->direct[idx] = nb;
             inode->blocks_used++;
         }
-        *out_phys = inode->direct[block_idx];
+        *out = inode->direct[idx];
         return 0;
     }
-    uint32_t indirect_idx  = block_idx - YCFS_DIRECT_BLOCKS;
-    uint32_t ptrs_per_block = YCFS_BLOCK_SIZE / 4;
-    if (indirect_idx >= ptrs_per_block) return -1; /* phase 2 cap, no double-indirect */
+    idx -= YCFS_DIRECT_BLOCKS;
 
-    static uint32_t ptrs[YCFS_BLOCK_SIZE / 4];
-    if (inode->indirect == 0) {
-        uint32_t nb;
-        if (alloc_block_num(&nb) != 0) return -1;
-        inode->indirect = nb;
-        inode->blocks_used++;
-        for (uint32_t i = 0; i < YCFS_BLOCK_SIZE / 4; i++) ptrs[i] = 0;
-        if (write_block(nb, ptrs) != 0) return -1;
+    if (idx < PPB) {                                   /* single indirect */
+        if (inode->indirect == 0) {
+            if (!alloc) { *out = 0; return 0; }
+            if (ps_create(0, &nb, inode) != 0) return -1;
+            inode->indirect = nb;
+        } else if (ps_load(0, inode->indirect) != 0) return -1;
+        uint32_t v = ps[0].p[idx];
+        if (v == 0) {
+            if (!alloc) { *out = 0; return 0; }
+            if (alloc_block_num(&nb) != 0) return -1;
+            ps[0].p[idx] = nb;
+            inode->blocks_used++;
+            if (ps_commit(0) != 0) return -1;
+            v = nb;
+        }
+        *out = v;
+        return 0;
     }
-    if (read_block(inode->indirect, ptrs) != 0) return -1;
-    if (ptrs[indirect_idx] == 0) {
-        uint32_t nb;
+    idx -= PPB;
+
+    if (idx >= (uint64_t)PPB * PPB) return -1;         /* beyond ~4GB */
+    uint32_t l1 = idx / PPB, l2 = idx % PPB;
+    if (inode->dindirect == 0) {                       /* double indirect */
+        if (!alloc) { *out = 0; return 0; }
+        if (ps_create(0, &nb, inode) != 0) return -1;
+        inode->dindirect = nb;
+    } else if (ps_load(0, inode->dindirect) != 0) return -1;
+    uint32_t leaf = ps[0].p[l1];
+    if (leaf == 0) {
+        if (!alloc) { *out = 0; return 0; }
+        if (ps_create(1, &leaf, inode) != 0) return -1;
+        ps[0].p[l1] = leaf;
+        if (ps_commit(0) != 0) return -1;
+    } else if (ps_load(1, leaf) != 0) return -1;
+    uint32_t v = ps[1].p[l2];
+    if (v == 0) {
+        if (!alloc) { *out = 0; return 0; }
         if (alloc_block_num(&nb) != 0) return -1;
-        ptrs[indirect_idx] = nb;
+        ps[1].p[l2] = nb;
         inode->blocks_used++;
-        if (write_block(inode->indirect, ptrs) != 0) return -1;
+        if (ps_commit(1) != 0) return -1;
+        v = nb;
     }
-    *out_phys = ptrs[indirect_idx];
+    *out = v;
     return 0;
 }
 
@@ -456,6 +660,30 @@ static int get_block_for_write(ycfs_inode_t* inode, uint32_t block_idx, uint32_t
  * blocks as needed and growing inode.size if the write extends past the
  * current end of file. Used for regular file writes AND for appending
  * dirents to a directory's own byte stream (a directory is just a file). */
+/* How many NEW pointer blocks (single-indirect, double-indirect root, and
+ * double-indirect leaves) writing logical blocks [first, last] will need.
+ * Counting them exactly lets ycfs_write() reserve precisely what it will
+ * use, so nothing has to be handed back (handing back costs two more
+ * disk writes per call). */
+static uint32_t ptr_blocks_needed(ycfs_inode_t* inode, uint32_t first, uint32_t last) {
+    uint32_t n = 0;
+    uint32_t i0 = YCFS_DIRECT_BLOCKS, i1 = YCFS_DIRECT_BLOCKS + PPB;
+    if (last >= i0 && first < i1 && inode->indirect == 0) n++;
+    if (last >= i1) {
+        if (inode->dindirect == 0) n++;
+        uint32_t a = (first > i1 ? first : i1) - i1;
+        uint32_t b = last - i1;
+        uint32_t l1a = a / PPB, l1b = b / PPB;
+        if (l1b >= PPB) l1b = PPB - 1;
+        for (uint32_t l1 = l1a; l1 <= l1b; l1++) {
+            if (inode->dindirect == 0) { n++; continue; }
+            if (ps_load(0, inode->dindirect) != 0) return n;
+            if (ps[0].p[l1] == 0) n++;
+        }
+    }
+    return n;
+}
+
 int64_t ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf) {
     if (!initialized) return -1;
     ycfs_inode_t inode;
@@ -463,26 +691,66 @@ int64_t ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const voi
 
     const uint8_t* src = (const uint8_t*)buf;
     uint32_t bytes_written = 0;
-    static uint8_t blockbuf[YCFS_BLOCK_SIZE];
+    static uint8_t wbuf[WRUN_BLOCKS * YCFS_BLOCK_SIZE];
 
-    while (bytes_written < size) {
-        uint32_t block_idx = (uint32_t)((offset + bytes_written) / YCFS_BLOCK_SIZE);
-        uint32_t block_off = (uint32_t)((offset + bytes_written) % YCFS_BLOCK_SIZE);
-        uint32_t phys;
-        if (get_block_for_write(&inode, block_idx, &phys) != 0) break;
-
-        uint32_t chunk = YCFS_BLOCK_SIZE - block_off;
-        uint32_t remaining = size - bytes_written;
-        if (chunk > remaining) chunk = remaining;
-
-        if (block_off != 0 || chunk != YCFS_BLOCK_SIZE) {
-            if (read_block(phys, blockbuf) != 0) break;
+    /* Reserve every block this write will need -- data and pointer blocks,
+     * counted exactly -- with one bitmap write instead of a bitmap and a
+     * superblock write per block. */
+    if (size > 0) {
+        uint32_t first = (uint32_t)(offset / YCFS_BLOCK_SIZE);
+        uint32_t last  = (uint32_t)((offset + size - 1) / YCFS_BLOCK_SIZE);
+        uint32_t need = 0;
+        for (uint32_t idx = first; idx <= last; idx++) {
+            uint32_t p;
+            if (bmap(&inode, idx, 0, &p) == 0 && p == 0) need++;
         }
-        for (uint32_t k = 0; k < chunk; k++) blockbuf[block_off + k] = src[bytes_written + k];
-        if (write_block(phys, blockbuf) != 0) break;
-
-        bytes_written += chunk;
+        uint32_t extra = need ? ptr_blocks_needed(&inode, first, last) : 0;
+        pool_want = need ? need + extra : 0;
     }
+    defer_ptr = 1;   /* pointer-block updates are written once, below */
+
+    int failed = 0;
+    while (bytes_written < size && !failed) {
+        /* Stage a run of physically contiguous blocks, then write the whole
+         * run with one command. */
+        uint32_t run = 0, run_start = 0, staged = 0;
+        while (bytes_written + staged < size && run < WRUN_BLOCKS) {
+            uint64_t pos       = offset + bytes_written + staged;
+            uint32_t block_idx = (uint32_t)(pos / YCFS_BLOCK_SIZE);
+            uint32_t block_off = (uint32_t)(pos % YCFS_BLOCK_SIZE);
+            uint32_t phys;
+            if (bmap(&inode, block_idx, 1, &phys) != 0) { failed = 1; break; }
+            if (run && phys != run_start + run) break;        /* run ends here; this block starts the next one */
+            if (!run) run_start = phys;
+
+            uint32_t chunk = YCFS_BLOCK_SIZE - block_off;
+            uint32_t remaining = size - bytes_written - staged;
+            if (chunk > remaining) chunk = remaining;
+
+            uint8_t* blk = wbuf + (uint64_t)run * YCFS_BLOCK_SIZE;
+            if (block_off != 0 || chunk != YCFS_BLOCK_SIZE) {
+                if (read_block(phys, blk) != 0) { failed = 1; break; }
+            }
+            for (uint32_t k = 0; k < chunk; k++) blk[block_off + k] = src[bytes_written + staged + k];
+            run++;
+            staged += chunk;
+        }
+        if (run == 0) break;
+
+        int werr = 0;
+        if (current_txn_id != 0) {                      /* inside a transaction: every block is journaled */
+            for (uint32_t i = 0; i < run && !werr; i++)
+                if (write_block(run_start + i, wbuf + (uint64_t)i * YCFS_BLOCK_SIZE) != 0) werr = 1;
+        } else {
+            if (raw_write_blocks(run_start, run, wbuf) != 0) werr = 1;
+        }
+        if (werr) { failed = 1; break; }
+        bytes_written += staged;
+    }
+
+    if (ps_flush_all() != 0) failed = 1;
+    defer_ptr = 0;
+    pool_release();                                     /* return blocks reserved but not used */
 
     uint64_t new_end = offset + bytes_written;
     if (new_end > inode.size) inode.size = new_end;
@@ -548,19 +816,56 @@ int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* o
 
 /* ==================== Phase 2: unlink / mkdir / rename / list ==================== */
 
-static int free_bit(uint32_t bitmap_block, uint32_t idx) {
-    static uint8_t bm[YCFS_BLOCK_SIZE];
-    if (read_block(bitmap_block, bm) != 0) return -1;
-    bm[idx / 8] &= ~(uint8_t)(1 << (idx % 8));
-    return write_block(bitmap_block, bm);
-}
-
+/* Deferred frees: mark in the cached bitmap and bump the in-memory
+ * counters; free_flush() persists the bitmap block and superblock. */
 static void free_block_num(uint32_t block_num) {
-    if (free_bit(sb.block_bitmap_block, block_num) == 0) { sb.free_blocks++; write_superblock(); }
+    if (block_num < sb.data_start_block || block_num >= sb.total_blocks) return; /* corrupt pointer */
+    if (free_bit(sb.block_bitmap_block, block_num) == 0) {
+        sb.free_blocks++;
+        if (block_num < sb.block_hint) sb.block_hint = block_num;
+        sb_dirty = 1;
+    }
 }
 
 static void free_inode_num(uint32_t inode_num) {
-    if (free_bit(sb.inode_bitmap_block, inode_num) == 0) { sb.free_inodes++; write_superblock(); }
+    if (inode_num == 0 || inode_num >= sb.total_inodes) return;
+    if (free_bit(sb.inode_bitmap_block, inode_num) == 0) {
+        sb.free_inodes++;
+        if (inode_num < sb.inode_hint) sb.inode_hint = inode_num;
+        sb_dirty = 1;
+    }
+}
+
+static void free_flush(void) {
+    bm_flush();
+    if (sb_dirty) { write_superblock(); sb_dirty = 0; }
+}
+
+/* Claim up to n free blocks in one go (see the pool comment above). */
+static int pool_fill(uint32_t n) {
+    if (n > POOL_MAX) n = POOL_MAX;
+    if (n > sb.free_blocks) n = sb.free_blocks;
+    pool_n = pool_i = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t b;
+        if (alloc_bit(sb.block_bitmap_block, bbm_blocks(), sb.total_blocks,
+                      sb.block_hint, &b, 0) != 0) break;
+        pool[pool_n++] = b;
+        sb.block_hint = b + 1;
+    }
+    if (bm_flush() != 0) { pool_n = pool_i = 0; return -1; }
+    if (pool_n == 0) return -1;
+    sb.free_blocks -= pool_n;
+    write_superblock();
+    return 0;
+}
+
+/* Give back claimed blocks that the write did not end up using. */
+static void pool_release(void) {
+    for (uint32_t i = pool_i; i < pool_n; i++) free_block_num(pool[i]);
+    pool_n = pool_i = 0;
+    pool_want = 0;
+    free_flush();
 }
 
 /* Strip an optional leading "/ycfs/" or bare "ycfs" prefix, matching
@@ -687,6 +992,118 @@ int ycfs_mkdir(const char* path) {
     return ycfs_create(parent, name, YCFS_TYPE_DIR, &new_inode);
 }
 
+/* ---- shrinking files ---- */
+
+/* Free every data block of `inode` at logical index >= keep, and every
+ * pointer block that ends up empty. Adjusts blocks_used; the caller
+ * persists the inode and calls free_flush(). */
+static void trunc_blocks(ycfs_inode_t* inode, uint32_t keep) {
+    static uint32_t top[PPB], leaf[PPB];
+
+    for (uint32_t i = keep; i < YCFS_DIRECT_BLOCKS; i++) {
+        if (inode->direct[i]) {
+            free_block_num(inode->direct[i]);
+            inode->direct[i] = 0;
+            if (inode->blocks_used) inode->blocks_used--;
+        }
+    }
+
+    if (inode->indirect) {
+        uint32_t first = keep > YCFS_DIRECT_BLOCKS ? keep - YCFS_DIRECT_BLOCKS : 0;
+        if (read_block(inode->indirect, top) == 0) {
+            int dirty = 0, left = 0;
+            for (uint32_t j = 0; j < PPB; j++) {
+                if (!top[j]) continue;
+                if (j >= first) {
+                    free_block_num(top[j]); top[j] = 0; dirty = 1;
+                    if (inode->blocks_used) inode->blocks_used--;
+                } else left = 1;
+            }
+            if (!left) {
+                free_block_num(inode->indirect); inode->indirect = 0;
+                if (inode->blocks_used) inode->blocks_used--;
+            } else if (dirty) write_block(inode->indirect, top);
+        }
+    }
+
+    if (inode->dindirect) {
+        uint32_t base  = YCFS_DIRECT_BLOCKS + PPB;
+        uint32_t first = keep > base ? keep - base : 0;
+        if (read_block(inode->dindirect, top) == 0) {
+            int rdirty = 0, rleft = 0;
+            for (uint32_t a = 0; a < PPB; a++) {
+                if (!top[a]) continue;
+                uint32_t a_start = a * PPB;
+                if (a_start + PPB <= first) { rleft = 1; continue; }   /* wholly kept */
+                if (read_block(top[a], leaf) != 0) { rleft = 1; continue; }
+                uint32_t lstart = first > a_start ? first - a_start : 0;
+                int ldirty = 0, lleft = 0;
+                for (uint32_t b = 0; b < PPB; b++) {
+                    if (!leaf[b]) continue;
+                    if (b >= lstart) {
+                        free_block_num(leaf[b]); leaf[b] = 0; ldirty = 1;
+                        if (inode->blocks_used) inode->blocks_used--;
+                    } else lleft = 1;
+                }
+                if (!lleft) {
+                    free_block_num(top[a]); top[a] = 0; rdirty = 1;
+                    if (inode->blocks_used) inode->blocks_used--;
+                } else {
+                    rleft = 1;
+                    if (ldirty) write_block(top[a], leaf);
+                }
+            }
+            if (!rleft) {
+                free_block_num(inode->dindirect); inode->dindirect = 0;
+                if (inode->blocks_used) inode->blocks_used--;
+            } else if (rdirty) write_block(inode->dindirect, top);
+        }
+    }
+    ps_invalidate();   /* freed pointer blocks must not be served from cache */
+}
+
+/* Cut a file down to new_size bytes (no-op if it is not larger). */
+static int ycfs_truncate(uint32_t inode_num, uint64_t new_size) {
+    ycfs_inode_t inode;
+    if (read_inode(inode_num, &inode) != 0) return -1;
+    if (new_size >= inode.size) return 0;
+
+    uint32_t keep = (uint32_t)((new_size + YCFS_BLOCK_SIZE - 1) / YCFS_BLOCK_SIZE);
+    uint32_t rem  = (uint32_t)(new_size % YCFS_BLOCK_SIZE);
+    if (rem) {
+        /* Zero the stale tail of the last kept block so a later write past
+         * the end can never expose old data. */
+        uint32_t phys;
+        static uint8_t tb[YCFS_BLOCK_SIZE];
+        if (bmap(&inode, keep - 1, 0, &phys) == 0 && phys && read_block(phys, tb) == 0) {
+            for (uint32_t i = rem; i < YCFS_BLOCK_SIZE; i++) tb[i] = 0;
+            write_block(phys, tb);
+        }
+    }
+    inode.size = new_size;
+    trunc_blocks(&inode, keep);
+    if (write_inode(inode_num, &inode) != 0) return -1;
+    free_flush();
+    return 0;
+}
+
+/* 1 if the directory has no live entries. */
+static int dir_is_empty(uint32_t dir_inode) {
+    ycfs_inode_t dir;
+    if (read_inode(dir_inode, &dir) != 0) return 0;
+    static uint8_t eb[YCFS_BLOCK_SIZE];
+    uint64_t off = 0;
+    while (off < dir.size) {
+        uint32_t chunk = dir.size - off > YCFS_BLOCK_SIZE ? YCFS_BLOCK_SIZE : (uint32_t)(dir.size - off);
+        int64_t n = ycfs_read(dir_inode, off, chunk, eb);
+        if (n <= 0) break;
+        for (uint32_t i = 0; i + sizeof(ycfs_dirent_t) <= (uint32_t)n; i += sizeof(ycfs_dirent_t))
+            if (((ycfs_dirent_t*)(eb + i))->inode != 0) return 0;
+        off += (uint64_t)n;
+    }
+    return 1;
+}
+
 int ycfs_unlink(const char* path) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
@@ -696,25 +1113,50 @@ int ycfs_unlink(const char* path) {
     uint32_t target_inode, target_type; uint64_t target_size;
     if (ycfs_lookup(parent, name, &target_inode, &target_type, &target_size) != 0) return -1;
 
-    txn_begin();
+    /* Never orphan a directory's contents: removing a non-empty directory
+     * must be done child by child (the file manager does this). */
+    if (target_type == YCFS_TYPE_DIR && !dir_is_empty(target_inode)) return -1;
 
-    if (clear_dirent(parent, name) != 0) { txn_commit(); return -1; }
-
+    /* Phase 1 (journaled): remove the directory entry and release the
+     * inode. After this the file is gone as far as the namespace goes. */
     ycfs_inode_t ti;
-    if (read_inode(target_inode, &ti) == 0) {
+    int have_inode = (read_inode(target_inode, &ti) == 0);
+
+    txn_begin();
+    if (clear_dirent(parent, name) != 0) { txn_commit(); return -1; }
+    free_inode_num(target_inode);
+    free_flush();
+    txn_commit();
+
+    /* Phase 2 (not journaled): release the data and pointer blocks. A
+     * crash in here leaks blocks but cannot corrupt anything, and doing
+     * it outside the journal matters -- a multi-GB file has hundreds of
+     * thousands of blocks, far more than the journal region can log. */
+    if (have_inode) {
+        static uint32_t l1[PPB], l2[PPB];
         for (int i = 0; i < YCFS_DIRECT_BLOCKS; i++)
             if (ti.direct[i]) free_block_num(ti.direct[i]);
         if (ti.indirect) {
-            static uint32_t ptrs[YCFS_BLOCK_SIZE / 4];
-            if (read_block(ti.indirect, ptrs) == 0)
-                for (uint32_t i = 0; i < YCFS_BLOCK_SIZE / 4; i++)
-                    if (ptrs[i]) free_block_num(ptrs[i]);
+            if (read_block(ti.indirect, l1) == 0)
+                for (uint32_t i = 0; i < PPB; i++)
+                    if (l1[i]) free_block_num(l1[i]);
             free_block_num(ti.indirect);
         }
+        if (ti.dindirect) {
+            if (read_block(ti.dindirect, l1) == 0) {
+                for (uint32_t i = 0; i < PPB; i++) {
+                    if (!l1[i]) continue;
+                    if (read_block(l1[i], l2) == 0)
+                        for (uint32_t j = 0; j < PPB; j++)
+                            if (l2[j]) free_block_num(l2[j]);
+                    free_block_num(l1[i]);
+                }
+            }
+            free_block_num(ti.dindirect);
+        }
+        ps_invalidate();   /* freed pointer blocks must not be served from cache */
+        free_flush();
     }
-    free_inode_num(target_inode);
-
-    txn_commit();
     return 0;
 }
 
@@ -733,6 +1175,14 @@ int ycfs_rename(const char* old_path, const char* new_path) {
     uint32_t existing_inode, existing_type; uint64_t existing_size;
     if (ycfs_lookup(new_parent, new_name, &existing_inode, &existing_type, &existing_size) == 0)
         return -1; /* destination already exists */
+
+    /* A directory can't be moved into its own subtree (it would vanish
+     * from the namespace, taking everything under it along). */
+    if (target_type == YCFS_TYPE_DIR) {
+        const char* a = old_path; const char* b = new_path;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a == 0 && (*b == '/' || *b == 0)) return -1;
+    }
 
     txn_begin();
     if (append_dirent(new_parent, target_inode, new_name, target_type) != 0) { txn_commit(); return -1; }
@@ -859,9 +1309,36 @@ int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
         if (!ycfs_check_access(parent, YCFS_WANT_W)) return -1;
         if (ycfs_create(parent, name, YCFS_TYPE_FILE, &inode) != 0) return -1;
     } else {
+        if (type != YCFS_TYPE_FILE) return -1;     /* never write file data into a directory */
         if (!ycfs_check_access(inode, YCFS_WANT_W)) return -1;
     }
-    return ycfs_write(inode, 0, size, buf);
+    int64_t w = ycfs_write(inode, 0, size, buf);
+    /* Overwriting with something shorter must shrink the file, otherwise
+     * the old tail survives past the new end. */
+    if (w >= 0 && existing_size > size) ycfs_truncate(inode, size);
+    return w;
+}
+
+/* Write a piece of a file: offset 0 creates the file (or empties an
+ * existing one, keeping its owner and permissions); later pieces append at
+ * the given offset. This is what lets the file manager copy files of any
+ * size in chunks instead of needing the whole file in memory. */
+int64_t ycfs_write_chunk(const char* path, uint64_t offset, const void* buf, uint32_t len) {
+    if (!initialized) return -1;
+    uint32_t parent; char name[56];
+    if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
+
+    uint32_t inode, type; uint64_t existing_size;
+    if (ycfs_lookup(parent, name, &inode, &type, &existing_size) != 0) {
+        if (offset != 0) return -1;                 /* continuing a file that is not there */
+        if (!ycfs_check_access(parent, YCFS_WANT_W)) return -1;
+        if (ycfs_create(parent, name, YCFS_TYPE_FILE, &inode) != 0) return -1;
+    } else {
+        if (type != YCFS_TYPE_FILE) return -1;
+        if (!ycfs_check_access(inode, YCFS_WANT_W)) return -1;
+        if (offset == 0 && existing_size > 0 && ycfs_truncate(inode, 0) != 0) return -1;
+    }
+    return ycfs_write(inode, offset, len, buf);
 }
 
 /* Path-based read, mirroring ycfs_savefile's shape. Resolves the full

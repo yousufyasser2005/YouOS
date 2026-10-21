@@ -33,6 +33,12 @@ struct vfs_node {
     vfs_node_t* (*finddir)(vfs_node_t* node, const char* name);
     void (*close)(vfs_node_t* node);
 
+    /* Optional: reposition a filesystem that keeps its OWN read cursor
+     * (FAT16's driver does; YCFS and ramfs read at an explicit offset
+     * and need no hook). Called by vfs_seek() with an offset already
+     * clamped to [0, size]; return 0 on success, -1 on failure. */
+    int (*seek)(vfs_node_t* node, uint64_t offset);
+
     /* Filesystem-private data */
     void*       fs_data;
     vfs_node_t* next;   /* sibling in directory */
@@ -61,5 +67,15 @@ int         vfs_close(int fd);
 uint64_t    vfs_read(int fd, void* buf, uint64_t size);
 uint64_t    vfs_write(int fd, const void* buf, uint64_t size);
 vfs_node_t* vfs_resolve(const char* path);
+
+/* lseek()-style repositioning. whence: VFS_SEEK_SET / _CUR / _END.
+ * The new position is clamped to [0, file size] (no sparse seeks past
+ * EOF; a read there just returns 0). Returns the new offset, or -1. */
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
+int64_t     vfs_seek(int fd, int64_t offset, int whence);
+/* Size in bytes of the open file, or -1 for a bad fd. */
+int64_t     vfs_size(int fd);
 
 #endif

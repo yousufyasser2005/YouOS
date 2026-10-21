@@ -14,3 +14,9 @@ third_party/micropython/ports/youos-sandbox/
 
 # Python bytecode cache
 __pycache__/
+youos_*.patch
+youos_tree_v*.tar
+MANIFEST.sha256
+disk.img.bak*
+*.ycfs-backup-*.tar
+build/youos_prev.iso

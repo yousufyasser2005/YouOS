@@ -39,6 +39,13 @@ static uint64_t fat16_vfs_write(vfs_node_t* node, uint64_t offset,
     return (n < 0) ? 0 : (uint64_t)n;
 }
 
+static int fat16_vfs_seek(vfs_node_t* node, uint64_t offset)
+{
+    fat16_file_data_t* d = (fat16_file_data_t*)node->fs_data;
+    if (!d) return -1;
+    return fat16_seek(d->fat_fd, (uint32_t)offset);
+}
+
 static void fat16_vfs_close(vfs_node_t* node)
 {
     fat16_file_data_t* d = (fat16_file_data_t*)node->fs_data;
@@ -70,12 +77,13 @@ static vfs_node_t* fat16_vfs_finddir(vfs_node_t* dir, const char* name)
     node->name[i] = 0;
 
     node->type    = VFS_FILE;
-    node->size    = 0; /* unknown without dirent read — ok for read */
+    node->size    = fat16_file_size(fd);
     node->inode   = (uint64_t)fd;
     node->read    = fat16_vfs_read;
     node->write   = fat16_vfs_write;
     node->finddir = 0;
     node->close   = fat16_vfs_close;
+    node->seek    = fat16_vfs_seek;
     node->dynamic = 1;
 
     fat16_file_data_t* d = (fat16_file_data_t*)kzalloc(sizeof(fat16_file_data_t));

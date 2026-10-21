@@ -468,6 +468,24 @@ static uint64_t sys_rtc(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint
            ((uint64_t)t.minute << 8) | (uint64_t)t.second;
 }
 
+static uint64_t sys_fseek(uint64_t fd, uint64_t off, uint64_t whence, uint64_t a4, uint64_t a5) {
+    (void)a4;(void)a5;
+    return (uint64_t)vfs_seek((int)fd, (int64_t)off, (int)whence);
+}
+static uint64_t sys_fsize(uint64_t fd, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    (void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)vfs_size((int)fd);
+}
+
+static uint64_t sys_savechunk(uint64_t path_arg, uint64_t buf, uint64_t len, uint64_t offset, uint64_t a5) {
+    (void)a5;
+    const char* path = (const char*)path_arg;
+    if (!path_is_ycfs(path)) return (uint64_t)-1;
+    extern int64_t ycfs_write_chunk(const char*, uint64_t, const void*, uint32_t);
+    int64_t n = ycfs_write_chunk(path, offset, (const void*)buf, (uint32_t)len);
+    return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
+}
+
 static uint64_t sys_get_exec_arg(uint64_t buf, uint64_t bufsize, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a3;(void)a4;(void)a5;
     char* out = (char*)buf;
@@ -829,7 +847,10 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_cpuinfo,
     sys_ipcinfo,
     sys_procinfo,
-    sys_rtc
+    sys_rtc,
+    sys_fseek,
+    sys_fsize,
+    sys_savechunk
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

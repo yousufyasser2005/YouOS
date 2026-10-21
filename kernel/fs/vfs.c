@@ -96,3 +96,28 @@ uint64_t vfs_write(int fd, const void* buf, uint64_t size) {
     f->offset += n;
     return n;
 }
+
+int64_t vfs_size(int fd) {
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !fd_table[fd].used) return -1;
+    return (int64_t)fd_table[fd].node->size;
+}
+
+int64_t vfs_seek(int fd, int64_t offset, int whence) {
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !fd_table[fd].used) return -1;
+    vfs_fd_t*   f    = &fd_table[fd];
+    vfs_node_t* node = f->node;
+    int64_t size = (int64_t)node->size;
+    int64_t base;
+    if      (whence == VFS_SEEK_SET) base = 0;
+    else if (whence == VFS_SEEK_CUR) base = (int64_t)f->offset;
+    else if (whence == VFS_SEEK_END) base = size;
+    else return -1;
+
+    int64_t target = base + offset;
+    if (target < 0) return -1;
+    if (target > size) target = size;
+
+    if (node->seek && node->seek(node, (uint64_t)target) != 0) return -1;
+    f->offset = (uint64_t)target;
+    return target;
+}
