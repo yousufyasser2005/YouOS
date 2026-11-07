@@ -31,6 +31,8 @@
 #define ATA_CMD_SET_MULTIPLE    0xC6   /* SET MULTIPLE MODE: sectors per DRQ block */
 #define ATA_CMD_WRITE_MULTIPLE  0xC5
 #define ATA_CMD_WRITE_MULTIPLE_EXT 0x39  /* LBA48 */
+#define ATA_CMD_WRITE_DMA       0xCA
+#define ATA_CMD_WRITE_DMA_EXT   0x35   /* LBA48 */
 #define ATA_CMD_FLUSH           0xE7
 #define ATA_CMD_FLUSH_EXT       0xEA
 
@@ -56,6 +58,13 @@ uint64_t ata_capacity_sectors(void);
  * ata_init(). ata_enable_multiple() returns the block size in sectors, or -1
  * if the drive lacks it or the self-test failed (plain writes are then used). */
 int     ata_enable_multiple(uint8_t max_sectors_per_block);
+
+/* Bus-master DMA writes (PCI IDE controller): one host write per command instead of
+ * one per 8KB. ata_enable_dma() finds the controller, runs a self-test (data readback
+ * and memory canaries around the DMA buffers) and returns 1 on success, -1 if DMA
+ * is unavailable or failed the test (PIO writes keep working). */
+int     ata_enable_dma(void);
+int     ata_dma_active(void);
 uint8_t ata_multiple_sectors(void);   /* 0 = not in use */
 
 #endif

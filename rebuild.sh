@@ -33,18 +33,25 @@ chk "delete job"                       "ft_job_start_delete"         user/src/fs
 chk "big chunks (1MB copy chunks)"     "define FT_CHUNK       1048576" user/src/fs_tree.h
 chk "build stamp"                      "YOUOS_BUILD"                 user/src/desktop.c
 chk "ATA WRITE MULTIPLE (fast writes)" "ata_write_multi"             kernel/drivers/ata.c
+chk "ATA bus-master DMA writes"        "ata_write_dma"               kernel/drivers/ata.c
 
 # This script is only meant for a tree that has everything above. If the newest feature is
 # missing, the tree is out of date (usually: an older archive was extracted) -- stop NOW
 # instead of building something that silently lacks it.
-if ! grep -q -- "ata_write_multi" kernel/drivers/ata.c 2>/dev/null; then
+if ! grep -q -- "ata_write_dma" kernel/drivers/ata.c 2>/dev/null; then
   echo
-  echo "*** Your source tree is OLDER than this script expects (no WRITE MULTIPLE in kernel/drivers/ata.c)."
+  echo "*** Your source tree is OLDER than this script expects (no DMA write support in kernel/drivers/ata.c)."
   echo "    Extract the NEWEST archive over the repository first, then run this again:"
   echo "        ls -la ~/Downloads/youos_tree_v*.tar     # pick the highest version"
-  echo "        tar -xf ~/Downloads/youos_tree_v3.tar"
+  echo "        tar -xf ~/Downloads/youos_tree_v4.tar"
   echo "    (a browser may have saved the new download as 'name (1).tar' next to an old one with the same name)"
   exit 1
+fi
+
+say "pre-flight: will the kernel link? (approximate check, needs only gcc)"
+if [ -f tests/host/link_check.sh ]; then
+  # A warning only: this is an approximation, and the real link in stage 3 is the authority.
+  bash tests/host/link_check.sh || echo "  WARNING: the pre-check reported a problem (above). Continuing anyway; if the kernel link in stage 3 fails, that is why."
 fi
 
 say "1/6  userspace (make clean && make)"

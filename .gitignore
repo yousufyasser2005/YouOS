@@ -20,3 +20,5 @@ MANIFEST.sha256
 disk.img.bak*
 *.ycfs-backup-*.tar
 build/youos_prev.iso
+youos_fix_*.tar
+youos_final_tree.tar

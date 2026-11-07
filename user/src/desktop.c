@@ -3294,7 +3294,7 @@ static void xfer_pump(void){
     int run=1;
     if(!idle&&xfer_slice_ms&&now-xfer_slice_end<3*xfer_slice_ms)run=0;     /* let the desktop have the next few frames */
     if(run){
-        ft_job.target_ms=idle?400:200;                                     /* longest allowed round trip: short while the user is active */
+        ft_job.target_ms=idle?300:100;                                     /* longest allowed round trip: short while the user is active */
         unsigned long long t0=ft_now_ms();
         ft_job_step_n(idle?100:1,idle?4:1);                  /* time budget AND a hard iteration cap: idle frames stay ~150 ms so the progress keeps moving */
         unsigned long long t1=ft_now_ms();

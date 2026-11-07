@@ -7,12 +7,16 @@
 
 #include <kernel/ata.h>
 #include <kernel/vga.h>
+#include <kernel/pci.h>
+#include <kernel/vmm.h>
 #include <stdint.h>
 
 /* Drive facts filled in by ata_init() from IDENTIFY. */
 static int      ata_lba48   = 0;
 static uint8_t  ata_mult    = 0;   /* sectors per DRQ block for WRITE MULTIPLE; 0 = use plain WRITE SECTORS */
 static uint64_t ata_sectors = 0;
+static uint16_t ata_bm      = 0;   /* bus-master IDE I/O base (PCI BAR4); 0 = no DMA controller */
+static int      ata_dma_ok  = 0;   /* 1 once ata_enable_dma()'s self-test has passed */
 
 /* Port I/O helpers */
 static inline uint8_t inb(uint16_t port) {
@@ -30,6 +34,14 @@ static inline uint16_t inw(uint16_t port) {
 }
 static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+static inline uint32_t inl(uint16_t port) {
+    uint32_t val;
+    __asm__ volatile("inl %1, %0" : "=a"(val) : "Nd"(port));
+    return val;
+}
+static inline void outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
 }
 
 static inline void insw(uint16_t port, void* addr, uint32_t count) {
@@ -181,6 +193,13 @@ int ata_init(void) {
         }
     }
 
+    /* Bus-master DMA writes (needs the multiple-sector/PIO paths to be settled first: it uses
+     * them to put its scratch sectors back). */
+    if (ata_enable_dma() == 1)
+        vga_puts_color("       DMA writes: enabled (self-test passed)\n", VGA_LIGHT_GREEN, VGA_BLACK);
+    else
+        vga_puts_color("       DMA writes: not used\n", VGA_LIGHT_GREEN, VGA_BLACK);
+
     return 1;
 }
 
@@ -192,7 +211,8 @@ uint64_t ata_capacity_sectors(void) { return ata_sectors; }
 /* Program the task-file registers for a transfer of `count` sectors at
  * `lba` and issue the command. Chooses 28-bit or 48-bit form. Returns 0,
  * -1 if the drive is busy, -2 if the LBA needs LBA48 and the drive lacks it. */
-static int ata_issue(uint64_t lba, uint8_t count, int write, int multi, int* used48) {
+/* mode: 0 = plain PIO, 1 = WRITE MULTIPLE (PIO), 2 = DMA. */
+static int ata_issue(uint64_t lba, uint8_t count, int write, int mode, int* used48) {
     if (ata_wait_busy() < 0) return -1;
     if (lba + count <= ATA_LBA28_LIMIT) {
         *used48 = 0;
@@ -202,7 +222,7 @@ static int ata_issue(uint64_t lba, uint8_t count, int write, int multi, int* use
         outb(ATA_PRIMARY_LBA_LO,   (lba >>  0) & 0xFF);
         outb(ATA_PRIMARY_LBA_MID,  (lba >>  8) & 0xFF);
         outb(ATA_PRIMARY_LBA_HI,   (lba >> 16) & 0xFF);
-        outb(ATA_PRIMARY_COMMAND,  write ? (multi ? ATA_CMD_WRITE_MULTIPLE : ATA_CMD_WRITE_PIO) : ATA_CMD_READ_PIO);
+        outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA : mode == 1 ? ATA_CMD_WRITE_MULTIPLE : ATA_CMD_WRITE_PIO) : ATA_CMD_READ_PIO);
         return 0;
     }
     if (!ata_lba48 || lba + count > ata_sectors) return -2;
@@ -219,7 +239,7 @@ static int ata_issue(uint64_t lba, uint8_t count, int write, int multi, int* use
     outb(ATA_PRIMARY_LBA_LO,   (lba >>  0) & 0xFF);
     outb(ATA_PRIMARY_LBA_MID,  (lba >>  8) & 0xFF);
     outb(ATA_PRIMARY_LBA_HI,   (lba >> 16) & 0xFF);
-    outb(ATA_PRIMARY_COMMAND,  write ? (multi ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_PIO_EXT) : ATA_CMD_READ_PIO_EXT);
+    outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA_EXT : mode == 1 ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_PIO_EXT) : ATA_CMD_READ_PIO_EXT);
     return 0;
 }
 
@@ -295,15 +315,149 @@ static int ata_write_multi(uint64_t lba, uint8_t count, const void* buf) {
     return ata_finish_write(used48);
 }
 
-int ata_write_sectors(uint64_t lba, uint8_t count, const void* buf) {
+/* ---- bus-master DMA ------------------------------------------------------
+ * The IDE controller reads the data straight from memory, described by a PRD
+ * (physical region descriptor) table: {u32 physical address, u16 byte count,
+ * u16 flags; bit 15 = last entry}. A whole command (up to 255 sectors) is then
+ * ONE operation for the drive: under a virtual disk that is one host write
+ * rather than one per 8KB (WRITE MULTIPLE) or one per sector (WRITE SECTORS).
+ *
+ * Data is copied into a private bounce buffer first, so callers may pass any
+ * memory (kernel statics, stack, ...). Each 64KB piece of the buffer sits on a
+ * 64KB boundary, as the PRD rules require. The padding around the buffer and
+ * the table is only there to catch a misdirected transfer: the boot self-test
+ * fills it with a pattern and checks that nothing touched it. */
+#define ATA_DMA_BYTES 131072
+static struct {
+    uint8_t  pad_lo[65536];
+    uint8_t  buf[ATA_DMA_BYTES];
+    uint8_t  pad_hi[65536];
+    uint32_t prd[8];                     /* up to 4 entries of {address, count|flags} */
+    uint8_t  pad_prd[4096];
+} ata_dma __attribute__((aligned(65536)));
+
+static int ata_write_dma(uint64_t lba, uint8_t count, const void* buf) {
+    uint32_t bytes = (uint32_t)count * 512;
+    const uint8_t* src = (const uint8_t*)buf;
+    for (uint32_t i = 0; i < bytes; i++) ata_dma.buf[i] = src[i];
+
+    uint64_t ph0 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf);
+    uint64_t php = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.prd);
+    uint32_t first = bytes > 65536 ? 65536 : bytes;
+    ata_dma.prd[0] = (uint32_t)ph0;
+    ata_dma.prd[1] = (first == 65536 ? 0u : first) | (bytes <= 65536 ? 0x80000000u : 0u);
+    if (bytes > 65536) {
+        ata_dma.prd[2] = (uint32_t)(ph0 + 65536);
+        ata_dma.prd[3] = (bytes - 65536) | 0x80000000u;
+    }
+
+    outl((uint16_t)(ata_bm + 4), (uint32_t)php);                          /* PRD table address */
+    outb((uint16_t)(ata_bm + 2), (uint8_t)(inb((uint16_t)(ata_bm + 2)) | 0x06)); /* clear interrupt + error (write 1) */
+    outb((uint16_t)(ata_bm + 0), 0x00);                                   /* direction: memory -> drive; stopped */
+    int used48;
+    if (ata_issue(lba, count, 1, 2, &used48) != 0) return -1;
+    outb((uint16_t)(ata_bm + 0), 0x01);                                   /* start */
+
+    int done = 0;
+    for (uint32_t i = 0; i < 4000000; i++) {                              /* a few seconds at most, then give up */
+        uint8_t st = inb((uint16_t)(ata_bm + 2));
+        if (st & 0x02) break;                                             /* controller reports an error */
+        if (!(st & 0x01)) { done = 1; break; }                            /* transfer no longer active */
+    }
+    outb((uint16_t)(ata_bm + 0), 0x00);                                   /* stop */
+    uint8_t bst = inb((uint16_t)(ata_bm + 2));
+    outb((uint16_t)(ata_bm + 2), (uint8_t)(bst | 0x06));
+    if (!done || (bst & 0x02)) return -1;
+    if (ata_wait_busy() < 0) return -1;
+    if (inb(ATA_PRIMARY_STATUS) & (ATA_SR_ERR | ATA_SR_DF)) return -1;
+    return ata_finish_write(used48);
+}
+
+/* Write without DMA: WRITE MULTIPLE if it is on, plain WRITE SECTORS otherwise. */
+static int ata_write_pio(uint64_t lba, uint8_t count, const void* buf) {
     if (ata_mult > 1 && count > 1) {
         if (ata_write_multi(lba, count, buf) == 0) return 0;
-        /* The drive refused or mishandled it: stop using multiple mode for good and
-         * redo the whole write the old way (writing the same data again is harmless). */
-        ata_mult = 0;
+        ata_mult = 0;                    /* see ata_write_sectors(): stop using it, redo the write */
     }
     return ata_write_single(lba, count, buf);
 }
+
+int ata_write_sectors(uint64_t lba, uint8_t count, const void* buf) {
+    if (ata_dma_ok) {
+        if (ata_write_dma(lba, count, buf) == 0) return 0;
+        /* The controller failed or timed out: never use DMA again and redo the write by PIO
+         * (writing the same data twice is harmless). */
+        ata_dma_ok = 0;
+    }
+    return ata_write_pio(lba, count, buf);
+}
+
+int ata_dma_active(void) { return ata_dma_ok; }
+
+/* Find the PCI IDE controller, enable bus mastering and PROVE that DMA writes work before
+ * anything depends on them. The proof writes patterns into 256 sectors near the end of the
+ * disk that currently read as all zeros, reads them back, and checks that the memory around
+ * the DMA buffers is untouched; then it zeroes the sectors again. Returns 1 on success. */
+int ata_enable_dma(void) {
+    static uint8_t exp[255 * 512], back[256 * 512], zeros[255 * 512];
+    pci_device_t d;
+    int found = 0;
+    static const uint8_t prog_ifs[] = { 0x80, 0x8A, 0x8F, 0x85 };         /* bus-master capable IDE variants */
+    for (unsigned i = 0; i < sizeof prog_ifs && !found; i++)
+        found = pci_find_by_class(0x01, 0x01, prog_ifs[i], &d);
+    if (!found) found = pci_find_by_id(0x8086, 0x7010, &d) || pci_find_by_id(0x8086, 0x7111, &d);   /* PIIX3 / PIIX4 */
+    if (!found) return -1;
+    uint32_t base = pci_bar_addr(&d, 4);
+    if (!base || !(d.bar[4] & 1) || base > 0xFFF0) return -1;             /* BAR4 must be an I/O range */
+    pci_enable_device(&d);                                                /* I/O space + bus mastering */
+
+    /* the bounce buffer must be physically contiguous, 64KB aligned and below 4GB */
+    uint64_t p0 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf);
+    uint64_t p1 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf + 65536);
+    uint64_t pp = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.prd);
+    if (!p0 || (p0 & 0xFFFF) || p1 != p0 + 65536 || p0 + ATA_DMA_BYTES > 0xFFFFFFFFull || !pp || pp > 0xFFFFFFFFull) return -1;
+    if (ata_sectors < 8192) return -1;
+
+    /* scratch: 256 sectors (a multiple of 256, near the end of the disk) that read as all zeros */
+    uint64_t lba = 0; int fz = 0;
+    for (int t = 0; t < 4 && !fz; t++) {
+        uint64_t cand = ((ata_sectors - 512) & ~255ull) - (uint64_t)t * 1024;
+        if (ata_read_sectors(cand, 255, back) != 0) return -1;
+        if (ata_read_sectors(cand + 255, 1, back + 255 * 512) != 0) return -1;
+        int allzero = 1;
+        for (int i = 0; i < 256 * 512; i++) if (back[i]) { allzero = 0; break; }
+        if (allzero) { lba = cand; fz = 1; }
+    }
+    if (!fz) return -1;
+
+    for (unsigned i = 0; i < sizeof ata_dma.pad_lo; i++)  ata_dma.pad_lo[i]  = 0xA5;
+    for (unsigned i = 0; i < sizeof ata_dma.pad_hi; i++)  ata_dma.pad_hi[i]  = 0xA5;
+    for (unsigned i = 0; i < sizeof ata_dma.pad_prd; i++) ata_dma.pad_prd[i] = 0xA5;
+
+    ata_bm = (uint16_t)base;
+    for (int i = 0; i < 255 * 512; i++) exp[i] = (uint8_t)((i * 7 + 13) | 1);        /* never zero */
+    int ok = (ata_write_dma(lba, 255, exp) == 0);                                    /* a full-size transfer: two PRD entries */
+    if (ok) {                                                                        /* overwrite 8 sectors (one filesystem block) and 1 sector */
+        static uint8_t p8[8 * 512], p1b[512];
+        for (int i = 0; i < 8 * 512; i++) { p8[i] = (uint8_t)((i * 11 + 5) | 1); exp[10 * 512 + i] = p8[i]; }
+        for (int i = 0; i < 512; i++)     { p1b[i] = (uint8_t)((i * 3 + 9) | 1);  exp[200 * 512 + i] = p1b[i]; }
+        ok = (ata_write_dma(lba + 10, 8, p8) == 0) && (ata_write_dma(lba + 200, 1, p1b) == 0);
+    }
+    if (ok) ok = (ata_read_sectors(lba, 255, back) == 0);
+    if (ok) for (int i = 0; i < 255 * 512; i++) if (back[i] != exp[i]) { ok = 0; break; }
+    if (ok) {                                                                        /* nothing may have been written outside the buffer */
+        for (unsigned i = 0; i < sizeof ata_dma.pad_lo; i++)  if (ata_dma.pad_lo[i]  != 0xA5) { ok = 0; break; }
+        for (unsigned i = 0; ok && i < sizeof ata_dma.pad_hi; i++)  if (ata_dma.pad_hi[i]  != 0xA5) ok = 0;
+        for (unsigned i = 0; ok && i < sizeof ata_dma.pad_prd; i++) if (ata_dma.pad_prd[i] != 0xA5) ok = 0;
+    }
+    /* put the zeros back using the proven non-DMA path, whatever happened */
+    ata_dma_ok = 0;
+    int restored = (ata_write_pio(lba, 255, zeros) == 0) && (ata_write_pio(lba + 255, 1, zeros) == 0);
+    if (!ok || !restored) { ata_bm = 0; return -1; }
+    ata_dma_ok = 1;
+    return 1;
+}
+
 
 /* Turn on multiple-sector writes if the drive supports them, then PROVE they work
  * before anything depends on them. The proof needs somewhere to write test data, so

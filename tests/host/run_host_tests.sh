@@ -15,22 +15,16 @@ check(){ if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 
 echo "== build host harnesses"
 gcc -g -w -fsanitize=address,undefined -I include -o "$W/kh" tests/host/ycfs_kernel_harness.c kernel/fs/ycfs.c || { echo "harness build failed"; exit 1; }
-python3 - "$ROOT" "$W" << 'PYEOF'
-import sys
-root, w = sys.argv[1], sys.argv[2]
-s = open(root + "/kernel/drivers/ata.c").read()
-a = s.index("/* Port I/O helpers */"); b = s.index("/* 400ns delay")
-mock = ('#include <stdint.h>\nuint8_t inb(uint16_t p); void outb(uint16_t p, uint8_t v);\n'
-        'uint16_t inw(uint16_t p); void outw(uint16_t p, uint16_t v);\n'
-        'void insw(uint16_t p, void* a, uint32_t n); void outsw(uint16_t p, const void* a, uint32_t n);\n')
-open(w + "/ata_mock_src.c", "w").write(s[:a] + mock + s[b:])
-PYEOF
+python3 "$ROOT/tests/host/gen_ata_mock.py" "$ROOT" "$W" || { echo "ata mock generation failed"; exit 1; }
 cp tests/host/ata_mock_test.c tests/host/vga_stub.c "$W/"
 gcc -g -w -I include -I "$W" -o "$W/ata_test" "$W/ata_mock_test.c" "$W/vga_stub.c" || { echo "ata test build failed"; exit 1; }
 
 echo "== ATA driver: LBA28 below 2^28 sectors, LBA48 above (mock controller)"
 "$W/ata_test" > "$W/ata.out" 2>&1; rc=$?; grep -c '^ok' "$W/ata.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "ATA driver" || { cat "$W/ata.out"; bad "ATA driver"; }
+
+echo "== kernel link sanity (every referenced symbol is defined somewhere)"
+bash "$ROOT/tests/host/link_check.sh" > "$W/link.out" 2>&1 && ok "$(tail -1 "$W/link.out")" || { cat "$W/link.out"; bad "kernel link check"; }
 
 echo "== ycfs.py: migrate a v1 image (the old 16MB layout), keeping files and the FAT16 area"
 cd "$W"; head -c 1048576 /dev/urandom > fat.bin; truncate -s 64M disk.img; dd if=fat.bin of=disk.img conv=notrunc 2>/dev/null

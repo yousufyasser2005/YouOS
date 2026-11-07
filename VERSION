@@ -1,1 +1,1 @@
-YouOS source tree v3: ATA WRITE MULTIPLE (fast disk writes), idle/busy copy pacing, build stamp
+YouOS source tree v4a: ATA bus-master DMA writes (WRITE MULTIPLE fallback), copy pacing, kernel link check (fixed false alarm)
