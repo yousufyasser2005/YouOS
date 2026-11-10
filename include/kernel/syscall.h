@@ -106,7 +106,15 @@
  * continue it. Returns bytes written or -1. */
 #define SYS_SAVECHUNK     54
 
-#define SYSCALL_COUNT  55
+/* SYS_DBGLOG(buf, len): write text to the serial console ONLY (never drawn
+ * on the framebuffer). Max 512 bytes per call. */
+#define SYS_DBGLOG        55
+
+/* SYS_IOINFO(): which disk-driver modes are active. bit0 = interrupt-driven waits (a process
+ * waiting for the disk sleeps and others run), bit1 = DMA writes, bit2 = DMA reads. */
+#define SYS_IOINFO        56
+
+#define SYSCALL_COUNT  57
 
 void syscall_init(void);
 #endif

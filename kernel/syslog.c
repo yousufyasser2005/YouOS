@@ -1,5 +1,6 @@
 #include <kernel/syslog.h>
 #include <kernel/ycfs.h>
+#include <kernel/sync.h>
 #include <stdint.h>
 
 #define SYSLOG_SIZE 8192
@@ -19,6 +20,9 @@ static void sl_uint(uint64_t v){
 }
 static void slog_flush(void){
     if(!slog_fat_ready||slog_len==0)return;
+    /* Best effort: if another process is inside the filesystem right now, do not wait for it (this
+     * can run from a crash handler); the whole buffer is rewritten on the next flush anyway. */
+    if(storage_busy_by_other())return;
     ycfs_savefile(SYSLOG_PATH, slog_buf, (uint32_t)slog_len);
 }
 

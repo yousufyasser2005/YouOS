@@ -96,6 +96,12 @@ void vga_putchar(char c) {
         vga_putchar_hw(c);
 }
 
+/* Serial-only output: never touches the framebuffer console, so debug
+ * text cannot flash on the real screen. */
+void vga_serial_write(const char* s, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) serial_putc(s[i]);
+}
+
 void vga_puts(const char* s) { while (*s) vga_putchar(*s++); }
 
 void vga_set_color(vga_color_t fg, vga_color_t bg) {

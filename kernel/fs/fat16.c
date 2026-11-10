@@ -1,3 +1,4 @@
+#include <kernel/sync.h>
 #include <kernel/fat16.h>
 #include <kernel/ata.h>
 #include <kernel/vga.h>
@@ -234,7 +235,7 @@ int fat16_is_initialized(void) {
     return initialized;
 }
 
-int fat16_open(const char* path) {
+static int fat16_open_impl(const char* path) {
     if (!initialized) return -1;
 
     /* Skip leading slash */
@@ -266,7 +267,7 @@ int fat16_open(const char* path) {
     return -1; /* no free fd */
 }
 
-int fat16_read(int fd, void* buf, uint32_t size) {
+static int fat16_read_impl(int fd, void* buf, uint32_t size) {
     if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return -1;
     fat16_fd_t* f = &fds[fd];
 
@@ -336,7 +337,7 @@ int fat16_read(int fd, void* buf, uint32_t size) {
     return (int)bytes_read;
 }
 
-int fat16_write(int fd, const void* buf, uint32_t size) {
+static int fat16_write_impl(int fd, const void* buf, uint32_t size) {
     if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return -1;
     fat16_fd_t* f = &fds[fd];
     if (!f->writable) return -1;
@@ -408,7 +409,7 @@ int fat16_write(int fd, const void* buf, uint32_t size) {
     return (int)bytes_written;
 }
 
-int fat16_create(const char* path) {
+static int fat16_create_impl(const char* path) {
     if (!initialized) return -1;
     if (path[0] == '/') path++;
 
@@ -485,14 +486,14 @@ int fat16_create(const char* path) {
     return -1;
 }
 
-int fat16_close(int fd) {
+static int fat16_close_impl(int fd) {
     if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return -1;
     fds[fd].used = 0;
     return 0;
 }
 
 /* ── fat16_list: read root directory entries ─────────────────── */
-int fat16_list(fat16_entry_t* entries, int max_entries) {
+static int fat16_list_impl(fat16_entry_t* entries, int max_entries) {
     fat16_dirent_t dir[16];
     int count = 0;
     uint32_t root_lba = bpb.reserved_sectors
@@ -541,7 +542,7 @@ done:
 }
 
 /* ── fat16_stat ───────────────────────────────────────────────── */
-int fat16_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
+static int fat16_stat_impl(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
     if (!initialized) return -1;
     if (path[0] == '/') path++;
     if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
@@ -554,7 +555,7 @@ int fat16_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
     return 0;
 }
 /* ── fat16_unlink ─────────────────────────────────────────────── */
-int fat16_unlink(const char* path) {
+static int fat16_unlink_impl(const char* path) {
     if (!initialized) return -1;
     if (path[0] == '/') path++;
     if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
@@ -576,7 +577,7 @@ int fat16_unlink(const char* path) {
     return 0;
 }
 /* ── fat16_mkdir ──────────────────────────────────────────────── */
-int fat16_mkdir(const char* path) {
+static int fat16_mkdir_impl(const char* path) {
     if (!initialized) return -1;
     if (path[0] == '/') path++;
     if (path[0]=='d'&&path[1]=='i'&&path[2]=='s'&&path[3]=='k'&&path[4]=='/') path+=5;
@@ -607,7 +608,7 @@ int fat16_mkdir(const char* path) {
 }
 
 /* ── fat16_rename ─────────────────────────────────────────────── */
-int fat16_rename(const char* old_path, const char* new_path) {
+static int fat16_rename_impl(const char* old_path, const char* new_path) {
     if (!initialized) return -1;
     const char* op=old_path; if(op[0]=='/')op++;
     if(op[0]=='d'&&op[1]=='i'&&op[2]=='s'&&op[3]=='k'&&op[4]=='/')op+=5;
@@ -629,7 +630,7 @@ int fat16_rename(const char* old_path, const char* new_path) {
 }
 
 /* ── fat16_list_dir: list a subdirectory by path ─────────────── */
-int fat16_list_dir(const char* path, fat16_entry_t* entries, int max_entries) {
+static int fat16_list_dir_impl(const char* path, fat16_entry_t* entries, int max_entries) {
     if (!initialized) return -1;
     /* strip leading /disk/ */
     const char* p=path;
@@ -690,7 +691,7 @@ done:
     return count;
 }
 
-uint32_t fat16_file_size(int fd) {
+static uint32_t fat16_file_size_impl(int fd) {
     if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return 0;
     return fds[fd].file_size;
 }
@@ -699,7 +700,7 @@ uint32_t fat16_file_size(int fd) {
  * fd's cursor there, so the next fat16_read() continues from `pos`.
  * Walks forward from the current cluster when the target is ahead of
  * it, otherwise restarts from the file's first cluster. */
-int fat16_seek(int fd, uint32_t pos) {
+static int fat16_seek_impl(int fd, uint32_t pos) {
     if (fd < 0 || fd >= FAT16_MAX_FD || !fds[fd].used) return -1;
     fat16_fd_t* f = &fds[fd];
     if (f->writable) return -1;
@@ -731,4 +732,88 @@ int fat16_seek(int fd, uint32_t pos) {
     f->cluster_offset = target_off;
     f->position       = pos;
     return 0;
+}
+
+/* =========================================================================
+ * Storage lock: every public entry point serialises on the storage mutex, so two processes
+ * can never be inside the filesystem at once -- even though either may sleep (waiting for the
+ * disk) in the middle. The lock is recursive, so these functions can call each other.
+ * ========================================================================= */
+int fat16_open(const char* path) {
+    storage_lock();
+    int r = fat16_open_impl(path);
+    storage_unlock();
+    return r;
+}
+int fat16_read(int fd, void* buf, uint32_t size) {
+    storage_lock();
+    int r = fat16_read_impl(fd, buf, size);
+    storage_unlock();
+    return r;
+}
+int fat16_write(int fd, const void* buf, uint32_t size) {
+    storage_lock();
+    int r = fat16_write_impl(fd, buf, size);
+    storage_unlock();
+    return r;
+}
+int fat16_create(const char* path) {
+    storage_lock();
+    int r = fat16_create_impl(path);
+    storage_unlock();
+    return r;
+}
+int fat16_close(int fd) {
+    storage_lock();
+    int r = fat16_close_impl(fd);
+    storage_unlock();
+    return r;
+}
+int fat16_list(fat16_entry_t* entries, int max_entries) {
+    storage_lock();
+    int r = fat16_list_impl(entries, max_entries);
+    storage_unlock();
+    return r;
+}
+int fat16_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
+    storage_lock();
+    int r = fat16_stat_impl(path, size_out, is_dir_out);
+    storage_unlock();
+    return r;
+}
+int fat16_unlink(const char* path) {
+    storage_lock();
+    int r = fat16_unlink_impl(path);
+    storage_unlock();
+    return r;
+}
+int fat16_mkdir(const char* path) {
+    storage_lock();
+    int r = fat16_mkdir_impl(path);
+    storage_unlock();
+    return r;
+}
+int fat16_rename(const char* old_path, const char* new_path) {
+    storage_lock();
+    int r = fat16_rename_impl(old_path, new_path);
+    storage_unlock();
+    return r;
+}
+int fat16_list_dir(const char* path, fat16_entry_t* entries, int max_entries) {
+    storage_lock();
+    int r = fat16_list_dir_impl(path, entries, max_entries);
+    storage_unlock();
+    return r;
+}
+uint32_t fat16_file_size(int fd) {
+    storage_lock();
+    uint32_t r = fat16_file_size_impl(fd);
+    storage_unlock();
+    return r;
+}
+int fat16_seek(int fd, uint32_t pos) {
+    storage_lock();
+    int r = fat16_seek_impl(fd, pos);
+    storage_unlock();
+    return r;
 }

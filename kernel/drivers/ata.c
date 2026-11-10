@@ -9,6 +9,8 @@
 #include <kernel/vga.h>
 #include <kernel/pci.h>
 #include <kernel/vmm.h>
+#include <kernel/pic.h>
+#include <kernel/process.h>
 #include <stdint.h>
 
 /* Drive facts filled in by ata_init() from IDENTIFY. */
@@ -17,6 +19,7 @@ static uint8_t  ata_mult    = 0;   /* sectors per DRQ block for WRITE MULTIPLE; 
 static uint64_t ata_sectors = 0;
 static uint16_t ata_bm      = 0;   /* bus-master IDE I/O base (PCI BAR4); 0 = no DMA controller */
 static int      ata_dma_ok  = 0;   /* 1 once ata_enable_dma()'s self-test has passed */
+static int      ata_dma_read_ok = 0;   /* 1 once the DMA READ self-test has passed too */
 
 /* Port I/O helpers */
 static inline uint8_t inb(uint16_t port) {
@@ -222,7 +225,7 @@ static int ata_issue(uint64_t lba, uint8_t count, int write, int mode, int* used
         outb(ATA_PRIMARY_LBA_LO,   (lba >>  0) & 0xFF);
         outb(ATA_PRIMARY_LBA_MID,  (lba >>  8) & 0xFF);
         outb(ATA_PRIMARY_LBA_HI,   (lba >> 16) & 0xFF);
-        outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA : mode == 1 ? ATA_CMD_WRITE_MULTIPLE : ATA_CMD_WRITE_PIO) : ATA_CMD_READ_PIO);
+        outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA : mode == 1 ? ATA_CMD_WRITE_MULTIPLE : ATA_CMD_WRITE_PIO) : (mode == 2 ? ATA_CMD_READ_DMA : ATA_CMD_READ_PIO));
         return 0;
     }
     if (!ata_lba48 || lba + count > ata_sectors) return -2;
@@ -239,11 +242,73 @@ static int ata_issue(uint64_t lba, uint8_t count, int write, int mode, int* used
     outb(ATA_PRIMARY_LBA_LO,   (lba >>  0) & 0xFF);
     outb(ATA_PRIMARY_LBA_MID,  (lba >>  8) & 0xFF);
     outb(ATA_PRIMARY_LBA_HI,   (lba >> 16) & 0xFF);
-    outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA_EXT : mode == 1 ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_PIO_EXT) : ATA_CMD_READ_PIO_EXT);
+    outb(ATA_PRIMARY_COMMAND,  write ? (mode == 2 ? ATA_CMD_WRITE_DMA_EXT : mode == 1 ? ATA_CMD_WRITE_MULTIPLE_EXT : ATA_CMD_WRITE_PIO_EXT) : (mode == 2 ? ATA_CMD_READ_DMA_EXT : ATA_CMD_READ_PIO_EXT));
     return 0;
 }
 
+/* ---- timing counters (diagnostics; read via ata_stats_take) ---- */
+ata_stats_t ata_stats;
+static inline uint64_t ata_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+void ata_stats_take(ata_stats_t* out) {
+    *out = ata_stats;
+    ata_stats_t z = {0};
+    ata_stats = z;
+}
+
+static int ata_read_sectors_inner(uint64_t lba, uint8_t count, void* buf);
+/* ---- interrupt-driven completion ----------------------------------------------------------
+ * While a DMA transfer or a cache flush is in progress the CPU has nothing to do, so the waiting
+ * process goes to sleep (other processes run) and the drive's interrupt (IRQ14) wakes it. The
+ * drive's interrupt line is only enabled (nIEN=0) while we are about to wait for it; all polled
+ * commands keep it off. IRQ mode is switched on by ata_irq_init() only after it has been SEEN to
+ * work; until then, and whenever it is off, waits poll exactly as before. */
+static int ata_irq_mode = 0;
+static volatile uint32_t ata_irq_count = 0;
+void ata_irq_handler(void) {                     /* called from the IRQ14 stub, interrupts off */
+    (void)inb(ATA_PRIMARY_STATUS);               /* reading Status acknowledges the drive's interrupt */
+    ata_irq_count++;
+    sched_wake((void*)&ata_irq_count);
+}
+static inline void ata_irq_arm(void)    { if (ata_irq_mode) outb(ATA_PRIMARY_CTRL, 0x00); }
+static inline void ata_irq_disarm(void) { if (ata_irq_mode) outb(ATA_PRIMARY_CTRL, 0x02); }
+/* Sleep until the drive interrupts, but never longer than 2 ticks (20 ms) at a time, so a lost
+ * interrupt can only delay a transfer, never hang it. */
+static inline void ata_sleep_for_irq(void) { sched_block((void*)&ata_irq_count, 2); }
+/* BSY wait that sleeps instead of spinning when IRQ mode is on (used for the cache flush). */
+extern uint64_t ata_dma_timeout_cycles;
+static inline uint64_t ata_dma_timeout_cycles_hint(void) { return ata_dma_timeout_cycles; }
+static int ata_wait_busy_sleep(void) {
+    if (!ata_irq_mode) return ata_wait_busy();
+    uint64_t t0 = ata_tsc();
+    for (;;) {
+        if (!(inb(ATA_PRIMARY_CTRL) & ATA_SR_BSY)) return 0;      /* alternate status: does not touch the interrupt */
+        if (ata_tsc() - t0 > ata_dma_timeout_cycles_hint()) return -1;
+        ata_sleep_for_irq();
+    }
+}
+
+static int ata_read_dma(uint64_t lba, uint8_t count, void* buf);
+static void ata_log_read_dma_failed(uint64_t lba, uint8_t count);
 int ata_read_sectors(uint64_t lba, uint8_t count, void* buf) {
+    uint64_t t0 = ata_tsc();
+    int r;
+    if (ata_dma_ok && ata_dma_read_ok && count >= 4 && ata_read_dma(lba, count, buf) == 0) {
+        r = 0; ata_stats.rd_dma_cmds++;
+    } else {
+        if (ata_dma_ok && ata_dma_read_ok && count >= 4) {   /* DMA read failed: no more DMA reads, redo this one by PIO */
+            ata_dma_read_ok = 0;
+            ata_log_read_dma_failed(lba, count);
+        }
+        r = ata_read_sectors_inner(lba, count, buf);
+    }
+    ata_stats.rd_cmds++; ata_stats.rd_sectors += count; ata_stats.rd_cycles += ata_tsc() - t0;
+    return r;
+}
+static int ata_read_sectors_inner(uint64_t lba, uint8_t count, void* buf) {
     int used48;
     if (ata_issue(lba, count, 0, 0, &used48) != 0) return -1;
 
@@ -258,12 +323,27 @@ int ata_read_sectors(uint64_t lba, uint8_t count, void* buf) {
 
 /* Wait for the last data to reach the drive's cache, then flush it so the data is
  * durable when the caller returns. 48-bit writes use FLUSH CACHE EXT (0xEA). */
+static int ata_defer_flush = 0;          /* set while ata_write_sectors_nf() runs */
+static int ata_flush_pending = 0, ata_flush_pending48 = 0;
 static int ata_finish_write(int used48) {
     if (ata_wait_busy() < 0) return -1;
+    if (ata_defer_flush) { ata_flush_pending = 1; ata_flush_pending48 = used48; return 0; }
+    uint64_t t0 = ata_tsc();
+    ata_irq_arm();
     outb(ATA_PRIMARY_COMMAND, used48 ? ATA_CMD_FLUSH_EXT : ATA_CMD_FLUSH);
     ata_delay();
-    if (ata_wait_busy() < 0) return -1;
-    return 0;
+    int r = ata_wait_busy_sleep() < 0 ? -1 : 0;
+    ata_irq_disarm();
+    ata_stats.fl_cmds++; ata_stats.fl_cycles += ata_tsc() - t0;
+    ata_flush_pending = 0;                              /* this flush covers everything written before it */
+    return r;
+}
+int ata_flush_now(void) {
+    if (!ata_flush_pending) return 0;
+    int saved = ata_defer_flush; ata_defer_flush = 0;
+    int r = ata_finish_write(ata_flush_pending48);
+    ata_defer_flush = saved;
+    return r;
 }
 
 /* Plain WRITE SECTORS: one DRQ block per sector. Works on every drive, but an
@@ -336,14 +416,72 @@ static struct {
     uint8_t  pad_prd[4096];
 } ata_dma __attribute__((aligned(65536)));
 
-static int ata_write_dma(uint64_t lba, uint8_t count, const void* buf) {
+static void ata_log_num(char* b, int* k, uint64_t v);
+static void ata_log_str(char* b, int* k, const char* a);
+/* How long a DMA command may take before we give up (TSC cycles; ~13 s at 2.3 GHz).
+ * A variable so the host tests can shorten it. */
+uint64_t ata_dma_timeout_cycles = 5000000000ULL;   /* ~2 s; a healthy command finishes in well under a millisecond */
+static pci_device_t ata_pci;                       /* the IDE controller, remembered by ata_enable_dma() */
+static int ata_pci_ok = 0;
+static uint32_t ata_dma_pcicmd = 0, ata_dma_bme_fixed = 0;   /* PCI command word at the last command; times bus mastering had to be re-enabled */
+static uint8_t  ata_dma_pre = 0, ata_dma_cmdb = 0;           /* bus-master status before the command, command reg before START */
+static uint32_t ata_dma_prdrb = 0;                           /* PRD address as read back from the controller */
+static uint64_t ata_dma_ph0 = 0, ata_dma_php = 0;            /* physical addresses used for the data and the PRD table */
+static uint64_t ata_phys_buf = 0, ata_phys_prd = 0;           /* physical addresses verified by the boot self-test */
+static int ata_phys_warned = 0;
+static int ata_dma_recoveries = 0;                           /* stalls recovered by reset-and-retry (max 2 per boot) */
+static uint64_t ata_dma_waited = 0, ata_dma_polls = 0;   /* last DMA command: cycles waited, status polls */
+static uint8_t  ata_dma_dst = 0, ata_dma_err = 0;         /* drive status / error register after a failure */
+static int ata_dma_logged = 0;                            /* DMA commands reported on serial so far */
+static int ata_dma_why = 0;       /* why the last DMA write failed: 1 issue, 2 timeout, 3 ctrl error, 4 busy, 5 drive error, 6 flush */
+static uint8_t ata_dma_bst = 0;  /* bus-master status at that moment */
+static int ata_dma_attempt(uint64_t lba, uint8_t count, const void* buf) {
     uint32_t bytes = (uint32_t)count * 512;
     const uint8_t* src = (const uint8_t*)buf;
     for (uint32_t i = 0; i < bytes; i++) ata_dma.buf[i] = src[i];
 
-    uint64_t ph0 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf);
-    uint64_t php = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.prd);
+    /* Bus mastering must be on in the controller's PCI command register, or the controller
+     * cannot read the data. Check before every command and switch it back on if something
+     * cleared it. */
+    if (ata_pci_ok) {
+        ata_dma_pcicmd = pci_config_read32(ata_pci.bus, ata_pci.dev, ata_pci.func, 0x04) & 0xFFFF;
+        if (!(ata_dma_pcicmd & 0x04)) {
+            pci_enable_device(&ata_pci);
+            ata_dma_bme_fixed++;
+            char b[100]; int k = 0;
+            ata_log_str(b, &k, "[ata] PCI bus mastering was OFF before a DMA command (cmd=");
+            ata_log_num(b, &k, ata_dma_pcicmd); ata_log_str(b, &k, "); switched it back on\n");
+            vga_serial_write(b, (uint64_t)k);
+        }
+    }
+
+    /* Physical addresses of the bounce buffer and the PRD table. These are static kernel data, so
+     * they never move: use the values the boot self-test proved correct. Looking them up again
+     * here is not safe -- at run time the kernel's table walk was seen returning 0 for them, which
+     * made the controller wait on a PRD table at physical address 0 forever. */
+    uint64_t ph0 = ata_phys_buf, php = ata_phys_prd;
+    if (!ph0 || !php) {                       /* never verified (cannot happen after a real enable): look them up */
+        ph0 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf);
+        php = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.prd);
+    } else if (!ata_phys_warned) {
+        uint64_t l0 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf);
+        uint64_t l1 = vmm_get_phys(&kernel_as, (uint64_t)(uintptr_t)ata_dma.prd);
+        if (l0 != ph0 || l1 != php) {
+            ata_phys_warned = 1;
+            uint64_t w[4]; vmm_walk_debug(&kernel_as, (uint64_t)(uintptr_t)ata_dma.buf, w);
+            char b[300]; int k = 0;
+            ata_log_str(b, &k, "[ata] note: live address lookup now gives data="); ata_log_num(b, &k, l0);
+            ata_log_str(b, &k, " prd="); ata_log_num(b, &k, l1);
+            ata_log_str(b, &k, " but the boot self-test verified data="); ata_log_num(b, &k, ph0);
+            ata_log_str(b, &k, " prd="); ata_log_num(b, &k, php);
+            ata_log_str(b, &k, "; using the verified ones. walk(pml4,pdp,pd,pt)=");
+            ata_log_num(b, &k, w[0]); b[k++] = ','; ata_log_num(b, &k, w[1]); b[k++] = ',';
+            ata_log_num(b, &k, w[2]); b[k++] = ','; ata_log_num(b, &k, w[3]); b[k++] = '\n';
+            vga_serial_write(b, (uint64_t)k);
+        }
+    }
     uint32_t first = bytes > 65536 ? 65536 : bytes;
+    ata_dma_ph0 = ph0; ata_dma_php = php;
     ata_dma.prd[0] = (uint32_t)ph0;
     ata_dma.prd[1] = (first == 65536 ? 0u : first) | (bytes <= 65536 ? 0x80000000u : 0u);
     if (bytes > 65536) {
@@ -355,22 +493,54 @@ static int ata_write_dma(uint64_t lba, uint8_t count, const void* buf) {
     outb((uint16_t)(ata_bm + 2), (uint8_t)(inb((uint16_t)(ata_bm + 2)) | 0x06)); /* clear interrupt + error (write 1) */
     outb((uint16_t)(ata_bm + 0), 0x00);                                   /* direction: memory -> drive; stopped */
     int used48;
-    if (ata_issue(lba, count, 1, 2, &used48) != 0) return -1;
+    ata_dma_pre = inb((uint16_t)(ata_bm + 2));
+    ata_irq_arm();
+    if (ata_issue(lba, count, 1, 2, &used48) != 0) { ata_irq_disarm(); ata_dma_why = 1; return -1; }
+    ata_dma_cmdb = inb((uint16_t)(ata_bm + 0));
+    ata_dma_prdrb = inl((uint16_t)(ata_bm + 4));
     outb((uint16_t)(ata_bm + 0), 0x01);                                   /* start */
 
+    /* Wait for the controller. Between two status reads the CPU spins on the time-stamp
+     * counter for ~10 microseconds instead of hammering the port: under QEMU every port read
+     * is a VM exit that takes the emulator's global lock, and a tight read loop can keep
+     * the emulator's own thread (the one that completes the disk write) from running. */
     int done = 0;
-    for (uint32_t i = 0; i < 4000000; i++) {                              /* a few seconds at most, then give up */
+    uint64_t wt0 = ata_tsc(), polls = 0;
+    for (;;) {
         uint8_t st = inb((uint16_t)(ata_bm + 2));
+        polls++;
         if (st & 0x02) break;                                             /* controller reports an error */
         if (!(st & 0x01)) { done = 1; break; }                            /* transfer no longer active */
+        uint64_t now = ata_tsc();
+        if (now - wt0 > ata_dma_timeout_cycles) break;                    /* give up */
+        if (ata_irq_mode) { ata_sleep_for_irq(); continue; }               /* sleep until the drive interrupts */
+        uint64_t until = now + 20000;
+        while (ata_tsc() < until) __asm__ volatile("pause");
     }
+    ata_irq_disarm();
+    ata_dma_waited = ata_tsc() - wt0; ata_dma_polls = polls;
+    ata_dma_dst = inb(ATA_PRIMARY_STATUS); ata_dma_err = inb(ATA_PRIMARY_ERROR);
     outb((uint16_t)(ata_bm + 0), 0x00);                                   /* stop */
     uint8_t bst = inb((uint16_t)(ata_bm + 2));
     outb((uint16_t)(ata_bm + 2), (uint8_t)(bst | 0x06));
-    if (!done || (bst & 0x02)) return -1;
-    if (ata_wait_busy() < 0) return -1;
-    if (inb(ATA_PRIMARY_STATUS) & (ATA_SR_ERR | ATA_SR_DF)) return -1;
-    return ata_finish_write(used48);
+    ata_dma_bst = bst;
+    if (bst & 0x02) { ata_dma_why = 3; return -1; }           /* controller error bit */
+    if (!done) { ata_dma_why = 2; return -1; }                 /* transfer never finished (timeout) */
+    if (ata_wait_busy() < 0) { ata_dma_why = 4; return -1; }
+    if (inb(ATA_PRIMARY_STATUS) & (ATA_SR_ERR | ATA_SR_DF)) { ata_dma_why = 5; return -1; }
+    if (ata_finish_write(used48) != 0) { ata_dma_why = 6; return -1; }
+    if (ata_dma_logged < 6 || ata_dma_waited > 1000000000ULL) {      /* the first few, and anything slower than ~0.4 s */
+        if (ata_dma_logged < 60) {
+            char b[120]; int k = 0;
+            ata_log_str(b, &k, "[ata] dma ok lba="); ata_log_num(b, &k, lba);
+            ata_log_str(b, &k, " sectors="); ata_log_num(b, &k, count);
+            ata_log_str(b, &k, " waited="); ata_log_num(b, &k, ata_dma_waited / 1000000);
+            ata_log_str(b, &k, "Mc polls="); ata_log_num(b, &k, ata_dma_polls);
+            b[k++] = '\n'; vga_serial_write(b, (uint64_t)k);
+        }
+        ata_dma_logged++;
+    }
+    return 0;
 }
 
 /* Write without DMA: WRITE MULTIPLE if it is on, plain WRITE SECTORS otherwise. */
@@ -382,17 +552,170 @@ static int ata_write_pio(uint64_t lba, uint8_t count, const void* buf) {
     return ata_write_single(lba, count, buf);
 }
 
+static void ata_log_num(char* b, int* k, uint64_t v) {
+    char t[24]; int l = 0; if (!v) t[l++] = '0'; while (v) { t[l++] = (char)('0' + v % 10); v /= 10; } while (l) b[(*k)++] = t[--l];
+}
+static void ata_log_str(char* b, int* k, const char* a) { while (*a) b[(*k)++] = *a++; }
+static void ata_log_dma_fallback(uint64_t lba, uint8_t count, const char* verdict) {
+    char b[480]; int k = 0;
+    const char* a = verdict;
+    while (*a) b[k++] = *a++;
+    ata_log_num(b, &k, (uint64_t)ata_dma_why);
+    a = " (1 issue,2 timeout,3 ctrl-err,4 busy,5 drive-err,6 flush) bm-status="; while (*a) b[k++] = *a++;
+    ata_log_num(b, &k, ata_dma_bst);
+    a = " lba="; while (*a) b[k++] = *a++;
+    ata_log_num(b, &k, lba);
+    a = " sectors="; while (*a) b[k++] = *a++;
+    ata_log_num(b, &k, count);
+    ata_log_str(b, &k, " waited="); ata_log_num(b, &k, ata_dma_waited / 1000000);
+    ata_log_str(b, &k, "Mc polls="); ata_log_num(b, &k, ata_dma_polls);
+    ata_log_str(b, &k, " drive-status="); ata_log_num(b, &k, ata_dma_dst);
+    ata_log_str(b, &k, " drive-error="); ata_log_num(b, &k, ata_dma_err);
+    ata_log_str(b, &k, " pci-cmd="); ata_log_num(b, &k, ata_dma_pcicmd);
+    ata_log_str(b, &k, " bm-pre="); ata_log_num(b, &k, ata_dma_pre);
+    ata_log_str(b, &k, " bm-cmd-before-start="); ata_log_num(b, &k, ata_dma_cmdb);
+    ata_log_str(b, &k, " prd-readback="); ata_log_num(b, &k, ata_dma_prdrb);
+    ata_log_str(b, &k, " phys-data="); ata_log_num(b, &k, ata_dma_ph0);
+    ata_log_str(b, &k, " phys-prd="); ata_log_num(b, &k, ata_dma_php);
+    b[k++] = '\n';
+    vga_serial_write(b, (uint64_t)k);
+}
+/* One DMA write. If the controller stalls (the command never starts or never ends), reset the
+ * bus master and try again once; the same data written twice is harmless. */
+static int ata_write_dma(uint64_t lba, uint8_t count, const void* buf) {
+    int r = ata_dma_attempt(lba, count, buf);
+    if (r == 0) return 0;
+    if (ata_dma_why == 2 && ata_dma_recoveries < 2) {
+        ata_dma_recoveries++;
+        ata_log_dma_fallback(lba, count, "[ata] DMA command stalled; resetting the bus master and retrying once. reason=");
+        outb((uint16_t)(ata_bm + 0), 0x00);
+        outb((uint16_t)(ata_bm + 2), (uint8_t)(inb((uint16_t)(ata_bm + 2)) | 0x06));
+        ata_wait_busy();
+        if (ata_pci_ok) pci_enable_device(&ata_pci);
+        r = ata_dma_attempt(lba, count, buf);
+        if (r == 0) {
+            const char m[] = "[ata] DMA works again after the reset\n";
+            vga_serial_write(m, sizeof m - 1);
+        }
+    }
+    return r;
+}
+
+static int ata_write_sectors_inner(uint64_t lba, uint8_t count, const void* buf);
+static int ata_write_counted(uint64_t lba, uint8_t count, const void* buf) {
+    uint64_t t0 = ata_tsc();
+    int r = ata_write_sectors_inner(lba, count, buf);
+    ata_stats.wr_cmds++; ata_stats.wr_sectors += count; ata_stats.wr_cycles += ata_tsc() - t0;
+    return r;
+}
+/* An ordinary write. A flush left pending by an earlier _nf write happens first, so file data
+ * always reaches the disk before any metadata that is written after it. */
 int ata_write_sectors(uint64_t lba, uint8_t count, const void* buf) {
+    if (ata_flush_pending) ata_flush_now();
+    return ata_write_counted(lba, count, buf);
+}
+/* Write without flushing the drive's cache afterwards. Used for plain file data. */
+int ata_write_sectors_nf(uint64_t lba, uint8_t count, const void* buf) {
+    ata_defer_flush = 1;
+    int r = ata_write_counted(lba, count, buf);
+    ata_defer_flush = 0;
+    return r;
+}
+
+/* Read by bus-master DMA: the controller fills the bounce buffer, which is then copied out.
+ * Same addresses, bus-mastering check and wait as the write path; any failure is reported to the
+ * caller, which redoes the read by PIO. */
+static int ata_read_dma(uint64_t lba, uint8_t count, void* buf) {
+    uint32_t bytes = (uint32_t)count * 512;
+    if (!count || !ata_phys_buf || !ata_phys_prd || bytes > ATA_DMA_BYTES) { ata_dma_why = 1; return -1; }
+    if (ata_pci_ok) {
+        ata_dma_pcicmd = pci_config_read32(ata_pci.bus, ata_pci.dev, ata_pci.func, 0x04) & 0xFFFF;
+        if (!(ata_dma_pcicmd & 0x04)) { pci_enable_device(&ata_pci); ata_dma_bme_fixed++; }
+    }
+    uint64_t ph0 = ata_phys_buf, php = ata_phys_prd;
+    uint32_t first = bytes > 65536 ? 65536 : bytes;
+    ata_dma.prd[0] = (uint32_t)ph0;
+    ata_dma.prd[1] = (first == 65536 ? 0u : first) | (bytes <= 65536 ? 0x80000000u : 0u);
+    if (bytes > 65536) {
+        ata_dma.prd[2] = (uint32_t)(ph0 + 65536);
+        ata_dma.prd[3] = (bytes - 65536) | 0x80000000u;
+    }
+    outl((uint16_t)(ata_bm + 4), (uint32_t)php);
+    outb((uint16_t)(ata_bm + 2), (uint8_t)(inb((uint16_t)(ata_bm + 2)) | 0x06));
+    outb((uint16_t)(ata_bm + 0), 0x08);                                   /* direction: drive -> memory; stopped */
+    int used48;
+    ata_irq_arm();
+    if (ata_issue(lba, count, 0, 2, &used48) != 0) { ata_irq_disarm(); ata_dma_why = 1; return -1; }
+    outb((uint16_t)(ata_bm + 0), 0x09);                                   /* start, drive -> memory */
+    int done = 0;
+    uint64_t wt0 = ata_tsc(), polls = 0;
+    for (;;) {
+        uint8_t st = inb((uint16_t)(ata_bm + 2));
+        polls++;
+        if (st & 0x02) break;
+        if (!(st & 0x01)) { done = 1; break; }
+        uint64_t now = ata_tsc();
+        if (now - wt0 > ata_dma_timeout_cycles) break;
+        if (ata_irq_mode) { ata_sleep_for_irq(); continue; }               /* sleep until the drive interrupts */
+        uint64_t until = now + 20000;
+        while (ata_tsc() < until) __asm__ volatile("pause");
+    }
+    ata_irq_disarm();
+    ata_dma_waited = ata_tsc() - wt0; ata_dma_polls = polls;
+    ata_dma_dst = inb(ATA_PRIMARY_STATUS); ata_dma_err = inb(ATA_PRIMARY_ERROR);
+    outb((uint16_t)(ata_bm + 0), 0x00);                                   /* stop */
+    uint8_t bst = inb((uint16_t)(ata_bm + 2));
+    outb((uint16_t)(ata_bm + 2), (uint8_t)(bst | 0x06));
+    ata_dma_bst = bst;
+    if (bst & 0x02) { ata_dma_why = 3; return -1; }
+    if (!done)      { ata_dma_why = 2; return -1; }
+    if (ata_wait_busy() < 0) { ata_dma_why = 4; return -1; }
+    if (inb(ATA_PRIMARY_STATUS) & (ATA_SR_ERR | ATA_SR_DF)) { ata_dma_why = 5; return -1; }
+    uint8_t* dst = (uint8_t*)buf;
+    for (uint32_t i = 0; i < bytes; i++) dst[i] = ata_dma.buf[i];
+    return 0;
+}
+static void ata_log_read_dma_failed(uint64_t lba, uint8_t count) {
+    ata_log_dma_fallback(lba, count, "[ata] DMA READ FAILED, using PIO from now on. reason=");
+}
+static int ata_write_sectors_inner(uint64_t lba, uint8_t count, const void* buf) {
     if (ata_dma_ok) {
-        if (ata_write_dma(lba, count, buf) == 0) return 0;
+        if (ata_write_dma(lba, count, buf) == 0) { ata_stats.dma_cmds++; return 0; }
         /* The controller failed or timed out: never use DMA again and redo the write by PIO
          * (writing the same data twice is harmless). */
         ata_dma_ok = 0;
+        ata_log_dma_fallback(lba, count, "[ata] DMA write FAILED, using PIO from now on. reason=");
     }
+    ata_stats.pio_cmds++;
     return ata_write_pio(lba, count, buf);
 }
 
 int ata_dma_active(void) { return ata_dma_ok; }
+int ata_irq_active(void) { return ata_irq_mode; }
+
+/* Switch to interrupt-driven waits -- but only if IRQ14 is really delivered: run one small DMA read
+ * with the mode on and require that the interrupt was counted. Anything else leaves polling in place. */
+int ata_irq_init(void) {
+    if (!ata_dma_ok || !ata_dma_read_ok) return 0;          /* the self-test transfer is a DMA read */
+    static uint8_t tmp[8 * 512];
+    pic_unmask(IRQ_ATA1);
+    ata_irq_mode = 1;
+    ata_irq_disarm();                                        /* nIEN=1 except while a wait is armed */
+    uint32_t c0 = ata_irq_count;
+    int r = ata_read_dma(0, 8, tmp);
+    if (r != 0 || ata_irq_count == c0) {
+        ata_irq_mode = 0;
+        outb(ATA_PRIMARY_CTRL, 0x00);
+        pic_mask(IRQ_ATA1);
+        const char m[] = "[ata] interrupt-driven waits: not used (IRQ14 was not seen; polling stays)\n";
+        vga_serial_write(m, sizeof m - 1);
+        return 0;
+    }
+    const char m[] = "[ata] interrupt-driven waits: enabled (IRQ14 self-test passed)\n";
+    vga_serial_write(m, sizeof m - 1);
+    return 1;
+}
+int ata_dma_reads_active(void) { return ata_dma_ok && ata_dma_read_ok; }
 
 /* Find the PCI IDE controller, enable bus mastering and PROVE that DMA writes work before
  * anything depends on them. The proof writes patterns into 256 sectors near the end of the
@@ -407,6 +730,7 @@ int ata_enable_dma(void) {
         found = pci_find_by_class(0x01, 0x01, prog_ifs[i], &d);
     if (!found) found = pci_find_by_id(0x8086, 0x7010, &d) || pci_find_by_id(0x8086, 0x7111, &d);   /* PIIX3 / PIIX4 */
     if (!found) return -1;
+    ata_pci = d; ata_pci_ok = 1;
     uint32_t base = pci_bar_addr(&d, 4);
     if (!base || !(d.bar[4] & 1) || base > 0xFFF0) return -1;             /* BAR4 must be an I/O range */
     pci_enable_device(&d);                                                /* I/O space + bus mastering */
@@ -435,6 +759,7 @@ int ata_enable_dma(void) {
     for (unsigned i = 0; i < sizeof ata_dma.pad_prd; i++) ata_dma.pad_prd[i] = 0xA5;
 
     ata_bm = (uint16_t)base;
+    ata_phys_buf = p0; ata_phys_prd = pp; ata_phys_warned = 0;                       /* used by every DMA command from now on */
     for (int i = 0; i < 255 * 512; i++) exp[i] = (uint8_t)((i * 7 + 13) | 1);        /* never zero */
     int ok = (ata_write_dma(lba, 255, exp) == 0);                                    /* a full-size transfer: two PRD entries */
     if (ok) {                                                                        /* overwrite 8 sectors (one filesystem block) and 1 sector */
@@ -445,6 +770,15 @@ int ata_enable_dma(void) {
     }
     if (ok) ok = (ata_read_sectors(lba, 255, back) == 0);
     if (ok) for (int i = 0; i < 255 * 512; i++) if (back[i] != exp[i]) { ok = 0; break; }
+    int read_ok = 0;
+    if (ok) {                                                                        /* DMA READ: must deliver exactly what the disk holds */
+        static uint8_t r8[8 * 512];
+        for (int i = 0; i < 255 * 512; i++) back[i] = 0xEE;                          /* canary: "no data arrived" cannot pass */
+        for (int i = 0; i < 8 * 512; i++)   r8[i]   = 0xEE;
+        read_ok = (ata_read_dma(lba, 255, back) == 0) && (ata_read_dma(lba + 10, 8, r8) == 0);
+        if (read_ok) for (int i = 0; i < 255 * 512; i++) if (back[i] != exp[i]) { read_ok = 0; break; }
+        if (read_ok) for (int i = 0; i < 8 * 512; i++)   if (r8[i] != exp[10 * 512 + i]) { read_ok = 0; break; }
+    }
     if (ok) {                                                                        /* nothing may have been written outside the buffer */
         for (unsigned i = 0; i < sizeof ata_dma.pad_lo; i++)  if (ata_dma.pad_lo[i]  != 0xA5) { ok = 0; break; }
         for (unsigned i = 0; ok && i < sizeof ata_dma.pad_hi; i++)  if (ata_dma.pad_hi[i]  != 0xA5) ok = 0;
@@ -453,8 +787,11 @@ int ata_enable_dma(void) {
     /* put the zeros back using the proven non-DMA path, whatever happened */
     ata_dma_ok = 0;
     int restored = (ata_write_pio(lba, 255, zeros) == 0) && (ata_write_pio(lba + 255, 1, zeros) == 0);
-    if (!ok || !restored) { ata_bm = 0; return -1; }
+    if (!ok || !restored) { ata_bm = 0; ata_phys_buf = ata_phys_prd = 0; ata_dma_read_ok = 0; return -1; }
     ata_dma_ok = 1;
+    ata_dma_read_ok = read_ok;
+    { const char* m = read_ok ? "[ata] DMA reads: enabled (self-test passed)\n" : "[ata] DMA reads: not used (self-test failed; reads stay PIO)\n";
+      int n = 0; while (m[n]) n++; vga_serial_write(m, (uint64_t)n); }
     return 1;
 }
 

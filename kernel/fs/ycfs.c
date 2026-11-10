@@ -8,6 +8,7 @@
  * driver never hardcodes geometry beyond what mkycfs.py wrote there.
  */
 
+#include <kernel/sync.h>
 #include <kernel/ycfs.h>
 #include <kernel/session.h>
 #include <kernel/ata.h>
@@ -18,6 +19,7 @@ static int initialized = 0;
 static void ycfs_journal_replay(void);
 
 #define SECTORS_PER_BLOCK (YCFS_BLOCK_SIZE / 512)
+#define RDRUN_BLOCKS 31          /* blocks per read command: 31 * 8 = 248 sectors (an ATA command moves at most 255) */
 
 /* Pointers per pointer-block, and bits per bitmap block. */
 #define PPB          (YCFS_BLOCK_SIZE / 4)
@@ -123,7 +125,7 @@ uint32_t ycfs_root_inode(void) {
 /* Read `size` bytes starting at `offset` from the given inode's data,
  * walking direct, indirect and double-indirect pointers. A hole (zero
  * pointer) ends the read early, same as before. */
-int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf) {
+static int64_t ycfs_read_impl(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf) {
     if (!initialized) return -1;
     ycfs_inode_t inode;
     if (read_inode(inode_num, &inode) != 0) return -1;
@@ -139,6 +141,27 @@ int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf)
 
         if (bmap(&inode, block_idx, 0, &phys_block) != 0) break;
         if (!phys_block) break;
+
+        /* Whole blocks: read a run of physically contiguous blocks (up to 31 = 248 sectors) with ONE
+         * disk command, straight into the caller's buffer. */
+        if (block_off == 0 && size - bytes_read >= YCFS_BLOCK_SIZE && inode.size - offset >= YCFS_BLOCK_SIZE) {
+            uint32_t want_blocks = (size - bytes_read) / YCFS_BLOCK_SIZE;
+            uint64_t file_blocks = (inode.size - offset) / YCFS_BLOCK_SIZE;
+            if (want_blocks > RDRUN_BLOCKS) want_blocks = RDRUN_BLOCKS;
+            if ((uint64_t)want_blocks > file_blocks) want_blocks = (uint32_t)file_blocks;
+            uint32_t run = 1;
+            while (run < want_blocks) {
+                uint32_t nxt;
+                if (bmap(&inode, block_idx + run, 0, &nxt) != 0 || nxt != phys_block + run) break;
+                run++;
+            }
+            uint64_t lba = (uint64_t)YCFS_START_LBA + (uint64_t)phys_block * SECTORS_PER_BLOCK;
+            if (ata_read_sectors(lba, (uint8_t)(run * SECTORS_PER_BLOCK), dst + bytes_read) != 0) break;
+            bytes_read += run * YCFS_BLOCK_SIZE;
+            offset     += (uint64_t)run * YCFS_BLOCK_SIZE;
+            continue;
+        }
+
         if (read_block(phys_block, blockbuf) != 0) break;
 
         uint32_t chunk = YCFS_BLOCK_SIZE - block_off;
@@ -155,7 +178,7 @@ int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf)
 }
 
 /* Scan a directory inode's dirent stream for `name`. */
-int ycfs_lookup(uint32_t dir_inode, const char* name,
+static int ycfs_lookup_impl(uint32_t dir_inode, const char* name,
                 uint32_t* out_inode, uint32_t* out_type, uint64_t* out_size) {
     if (!initialized) return -1;
     ycfs_inode_t dir;
@@ -206,6 +229,19 @@ static int raw_write_block(uint32_t block_num, const void* buf) {
  * one drive-cache flush) per up-to-31 blocks instead of one per block:
  * 31 blocks = 248 sectors, the most a single ATA command can carry (255). */
 #define WRUN_BLOCKS 31
+/* Plain file data: written without a cache flush after each command. The driver flushes before the
+ * next ordinary write, and every ycfs_write ends with the inode write, so the data is on the disk
+ * before the metadata that refers to it, and flushed before the call returns. */
+static int raw_write_data_blocks(uint32_t start, uint32_t count, const void* buf) {
+    const uint8_t* p = (const uint8_t*)buf;
+    while (count) {
+        uint32_t n = count > WRUN_BLOCKS ? WRUN_BLOCKS : count;
+        uint64_t lba = (uint64_t)YCFS_START_LBA + (uint64_t)start * SECTORS_PER_BLOCK;
+        if (ata_write_sectors_nf(lba, (uint8_t)(n * SECTORS_PER_BLOCK), p) != 0) return -1;
+        start += n; count -= n; p += (uint64_t)n * YCFS_BLOCK_SIZE;
+    }
+    return 0;
+}
 static int raw_write_blocks(uint32_t start, uint32_t count, const void* buf) {
     const uint8_t* p = (const uint8_t*)buf;
     while (count) {
@@ -394,7 +430,7 @@ static void ycfs_journal_replay(void) {
  *      landed before the "crash" must still get applied by replay.
  * Uses the volume's last block as scratch space (well past any real
  * data at this filesystem's size). Non-destructive to real content. */
-int ycfs_journal_self_test(void) {
+static int ycfs_journal_self_test_impl(void) {
     if (sb.journal_num_blocks < 6) return -1;
     uint32_t scratch = sb.total_blocks - 1;
     static uint8_t testblock[YCFS_BLOCK_SIZE];
@@ -684,7 +720,7 @@ static uint32_t ptr_blocks_needed(ycfs_inode_t* inode, uint32_t first, uint32_t 
     return n;
 }
 
-int64_t ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf) {
+static int64_t ycfs_write_impl(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf) {
     if (!initialized) return -1;
     ycfs_inode_t inode;
     if (read_inode(inode_num, &inode) != 0) return -1;
@@ -742,7 +778,7 @@ int64_t ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const voi
             for (uint32_t i = 0; i < run && !werr; i++)
                 if (write_block(run_start + i, wbuf + (uint64_t)i * YCFS_BLOCK_SIZE) != 0) werr = 1;
         } else {
-            if (raw_write_blocks(run_start, run, wbuf) != 0) werr = 1;
+            if (raw_write_data_blocks(run_start, run, wbuf) != 0) werr = 1;
         }
         if (werr) { failed = 1; break; }
         bytes_written += staged;
@@ -776,7 +812,7 @@ static int append_dirent(uint32_t dir_inode, uint32_t child_inode, const char* n
 
 /* Create a new file or directory named `name` inside dir_inode.
  * Fails if the name already exists. */
-int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode) {
+static int ycfs_create_impl(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode) {
     if (!initialized) return -1;
 
     uint32_t existing_inode, existing_type; uint64_t existing_size;
@@ -904,7 +940,7 @@ static int ycfs_perm_check(uint32_t inode_uid, uint32_t inode_gid,
     return (perm & want) != 0;
 }
 
-int ycfs_check_access(uint32_t inode_num, int want) {
+static int ycfs_check_access_impl(uint32_t inode_num, int want) {
     ycfs_inode_t inode;
     if (read_inode(inode_num, &inode) != 0) return 0;
     return ycfs_perm_check(inode.uid, inode.gid, inode.perm, want);
@@ -983,7 +1019,7 @@ static int clear_dirent(uint32_t dir_inode, const char* name) {
     return -1;
 }
 
-int ycfs_mkdir(const char* path) {
+static int ycfs_mkdir_impl(const char* path) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
@@ -1104,7 +1140,7 @@ static int dir_is_empty(uint32_t dir_inode) {
     return 1;
 }
 
-int ycfs_unlink(const char* path) {
+static int ycfs_unlink_impl(const char* path) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
@@ -1160,7 +1196,7 @@ int ycfs_unlink(const char* path) {
     return 0;
 }
 
-int ycfs_rename(const char* old_path, const char* new_path) {
+static int ycfs_rename_impl(const char* old_path, const char* new_path) {
     if (!initialized) return -1;
     uint32_t old_parent; char old_name[56];
     if (ycfs_resolve_parent(old_path, &old_parent, old_name) != 0) return -1;
@@ -1192,7 +1228,7 @@ int ycfs_rename(const char* old_path, const char* new_path) {
 }
 
 /* Returns 0 and fills uid_out/gid_out/perm_out on success. */
-int ycfs_get_owner(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint16_t* perm_out) {
+static int ycfs_get_owner_impl(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint16_t* perm_out) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;
     if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
@@ -1207,7 +1243,7 @@ int ycfs_get_owner(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint1
 /* chmod — only the file's owner, root, or an elevated (youdo) session
  * may change its permission bits. Matches real POSIX chmod semantics
  * (owner-or-root), extended with youdo as a root-equivalent. */
-int ycfs_chmod(const char* path, uint16_t perm) {
+static int ycfs_chmod_impl(const char* path, uint16_t perm) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;
     if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
@@ -1231,7 +1267,7 @@ int ycfs_chmod(const char* path, uint16_t perm) {
  * giving away files to dodge disk-quota accounting); no reason to be
  * looser here. Sets both uid and gid together, matching this OS's
  * uid==gid private-group convention (see mkycfs.py / auth_create_user). */
-int ycfs_chown(const char* path, uint32_t new_uid, uint32_t new_gid) {
+static int ycfs_chown_impl(const char* path, uint32_t new_uid, uint32_t new_gid) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;
     if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
@@ -1251,7 +1287,7 @@ int ycfs_chown(const char* path, uint32_t new_uid, uint32_t new_gid) {
     return r;
 }
 
-int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
+static int ycfs_stat_impl(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;
     if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
@@ -1260,7 +1296,7 @@ int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
     return 0;
 }
 
-int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries) {
+static int ycfs_list_dir_impl(const char* path, ycfs_entry_t* entries, int max_entries) {
     if (!initialized) return -1;
     uint32_t dir_inode, dir_type; uint64_t dir_size_unused;
     if (ycfs_resolve(path, &dir_inode, &dir_type, &dir_size_unused) != 0) return -1;
@@ -1299,7 +1335,7 @@ int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries) {
  * unlike sys_savefile's basename-only fat16_create fallback — this is
  * what lets YCFS actually honor subdirectories here), then overwrite its
  * content from offset 0. */
-int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
+static int64_t ycfs_savefile_impl(const char* path, const void* buf, uint32_t size) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
@@ -1323,7 +1359,7 @@ int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
  * existing one, keeping its owner and permissions); later pieces append at
  * the given offset. This is what lets the file manager copy files of any
  * size in chunks instead of needing the whole file in memory. */
-int64_t ycfs_write_chunk(const char* path, uint64_t offset, const void* buf, uint32_t len) {
+static int64_t ycfs_write_chunk_impl(const char* path, uint64_t offset, const void* buf, uint32_t len) {
     if (!initialized) return -1;
     uint32_t parent; char name[56];
     if (ycfs_resolve_parent(path, &parent, name) != 0) return -1;
@@ -1346,10 +1382,119 @@ int64_t ycfs_write_chunk(const char* path, uint64_t offset, const void* buf, uin
  * needed here) and reads up to max_size bytes from offset 0. Returns
  * the number of bytes read, or -1 if the path doesn't resolve to a
  * file. */
-int64_t ycfs_read_file(const char* path, void* buf, uint32_t max_size) {
+static int64_t ycfs_read_file_impl(const char* path, void* buf, uint32_t max_size) {
     if (!initialized) return -1;
     uint32_t inode, type; uint64_t size;
     if (ycfs_resolve(path, &inode, &type, &size) != 0) return -1;
     if (type != YCFS_TYPE_FILE) return -1;
     return ycfs_read(inode, 0, max_size, buf);
+}
+
+/* =========================================================================
+ * Storage lock: every public entry point serialises on the storage mutex, so two processes
+ * can never be inside the filesystem at once -- even though either may sleep (waiting for the
+ * disk) in the middle. The lock is recursive, so these functions can call each other.
+ * ========================================================================= */
+int64_t ycfs_read(uint32_t inode_num, uint64_t offset, uint32_t size, void* buf) {
+    storage_lock();
+    int64_t r = ycfs_read_impl(inode_num, offset, size, buf);
+    storage_unlock();
+    return r;
+}
+int ycfs_lookup(uint32_t dir_inode, const char* name,
+                uint32_t* out_inode, uint32_t* out_type, uint64_t* out_size) {
+    storage_lock();
+    int r = ycfs_lookup_impl(dir_inode, name, out_inode, out_type, out_size);
+    storage_unlock();
+    return r;
+}
+int ycfs_journal_self_test(void) {
+    storage_lock();
+    int r = ycfs_journal_self_test_impl();
+    storage_unlock();
+    return r;
+}
+int64_t ycfs_write(uint32_t inode_num, uint64_t offset, uint32_t size, const void* buf) {
+    storage_lock();
+    int64_t r = ycfs_write_impl(inode_num, offset, size, buf);
+    storage_unlock();
+    return r;
+}
+int ycfs_create(uint32_t dir_inode, const char* name, uint32_t type, uint32_t* out_inode) {
+    storage_lock();
+    int r = ycfs_create_impl(dir_inode, name, type, out_inode);
+    storage_unlock();
+    return r;
+}
+int ycfs_check_access(uint32_t inode_num, int want) {
+    storage_lock();
+    int r = ycfs_check_access_impl(inode_num, want);
+    storage_unlock();
+    return r;
+}
+int ycfs_mkdir(const char* path) {
+    storage_lock();
+    int r = ycfs_mkdir_impl(path);
+    storage_unlock();
+    return r;
+}
+int ycfs_unlink(const char* path) {
+    storage_lock();
+    int r = ycfs_unlink_impl(path);
+    storage_unlock();
+    return r;
+}
+int ycfs_rename(const char* old_path, const char* new_path) {
+    storage_lock();
+    int r = ycfs_rename_impl(old_path, new_path);
+    storage_unlock();
+    return r;
+}
+int ycfs_get_owner(const char* path, uint32_t* uid_out, uint32_t* gid_out, uint16_t* perm_out) {
+    storage_lock();
+    int r = ycfs_get_owner_impl(path, uid_out, gid_out, perm_out);
+    storage_unlock();
+    return r;
+}
+int ycfs_chmod(const char* path, uint16_t perm) {
+    storage_lock();
+    int r = ycfs_chmod_impl(path, perm);
+    storage_unlock();
+    return r;
+}
+int ycfs_chown(const char* path, uint32_t new_uid, uint32_t new_gid) {
+    storage_lock();
+    int r = ycfs_chown_impl(path, new_uid, new_gid);
+    storage_unlock();
+    return r;
+}
+int ycfs_stat(const char* path, uint32_t* size_out, uint8_t* is_dir_out) {
+    storage_lock();
+    int r = ycfs_stat_impl(path, size_out, is_dir_out);
+    storage_unlock();
+    return r;
+}
+int ycfs_list_dir(const char* path, ycfs_entry_t* entries, int max_entries) {
+    storage_lock();
+    int r = ycfs_list_dir_impl(path, entries, max_entries);
+    storage_unlock();
+    return r;
+}
+int64_t ycfs_savefile(const char* path, const void* buf, uint32_t size) {
+    storage_lock();
+    int64_t r = ycfs_savefile_impl(path, buf, size);
+    storage_unlock();
+    return r;
+}
+int64_t ycfs_write_chunk(const char* path, uint64_t offset, const void* buf, uint32_t len) {
+    storage_lock();
+    int64_t r = ycfs_write_chunk_impl(path, offset, buf, len);
+    storage_unlock();
+    return r;
+}
+int64_t ycfs_read_file(const char* path, void* buf, uint32_t max_size) {
+    storage_lock();
+    int64_t r = ycfs_read_file_impl(path, buf, max_size);
+    storage_unlock();
+    return r;
 }

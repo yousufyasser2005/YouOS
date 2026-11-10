@@ -78,6 +78,7 @@ void vmm_unmap(address_space_t* as, uint64_t virt);
 
 /* Get physical address mapped at a virtual address (0 if not mapped) */
 uint64_t vmm_get_phys(address_space_t* as, uint64_t virt);
+void     vmm_walk_debug(address_space_t* as, uint64_t virt, uint64_t out[4]);   /* raw PML4/PDP/PD/PT entries, for diagnostics */
 
 /* Switch to an address space (load its PML4 into CR3) */
 void vmm_switch(address_space_t* as);

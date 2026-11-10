@@ -1,4 +1,5 @@
 #include <kernel/process.h>
+#include <kernel/sync.h>
 #include <kernel/heap.h>
 #include <kernel/pmm.h>
 #include <kernel/vga.h>
@@ -177,8 +178,11 @@ process_t* process_create(const char* name, void (*entry)(void),
  * search paths below (which pick their `next` candidate differently)
  * share one, single-tested implementation of the switch itself. Exact
  * same logic as the pre-idle-task do_switch() body -- unchanged. */
+static volatile int need_resched = 0;   /* a wake-up made a process runnable; see sched_resched() */
+
 static void switch_to(process_t* old, process_t* next) {
     current_process = next;
+    need_resched = 0;
 
     if (old->state == PROCESS_RUNNING) old->state = PROCESS_READY;
     next->state    = PROCESS_RUNNING;
@@ -289,6 +293,10 @@ void scheduler_tick(void) {
     do {
         if (p->state == PROCESS_SLEEPING && total_ticks >= p->wake_tick)
             p->state = PROCESS_READY;
+        else if (p->state == PROCESS_BLOCKED && p->wait_chan && p->wait_deadline &&
+                 total_ticks >= p->wait_deadline) {            /* a timed wait ran out */
+            p->state = PROCESS_READY; p->wait_chan = 0; p->wait_timedout = 1;
+        }
         p = p->next;
     } while (p != process_list);
 
@@ -429,6 +437,7 @@ static void reap_orphaned_zombies(void) {
 void process_exit(void) {
     __asm__ volatile ("cli");
     uint32_t my_pid = current_process->pid;
+    sync_process_died(my_pid);                 /* a dying process must not keep a kernel lock */
     current_process->state = PROCESS_DEAD;
     wake_waiter_for(my_pid);
     reap_orphaned_zombies();
@@ -477,10 +486,110 @@ int process_kill(uint32_t pid) {
     if (!p) return -1;
     if (p == current_process) return -4;
     if (p->state == PROCESS_DEAD) return -2;
+    if (p->nointr > 0) {
+        /* The target is inside a critical section (it holds the storage lock, or is waiting for a
+         * disk transfer). Abandoning its stack now would leave that lock held forever and the
+         * filesystem half-updated. Mark the kill instead: it takes effect the moment the process
+         * leaves the section (sched_nointr_leave) or returns from its system call. */
+        p->kill_pending = 1;
+        return 0;
+    }
     p->state = PROCESS_DEAD;
+    sync_process_died(pid);
     wake_waiter_for(pid);
     reap_orphaned_zombies();
     return 0;
+}
+
+/* =========================================================================
+ * Blocking primitives: sleep on a channel, wake by channel.
+ *
+ * The kernel is NOT preemptible: kernel code (system calls) runs with interrupts off and only
+ * gives up the CPU at these explicit sleep points. That keeps all the data structures that were
+ * written under that assumption safe, and it means the check-then-sleep sequence below cannot
+ * lose a wake-up -- an interrupt cannot arrive between "the condition is false" and "I am
+ * asleep", because interrupts are off for both.
+ * ========================================================================= */
+static inline uint64_t irq_save(void) {
+    uint64_t f;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(f) : : "memory");
+    return f;
+}
+static inline void irq_restore(uint64_t f) {
+    __asm__ volatile ("pushq %0; popfq" : : "r"(f) : "memory", "cc");
+}
+
+uint32_t sched_current_pid(void) {
+    return (current_process && current_process != idle_process) ? current_process->pid : 0;
+}
+
+/* Sleep until sched_wake(chan) is called or `timeout_ticks` (0 = forever) pass. The caller must
+ * re-check its condition afterwards: a wake-up means "something changed", not "your wish is
+ * granted". Returns 1 if the timeout ended the sleep. A process asleep here cannot be killed
+ * (see process_kill), because the thing it waits for is a hardware completion or a lock owner. */
+int sched_block(void* chan, uint64_t timeout_ticks) {
+    uint64_t f = irq_save();
+    process_t* me = current_process;
+    me->nointr++;
+    me->wait_chan     = chan;
+    me->wait_timedout = 0;
+    me->wait_deadline = timeout_ticks ? total_ticks + timeout_ticks : 0;
+    me->state         = PROCESS_BLOCKED;
+    do_switch();                       /* returns once we are READY and chosen again */
+    me->wait_chan     = 0;
+    me->wait_deadline = 0;
+    int timed_out     = me->wait_timedout;
+    me->wait_timedout = 0;
+    me->nointr--;
+    irq_restore(f);
+    return timed_out;
+}
+
+void sched_wake(void* chan) {
+    if (!process_list) return;
+    uint64_t f = irq_save();
+    process_t* p = process_list;
+    do {
+        if (p->state == PROCESS_BLOCKED && p->wait_chan == chan) {
+            p->state = PROCESS_READY; p->wait_chan = 0; need_resched = 1;
+        }
+        p = p->next;
+    } while (p != process_list);
+    irq_restore(f);
+}
+
+/* Let other runnable processes have the CPU, from kernel code that must keep interrupts off
+ * (unlike process_yield(), which turns them on when it returns). */
+void sched_yield_kernel(void) {
+    uint64_t f = irq_save();
+    do_switch();
+    irq_restore(f);
+}
+
+/* Called by an interrupt handler (after it has acknowledged the interrupt) once it has woken
+ * someone: run the woken process now instead of waiting up to a whole timeslice, so disk
+ * completions are acted on at once. */
+void sched_resched(void) {
+    if (need_resched) do_switch();
+}
+
+void sched_nointr_enter(void) {
+    if (current_process) current_process->nointr++;
+}
+
+int sched_check_pending_kill(void) {
+    process_t* me = current_process;
+    if (me && me->kill_pending && me->nointr == 0) {
+        me->kill_pending = 0;
+        process_exit();                /* never returns */
+    }
+    return 0;
+}
+
+void sched_nointr_leave(void) {
+    if (!current_process) return;
+    if (current_process->nointr) current_process->nointr--;
+    sched_check_pending_kill();
 }
 
 /* Block the calling process until `child` dies, WITHOUT making it

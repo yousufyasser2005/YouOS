@@ -23,6 +23,11 @@ echo "== ATA driver: LBA28 below 2^28 sectors, LBA48 above (mock controller)"
 "$W/ata_test" > "$W/ata.out" 2>&1; rc=$?; grep -c '^ok' "$W/ata.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "ATA driver" || { cat "$W/ata.out"; bad "ATA driver"; }
 
+echo "== kernel mutex: mutual exclusion, recursion, owner death, deferred kill (real sync.c, simulated scheduler)"
+gcc -g -O0 -fsanitize=undefined -DSYNC_HOST_TEST -I include -o "$W/sync_test" tests/host/sync_test.c kernel/proc/sync.c || { echo "sync test build failed"; exit 1; }
+"$W/sync_test" > "$W/sync.out" 2>&1; rc=$?; grep -c '^  ok' "$W/sync.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "kernel mutex" || { cat "$W/sync.out"; bad "kernel mutex"; }
+
 echo "== kernel link sanity (every referenced symbol is defined somewhere)"
 bash "$ROOT/tests/host/link_check.sh" > "$W/link.out" 2>&1 && ok "$(tail -1 "$W/link.out")" || { cat "$W/link.out"; bad "kernel link check"; }
 
@@ -72,6 +77,17 @@ for f in src/*.bin; do b=$(basename "$f" .bin); $Y get disk.img /$b.k out/p_$b >
 for f in src/*.bin; do b=$(basename "$f" .bin); "$W/kh" disk.img unlink $b.k >/dev/null 2>&1 || bad "kernel unlink $b"; done
 $Y fsck disk.img | tail -1 | grep -q OK && ok "fsck after kernel unlinks (no leaks, counters exact)" || bad "fsck after unlinks"
 "$W/kh" disk.img journaltest 2>&1 | grep -q PASS && ok "journal self-test" || bad "journal self-test"
+
+echo "== read batching: contiguous blocks need few disk commands; interleaved (fragmented) files still read exactly"
+head -c 20971520 /dev/urandom > src/rb20.bin
+"$W/kh" disk.img write rb20 src/rb20.bin >/dev/null 2>&1 || bad "write 20MB for read-count test"
+RC=$("$W/kh" disk.img readcount rb20 2>/dev/null | grep -o "in [0-9]* read" | grep -o "[0-9]*")
+[ -n "$RC" ] && [ "$RC" -lt 400 ] && ok "20MB contiguous file read with $RC disk commands (4KB-per-command would need 5120+)" || bad "read batching: $RC commands"
+"$W/kh" disk.img read rb20 out/rb20.out >/dev/null 2>&1 && cmp -s src/rb20.bin out/rb20.out && ok "batched read returns the exact 20MB" || bad "batched read content"
+FR=$("$W/kh" disk.img frag 2>&1 | tee frag.out | grep -o "[0-9]* read commands" | grep -o "^[0-9]*")
+grep -q "frag: PASS" frag.out && ok "interleaved files read back exactly (incl. an unaligned range across gaps)" || bad "fragmented read content"
+[ -n "$FR" ] && [ "$FR" -gt 150 ] && ok "the test files really were fragmented ($FR read commands for 400 blocks)" || bad "fragmentation test is vacuous ($FR read commands)"
+$Y fsck disk.img | tail -1 | grep -q OK && ok "fsck after the read-batching runs" || bad "fsck after read batching"
 
 echo "== 1 TB image: metadata, and the kernel allocating past the 128GB LBA28 limit"
 truncate -s 64M big.img; $Y mkfs big.img --size 1T --yes >/dev/null && ok "mkfs 1TB" || bad "mkfs 1TB"
@@ -195,6 +211,45 @@ check2 "copy larger than the free space fails" "! $F full.img job /ycfs/nine.bin
 check2 "...partial copy removed" "$T absent full.img /nine_copy.bin"
 [ "$($Y info full.img | grep 'free  ')" = "$free0" ] && ok "...free space exactly restored" || bad "free space not restored after failed copy"
 $Y fsck full.img | tail -1 | grep -q OK && ok "fsck after disk-full failure" || bad "fsck after disk-full"
+
+echo "== background transfer worker (xfer_proto.h: desktop <-> copyd protocol, with the real worker logic and filesystem)"
+truncate -s 64M wk.img; $Y mkfs wk.img --size 1G --yes >/dev/null; $T setup wk.img
+wo=$($F wk.img wjob 0 /ycfs/src /ycfs/dest/src 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob DONE" && ok "folder tree copied through the worker protocol" || bad "worker folder copy: $wo"
+echo "$wo" | grep -q "regress=0" && ok "progress snapshots never go backwards" || bad "worker progress regressed"
+echo "$wo" | grep -q "msgs=[1-9]" && ok "the desktop received progress snapshots ($(echo "$wo" | grep -o 'msgs=[0-9]*'))" || bad "no snapshots received"
+check2 "worker copy is identical to the source" "$T compare wk.img /src /dest/src"
+wo=$($F wk.img wjob 0 /ycfs/huge.bin /ycfs/dest/huge.bin 0 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob DONE" && ok "20MB file copied through the worker" || bad "worker 20MB copy: $wo"
+check2 "20MB worker copy is identical" "$T compare wk.img /huge.bin /dest/huge.bin"
+wo=$($F wk.img wjob 0 /ycfs/src /ycfs/dest/slow 1 -1 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob DONE" && ok "desktop that drains rarely (progress queue overflows): copy still completes" || bad "slow desktop: $wo"
+check2 "...and the copy is identical" "$T compare wk.img /src /dest/slow"
+wo=$($F wk.img wjob 0 /ycfs/huge.bin /ycfs/dest/h2.bin 0 3 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob CANCELLED" && ok "cancel message stops a running 20MB copy" || bad "cancel: $wo"
+check2 "...the worker removed the partial file itself" "$T absent wk.img /dest/h2.bin"
+wo=$($F wk.img wjob 0 /ycfs/src /ycfs/dest/c2 1 4 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob CANCELLED" && ok "cancel stops a folder copy" || bad "folder cancel: $wo"
+check2 "...and nothing is left behind" "$T absent wk.img /dest/c2"
+wo=$($F wk.img wjob 0 /ycfs/src /ycfs/dest/c3 1 0 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob CANCELLED" && ok "cancel sent before the worker started" || bad "early cancel: $wo"
+check2 "...nothing created" "$T absent wk.img /dest/c3"
+wo=$($F wk.img wjob 0 /ycfs/toomany /ycfs/dest/toomany 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob FAILED: .*too many" && ok "300-entry folder refused with the reason delivered to the desktop" || bad "refusal: $wo"
+check2 "...and nothing was created" "$T absent wk.img /dest/toomany"
+wo=$($F wk.img wjob 0 /ycfs/deep1 /ycfs/dest/deep1 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob FAILED" && ok "too-deep folder refused through the worker" || bad "deep refusal: $wo"
+wo=$($F wk.img wjob 0 /ycfs/src /ycfs/dest/pre 1 -1 0 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob DONE" && ok "stale messages left from an earlier job are cleared, not mistaken for this one" || bad "stale messages: $wo"
+check2 "...copy identical" "$T compare wk.img /src /dest/pre"
+wo=$($F wk.img wjob 1 /ycfs/dest/pre "" 1 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob DONE" && ok "folder deleted through the worker" || bad "worker delete: $wo"
+check2 "...it is gone" "$T absent wk.img /dest/pre"
+wo=$($F wk.img wjob 1 /ycfs/dest/slow "" 1 3 2>&1 | grep '^wjob')
+echo "$wo" | grep -q "wjob CANCELLED" && ok "delete can be stopped part-way" || bad "delete cancel: $wo"
+$F wk.img wjob 1 /ycfs/dest "" 1 >/dev/null 2>&1; check2 "...and the rest can then be deleted" "$T absent wk.img /dest"
+$F wk.img wproto 2>&1 | grep -q "wproto OK" && ok "protocol: 219-char paths survive splitting; missing request reported; garbage ignored; full queue cannot lose the final report" || bad "protocol corner cases"
+$Y fsck wk.img | tail -1 | grep -q OK && ok "fsck after every worker scenario" || bad "fsck after worker scenarios"
 
 echo "== ycfs.py fsck --repair (orphans -> /lost+found, leaks, bad counters, unclean journal)"
 python3 "$ROOT/tests/host/repair_test.py" > repair.out 2>&1; rc=$?

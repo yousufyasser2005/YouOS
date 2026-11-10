@@ -112,6 +112,23 @@ void vmm_unmap(address_space_t* as, uint64_t virt)
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
+/* Diagnostics: raw table entries met on the way to `virt` (0 once an entry is missing). */
+void vmm_walk_debug(address_space_t* as, uint64_t virt, uint64_t out[4])
+{
+    out[0] = out[1] = out[2] = out[3] = 0;
+    pte_t* pml4 = as->pml4;
+    out[0] = pml4[PML4_INDEX(virt)];
+    if (!(out[0] & PTE_PRESENT)) return;
+    pte_t* pdp = (pte_t*)(out[0] & PTE_ADDR_MASK);
+    out[1] = pdp[PDP_INDEX(virt)];
+    if (!(out[1] & PTE_PRESENT)) return;
+    pte_t* pd = (pte_t*)(out[1] & PTE_ADDR_MASK);
+    out[2] = pd[PD_INDEX(virt)];
+    if (!(out[2] & PTE_PRESENT) || (out[2] & PTE_HUGE)) return;
+    pte_t* pt = (pte_t*)(out[2] & PTE_ADDR_MASK);
+    out[3] = pt[PT_INDEX(virt)];
+}
+
 uint64_t vmm_get_phys(address_space_t* as, uint64_t virt)
 {
     pte_t* pml4 = as->pml4;

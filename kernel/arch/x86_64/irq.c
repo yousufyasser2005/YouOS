@@ -37,6 +37,16 @@ void irq_common_handler(registers_t* regs)
         return;
     }
 
+    if (irq == IRQ_ATA1) {
+        /* Disk interrupt: wake whoever sleeps on the transfer, acknowledge the PIC, THEN let the
+         * woken process run at once (same order as the timer: EOI before any context switch). */
+        extern void ata_irq_handler(void);
+        ata_irq_handler();
+        pic_eoi(irq);
+        sched_resched();
+        return;
+    }
+
     if (irq < 16 && irq_handlers[irq])
         irq_handlers[irq](regs);
 

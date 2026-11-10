@@ -932,6 +932,10 @@ static void tcmd(const char*cmd){
         tprint(g_rtc_ok?"rtc: OK (showing wall clock)":"rtc: FAILED (showing uptime)");
         return;
     }
+    if(cmd[0]=='s'&&cmd[1]=='c'&&cmd[2]=='h'&&cmd[3]=='e'&&cmd[4]=='d'&&cmd[5]=='t'&&cmd[6]=='e'&&cmd[7]=='s'&&cmd[8]=='t'&&!cmd[9]){
+        open_new_pterm("schedtest");tprint("schedtest: running in a new terminal window (about 10-20 seconds).");
+        return;
+    }
     if(cmd[0]=='s'&&cmd[1]=='e'&&cmd[2]=='e'&&cmd[3]=='k'&&cmd[4]=='t'&&cmd[5]=='e'&&cmd[6]=='s'&&cmd[7]=='t'&&(cmd[8]==' '||!cmd[8])){
         const char*pa=cmd+8;while(*pa==' ')pa++;
         if(!*pa)tprint("usage: seektest <path>   e.g. seektest /ycfs/big.bin");
@@ -963,7 +967,7 @@ static void tcmd(const char*cmd){
     for(int k=0;mm[k]||cmd[k];k++)  if(mm[k]!=cmd[k])  {mmm=0;break;}
     for(int k=0;ii[k]||cmd[k];k++)  if(ii[k]!=cmd[k])  {mii=0;break;}
     for(int k=0;pc[k]||cmd[k];k++)  if(pc[k]!=cmd[k])  {mpc=0;break;}
-    if(mh)tprint("Commands: help date seektest clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
+    if(mh)tprint("Commands: help date seektest schedtest clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
     else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
@@ -1342,7 +1346,7 @@ static void ft_tsc_calibrate(void){
         char b[64];int k=0;const char*t="[xfer] cycle counter: ";for(int j=0;t[j];j++)b[k++]=t[j];
         char nb[24];int nl=fmt_u64(nb,ft_tsc_per_ms);for(int j=0;j<nl;j++)b[k++]=nb[j];
         const char*u=" kHz";for(int j=0;u[j];j++)b[k++]=u[j];
-        b[k++]='\n';b[k]=0;sys_write(1,b,(u64)k);
+        b[k++]='\n';b[k]=0;sys_dbglog(b,(u64)k);
     }
 }
 static unsigned long long ft_now_ms(void){
@@ -1351,6 +1355,7 @@ static unsigned long long ft_now_ms(void){
 }
 #define FT_NOW() ft_now_ms()
 #include "fs_tree.h"
+#include "xfer_proto.h"
 typedef struct{
     Dirent entries[MAX_FILES];
     int count,scroll,hovered,loaded;
@@ -3222,10 +3227,48 @@ static void xfer_open_window(const char*name,const char*title){
     }
     xfer_win=i;
 }
+/* ---- background worker -------------------------------------------------------------------
+ * Copies and deletes run in a separate process, `copyd` (see xfer_proto.h). ft_job below is then
+ * only a MIRROR of the worker's job, refreshed from its progress messages, so the progress window
+ * and notifications work as before. If the worker cannot be started, the job runs in this process
+ * with the old paced engine instead. */
+static int     xfer_remote=0;          /* 1 from starting a worker until it has been reaped */
+static int64_t xfer_worker_pid=-1;
+static int     xfer_ui_done=0;         /* the end-of-job notification has been shown */
+static int     xfer_cancelling=0;      /* the user cancelled; the worker is cleaning up */
+static char    xfer_err_store[40];
+static int xfer_worker_ok=-1;          /* -1 = not checked yet, 0 = no, 1 = yes */
+static int xfer_remote_start(int kind,int is_dir,const char*src,const char*dst){
+    if(xfer_remote)return -1;
+    if(xfer_worker_ok<0){
+        /* A separate process only helps if waiting for the disk puts a process to sleep. When the
+         * driver is still polling, the wait would freeze the desktop anyway -- and without the
+         * pacing of the in-process engine it would feel worse. So then: keep the old engine. */
+        xfer_worker_ok=(sys_ioinfo()&1)?1:0;
+        const char*m=xfer_worker_ok?"[xfer] background worker: enabled (disk waits sleep)\n":"[xfer] background worker: not used (disk waits still poll); in-process paced copy\n";
+        int n=0;while(m[n])n++;sys_dbglog(m,(uint64_t)n);
+    }
+    if(!xfer_worker_ok)return -1;
+    if(xr_send_job(kind,is_dir,src,dst)!=0)return -1;
+    int64_t pid=sys_spawn_arg("copyd","");
+    if(pid<0){xr_drain(XFER_Q_DN);return -1;}
+    xfer_worker_pid=pid;xfer_remote=1;xfer_ui_done=0;xfer_cancelling=0;
+    FtJob*j=&ft_job;
+    j->state=FTJ_SCAN;j->kind=kind;j->root_is_dir=is_dir;j->depth=-1;j->fd=-1;
+    j->total_bytes=j->done_bytes=0;j->total_files=j->done_files=0;j->total_items=j->done_items=0;
+    j->total_known=(kind==FTK_COPY)?1:0;
+    j->cur_name[0]=0;j->chunk_len=0;j->rate_bpms=0;j->last_chunk_ms=0;j->max_step_bytes=0;
+    xfer_err_store[0]=0;j->err=xfer_err_store;
+    j->t_start=ft_now_ms();
+    return 0;
+}
 static int xfer_begin(const char*src,const char*dst,int is_dir,const char*name){
     ft_tsc_calibrate();
     xfer_input_ms=ft_now_ms();
-    if(ft_job_start(src,dst,is_dir)!=0)return -1;
+    if(xfer_remote){ft_err="the previous transfer is still finishing";return -1;}
+    if(xfer_remote_start(FTK_COPY,is_dir,src,dst)!=0){
+        if(ft_job_start(src,dst,is_dir)!=0)return -1;       /* no worker: do it here, paced, as before */
+    }
     xfer_open_window(name,"Copying");
     return 0;
 }
@@ -3233,7 +3276,10 @@ static int xfer_begin(const char*src,const char*dst,int is_dir,const char*name){
 static int xfer_begin_delete(const char*path,int is_dir,const char*name){
     ft_tsc_calibrate();
     xfer_input_ms=ft_now_ms();
-    if(ft_job_start_delete(path,is_dir)!=0)return -1;
+    if(xfer_remote){ft_err="the previous transfer is still finishing";return -1;}
+    if(xfer_remote_start(FTK_DELETE,is_dir,path,"")!=0){
+        if(ft_job_start_delete(path,is_dir)!=0)return -1;
+    }
     xfer_open_window(name,"Deleting");
     return 0;
 }
@@ -3277,10 +3323,49 @@ static void xfer_dbg_print(int idle){
     b[k++]='\n';b[k]=0;
     #undef PUTS
     #undef PUTN
-    sys_write(1,b,(u64)k);
+    sys_dbglog(b,(u64)k);
+}
+static void xfer_job_ended_ui(void){
+    int isdel=ft_job.kind==FTK_DELETE;
+    if(ft_job.state==FTJ_DONE){
+        xfer_hide_window();
+        xfer_notify(isdel?"Deleted ":"Copied ",0);
+    } else if(ft_job.state==FTJ_ERROR){
+        xfer_set_title(isdel?"Delete failed":"Copy failed",-1);
+        if(xfer_win>=0&&!wins[xfer_win].visible){wins[xfer_win].visible=1;wins[xfer_win].minimized=0;wm_focus(xfer_win);}
+        xfer_notify(isdel?"Delete failed: ":"Copy failed: ",0);
+    }
+    xfer_refresh_filemanagers();
+}
+/* Remote jobs: take the worker's progress, notice when it ends (or dies). No pacing: the worker
+ * is a separate process and the scheduler shares the CPU. */
+static void xfer_pump_remote(void){
+    if(xfer_cancelling)xr_drain(XFER_Q_UP);                 /* stopped by the user: ignore further progress */
+    else xr_pump(&ft_job,xfer_err_store);
+    int dead=0;
+    if(xfer_worker_pid>=0&&sys_wait_nonblock(xfer_worker_pid)!=-2){xfer_worker_pid=-1;dead=1;}
+    if(dead&&!xfer_cancelling){
+        xr_pump(&ft_job,xfer_err_store);                   /* its last words, posted just before it exited */
+        if(ftj_active()){                                   /* it vanished mid-job */
+            const char*m="transfer process stopped unexpectedly";int k=0;
+            while(m[k]&&k<39){xfer_err_store[k]=m[k];k++;}xfer_err_store[k]=0;
+            ft_job.state=FTJ_ERROR;ft_job.err=xfer_err_store;
+        }
+    }
+    if(!xfer_cancelling&&ftj_active()){
+        int isdel=ft_job.kind==FTK_DELETE;
+        xfer_set_title(isdel?"Deleting":(ft_job.state==FTJ_SCAN?"Preparing":"Copying"),ft_job.state==FTJ_SCAN||(isdel&&!ft_job.total_known)?-1:ft_job_percent());
+    } else if(!xfer_cancelling&&!xfer_ui_done){
+        xfer_ui_done=1;xfer_dbg_t=0;
+        xfer_job_ended_ui();
+    }
+    if(dead){                                               /* the worker is gone: its cleanup (if cancelled) is finished too */
+        xfer_remote=0;
+        if(xfer_cancelling){xfer_cancelling=0;xfer_refresh_filemanagers();}
+    }
 }
 static void xfer_pump(void){
-    if(!ftj_active())return;
+    if(!ftj_active()&&!xfer_remote)return;
     unsigned long long now=ft_now_ms();
     static int pmx=-1,pmy=-1,pbtn=0;
     if(mouse_x!=pmx||mouse_y!=pmy||mouse_btn!=pbtn){xfer_input_ms=now;pmx=mouse_x;pmy=mouse_y;pbtn=mouse_btn;}
@@ -3291,6 +3376,11 @@ static void xfer_pump(void){
     else{unsigned long long fm=now-xfer_dbg_last;if(fm>xfer_dbg_maxf)xfer_dbg_maxf=fm;}
     xfer_dbg_last=now;xfer_dbg_frames++;
 
+    if(xfer_remote){
+        if(now-xfer_dbg_t>=1000){xfer_dbg_print(idle);xfer_dbg_t=0;}
+        xfer_pump_remote();
+        return;
+    }
     int run=1;
     if(!idle&&xfer_slice_ms&&now-xfer_slice_end<3*xfer_slice_ms)run=0;     /* let the desktop have the next few frames */
     if(run){
@@ -3308,26 +3398,34 @@ static void xfer_pump(void){
         return;
     }
     xfer_dbg_t=0;
-    /* the job just ended */
-    int isdel=ft_job.kind==FTK_DELETE;
-    if(ft_job.state==FTJ_DONE){
-        xfer_hide_window();
-        xfer_notify(isdel?"Deleted ":"Copied ",0);
-    } else if(ft_job.state==FTJ_ERROR){
-        xfer_set_title(isdel?"Delete failed":"Copy failed",-1);
-        if(xfer_win>=0&&!wins[xfer_win].visible){wins[xfer_win].visible=1;wins[xfer_win].minimized=0;wm_focus(xfer_win);}
-        xfer_notify(isdel?"Delete failed: ":"Copy failed: ",0);
-    }
-    xfer_refresh_filemanagers();
+    xfer_job_ended_ui();                                   /* the job just ended */
 }
 static void xfer_cancel(void){
     if(!ftj_active())return;
     int isdel=ft_job.kind==FTK_DELETE;
-    ft_job_cancel();
+    if(xfer_remote){xr_cancel();xfer_cancelling=1;ft_job.state=FTJ_CANCELLED;}   /* the worker removes what it wrote, then exits */
+    else ft_job_cancel();
     xfer_hide_window();
     xfer_notify(isdel?"Stopped deleting ":"Cancelled copying ",0);
     xfer_refresh_filemanagers();
 }
+/* A killed process may not be gone yet: if it was in the middle of a disk operation the kernel lets it
+ * finish that (so the filesystem lock is never left held) and it dies a moment later. Processes
+ * whose reap did not succeed immediately are remembered here and retried every frame. */
+#define REAP_MAX 32
+static int64_t reap_list[REAP_MAX]; static int reap_n=0;
+static void reap_later(int64_t pid){ if(reap_n<REAP_MAX)reap_list[reap_n++]=pid; }
+static void reap_poll(void){
+    for(int i=0;i<reap_n;){
+        if(sys_wait_nonblock(reap_list[i])==-2){i++;}          /* still finishing its disk operation */
+        else{reap_list[i]=reap_list[--reap_n];}                /* reaped (or already gone) */
+    }
+}
+static void kill_and_reap(int64_t pid){
+    sys_kill(pid);
+    if(sys_wait_nonblock(pid)==-2)reap_later(pid);
+}
+
 /* Close window i: stop what backs it, release per-window references, and
  * give its slot back if the window type is created fresh on every open
  * (file manager, notepad, calculator, terminal, media player). */
@@ -3337,8 +3435,7 @@ static void wm_close(int i){
     if(id==WIN_TRANSFER&&ftj_active()){xfer_cancel();return;}      /* closing a running copy cancels it */
     if(id==WIN_PTERM){
         if(!pterm_states[i].exited){
-            sys_kill(pterm_states[i].pid);
-            sys_wait_nonblock(pterm_states[i].pid);
+            kill_and_reap(pterm_states[i].pid);
             pterm_states[i].exited=1;
         }
         pterm_states[i].pid=-1;
@@ -5702,6 +5799,7 @@ int main(void){
             draw_calendar(cardx+SC(2),y2+SC(16),cardw-SC(4),g_mo,g_yr,g_dy);
         }
         xfer_pump();   /* give a running file copy its slice of this frame */
+        reap_poll();   /* finish off processes whose kill had to wait for a disk operation */
         wm_sort();
         for(int si=0;si<win_count;si++){
             int i=z_order[si];if(!wins[i].visible||wins[i].minimized)continue;

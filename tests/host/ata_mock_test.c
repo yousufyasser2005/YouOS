@@ -13,8 +13,19 @@
 #define BM_BASE   0xC040
 address_space_t kernel_as;
 static int bus_master_enabled = 0, pci_present = 1;
+/* scheduler / PIC hooks the driver now uses */
+static int pic_irq14_unmasked = 0;
+void pic_unmask(uint8_t irq) { if (irq == 14) pic_irq14_unmasked = 1; }
+void pic_mask(uint8_t irq)   { if (irq == 14) pic_irq14_unmasked = 0; }
+static int mock_sleep_calls = 0;
+static void (*mock_sleep_hook)(void) = 0;      /* what "other processes running meanwhile" does: lets the mock controller finish and interrupt */
+int  sched_block(void* chan, uint64_t t) { (void)chan; (void)t; mock_sleep_calls++; if (mock_sleep_hook) mock_sleep_hook(); return 0; }
+void sched_wake(void* chan) { (void)chan; }
+static int mock_vmm_broken = 0;   /* the kernel table walk returns 0 (as seen at run time on the real kernel) */
+void vmm_walk_debug(address_space_t* as, uint64_t v, uint64_t out[4]) { (void)as; (void)v; out[0] = out[1] = out[2] = out[3] = 0; }
 uint64_t vmm_get_phys(address_space_t* as, uint64_t v) {
     (void)as; uint64_t s0 = (uint64_t)(uintptr_t)&ata_dma;
+    if (mock_vmm_broken) return 0;
     if (v >= s0 && v < s0 + sizeof ata_dma) return PHYS_BASE + (v - s0);
     return 0;
 }
@@ -28,6 +39,7 @@ int pci_find_by_class(uint8_t c, uint8_t sc, uint8_t pif, pci_device_t* out) {
 }
 int pci_find_by_id(uint16_t v, uint16_t d, pci_device_t* out) { (void)v; (void)d; (void)out; return 0; }
 void pci_enable_device(const pci_device_t* d) { (void)d; bus_master_enabled = 1; }
+uint32_t pci_config_read32(uint8_t b, uint8_t d, uint8_t f, uint8_t o) { (void)b; (void)d; (void)f; (void)o; return bus_master_enabled ? 0x02800107u : 0x02800003u; }
 uint32_t pci_bar_addr(const pci_device_t* d, int n) { return d->bar[n] & ~3u; }
 
 /* ---- mock IDE controller per the ATA spec (two-deep register FIFOs for LBA48) ---- */
@@ -43,13 +55,18 @@ static int mock_mode = 0;   /* 0 normal; 1 SET MULTIPLE aborts; 2 multi blocks s
                              * 3 DMA never completes; 4 DMA scribbles outside its buffer; 5 DMA loses its last sector; 6 DMA reports an error */
 static uint32_t bm_prd = 0, dma_cmds = 0; static uint8_t bm_cmd = 0, bm_status = 0x20;
 static int dma_cmd_pending = 0, dma_running = 0, bm_active_polls = 0, is_dma_cmd = 0;
+static uint8_t mock_ctrl = 0, mock_ctrl_at_dma_start = 0xFF, mock_ctrl_at_flush = 0xFF;   /* device-control register: nIEN is bit 1 */
+static int mock_dma_delay = 3;
+static int mock_stall_next = 0;  /* the next N DMA commands start but never complete (until the host stops the bus master) */   /* status reads during which a DMA command still looks active */
 static void push(typeof(sc)* r, uint8_t v) { r->prev = r->cur; r->cur = v; }
 static uint8_t gather[256 * 512];
+static uint8_t* rd_dst[4]; static uint32_t rd_len[4]; static int rd_n = 0; static uint32_t dma_rd_cmds = 0;
 /* The host set the Start bit: read the PRD table, check it against the real rules, move the data. */
 static void bm_start(void) {
     if (!dma_cmd_pending)    { fprintf(stderr, "MOCK: bus master started but no DMA command is pending\n"); exit(3); }
     if (!bus_master_enabled) { fprintf(stderr, "MOCK: bus master started but PCI bus mastering was never enabled\n"); exit(3); }
-    if (bm_cmd & 0x08)       { fprintf(stderr, "MOCK: direction bit says READ for a WRITE DMA command\n"); exit(3); }
+    if (is_write && (bm_cmd & 0x08))   { fprintf(stderr, "MOCK: direction bit says READ for a WRITE DMA command\n"); exit(3); }
+    if (!is_write && !(bm_cmd & 0x08)) { fprintf(stderr, "MOCK: direction bit says WRITE for a READ DMA command\n"); exit(3); }
     if (bm_prd & 3)          { fprintf(stderr, "MOCK: PRD table address not dword aligned\n"); exit(3); }
     uint32_t* prd = (uint32_t*)phys_to_ptr(bm_prd, 8);
     if (!prd)                { fprintf(stderr, "MOCK: PRD table address points outside memory the driver owns\n"); exit(3); }
@@ -62,10 +79,25 @@ static void bm_start(void) {
         uint8_t* src = phys_to_ptr(addr, cnt);
         if (!src)                            { fprintf(stderr, "MOCK: PRD entry %d points outside the DMA buffer\n", e); exit(3); }
         if (total + cnt > sizeof gather)     { fprintf(stderr, "MOCK: PRD longer than any ATA command\n"); exit(3); }
-        memcpy(gather + total, src, cnt); total += cnt;
+        if (is_write) memcpy(gather + total, src, cnt);
+        else { rd_dst[e] = src; rd_len[e] = cnt; rd_n = e + 1; }
+        total += cnt;
     }
     if (!eot) { fprintf(stderr, "MOCK: PRD table has no end-of-table entry\n"); exit(3); }
-    dma_running = 1; bm_active_polls = 3;
+    mock_ctrl_at_dma_start = mock_ctrl;
+    dma_running = 1; bm_active_polls = mock_dma_delay;
+    if (!is_write) {                                                        /* READ DMA: scatter the disk data into the PRD regions */
+        if (mock_stall_next > 0) { mock_stall_next--; bm_active_polls = 1 << 30; return; }
+        if (mock_mode == 3) return;
+        if (mock_mode == 6) { bm_status |= 0x02; dma_running = 0; status = 0x51; dma_cmd_pending = 0; left = 0; return; }
+        if (total != dec_count * 512) { bm_status |= 0x02; dma_running = 0; dma_cmd_pending = 0; left = 0; status = 0x51; return; }
+        if (mock_mode != 9) {                                                /* mode 9: completes "successfully" but moves nothing */
+            uint64_t o = dec_lba * 512;
+            for (int e = 0; e < rd_n; e++) { if (pread(dfd, rd_dst[e], rd_len[e], (off_t)o) != (ssize_t)rd_len[e]) memset(rd_dst[e], 0, rd_len[e]); o += rd_len[e]; }
+        }
+        dma_rd_cmds++; return;
+    }
+    if (mock_stall_next > 0) { mock_stall_next--; bm_active_polls = 1 << 30; return; }
     if (mock_mode == 3) return;                                              /* hangs: never completes */
     if (mock_mode == 6) { bm_status |= 0x02; dma_running = 0; status = 0x51; dma_cmd_pending = 0; left = 0; return; }
     if (total != dec_count * 512) { bm_status |= 0x02; dma_running = 0; dma_cmd_pending = 0; left = 0; status = 0x51; return; }  /* wrong length: error */
@@ -77,6 +109,7 @@ static void bm_start(void) {
 }
 void outb(uint16_t p, uint8_t v) {
     switch (p) {
+    case ATA_PRIMARY_CTRL: mock_ctrl = v; break;
     case BM_BASE + 0:
         if ((v & 1) && !(bm_cmd & 1)) { bm_cmd = v & 0x09; bm_start(); }
         else {
@@ -108,8 +141,8 @@ void outb(uint16_t p, uint8_t v) {
             is_multi = (v == 0x39); if (is_write) last_write_cmd = v;
             cur_lba = dec_lba; left = dec_count; status = 0x58;
             if (v == 0x39 && mock_mult == 0) { status = 0x51; left = 0; }
-        } else if (v == 0xCA || v == 0x35) {                                         /* WRITE DMA / WRITE DMA EXT */
-            if (v == 0xCA) {
+        } else if (v == 0xCA || v == 0x35 || v == 0xC8 || v == 0x25) {              /* WRITE/READ DMA, plain and EXT */
+            if (v == 0xCA || v == 0xC8) {
                 dec_lba = lo.cur | (mid.cur << 8) | (hi.cur << 16) | ((uint64_t)(drive_reg & 0xF) << 24);
                 dec_count = sc.cur ? sc.cur : 256; dec_used48 = 0;
             } else {
@@ -118,7 +151,7 @@ void outb(uint16_t p, uint8_t v) {
                 dec_count = sc.cur | (sc.prev << 8); if (!dec_count) dec_count = 65536; dec_used48 = 1;
             }
             if (!(drive_reg & 0x40)) { fprintf(stderr, "MOCK: DMA cmd without LBA bit\n"); exit(3); }
-            is_write = 1; is_multi = 0; is_dma_cmd = 1; dma_cmd_pending = 1; last_write_cmd = v;
+            is_write = (v == 0xCA || v == 0x35); is_multi = 0; is_dma_cmd = 1; dma_cmd_pending = 1; if (is_write) last_write_cmd = v;
             cur_lba = dec_lba; left = dec_count; status = 0x58;
         } else if (v == 0xC6) {                                                      /* SET MULTIPLE MODE */
             uint8_t n = sc.cur;
@@ -126,6 +159,7 @@ void outb(uint16_t p, uint8_t v) {
             else { mock_mult = n; status = 0x50; }
             stale_val = 0x50; stale = 4; busy_reads = 2;
         } else if (v == 0xE7 || v == 0xEA) {
+            mock_ctrl_at_flush = mock_ctrl;
             if (left > 0) { fprintf(stderr, "MOCK: FLUSH issued in the middle of a transfer (%u sectors still pending) -- illegal on real drives\n", left); exit(5); }
             stale_val = status; stale = 4; busy_reads = 2;
         }
@@ -231,6 +265,17 @@ int main(void) {
       expect(m * 15 < sgl, "255 sectors: WRITE MULTIPLE needs far fewer host writes than WRITE SECTORS");
       printf("      (host writes for 255 sectors: plain=%u, multiple=%u)\n", sgl, m); }
 
+    printf("--- diagnostics counters (ata_stats_take)\n");
+    { ata_stats_t st; ata_stats_take(&st);                       /* discard what earlier tests counted */
+      uint8_t b[8 * 512]; memset(b, 3, sizeof b);
+      ata_write_sectors(6000, 8, b); ata_write_sectors(6100, 8, b); ata_read_sectors(6000, 8, b);
+      ata_stats_take(&st);
+      expect(st.wr_cmds == 2 && st.wr_sectors == 16, "stats: 2 write commands / 16 sectors counted");
+      expect(st.rd_cmds == 1 && st.rd_sectors == 8, "stats: 1 read command / 8 sectors counted");
+      expect(st.fl_cmds == 2, "stats: one cache flush counted per write command");
+      expect(st.wr_cycles > 0 && st.fl_cycles > 0 && st.rd_cycles > 0, "stats: cycles recorded");
+      ata_stats_take(&st); expect(st.wr_cmds == 0 && st.rd_cmds == 0, "stats: take() resets the counters"); }
+
     printf("--- boot-time enable + self-test (ata_enable_multiple)\n");
     /* a 512MB drive: the self-test uses 16 all-zero sectors near the end of the disk */
     ata_lba48 = 0; ata_sectors = 1u << 20; ata_mult = 0; mock_mult = 0; mock_mode = 0;
@@ -299,6 +344,144 @@ int main(void) {
       expect(dma_hw == 1 && mult_hw == 16, "255 sectors: ONE host write by DMA, 16 with WRITE MULTIPLE");
       printf("      (host writes for 255 sectors: DMA=%u, WRITE MULTIPLE=%u, plain=255)\n", dma_hw, mult_hw); }
 
+    printf("--- which write path was used, and the silent-fallback report\n");
+    { static uint8_t b[16 * 512], r[16 * 512]; memset(b, 0x5A, sizeof b); ata_stats_t st;
+      ata_stats_take(&st);
+      ata_write_sectors(7000, 16, b); ata_write_sectors(7100, 16, b);
+      ata_stats_take(&st);
+      expect(st.dma_cmds == 2 && st.pio_cmds == 0, "stats: two writes by DMA are counted as DMA");
+      ata_dma_ok = 0; ata_write_sectors(7200, 16, b); ata_stats_take(&st);
+      expect(st.pio_cmds == 1 && st.dma_cmds == 0, "stats: a write with DMA off is counted as PIO");
+      ata_dma_ok = 1; mock_mode = 6;                          /* controller reports an error at run time */
+      ata_write_sectors(7300, 16, b); mock_mode = 0;
+      ata_stats_take(&st);
+      expect(!ata_dma_active() && st.pio_cmds == 1 && st.dma_cmds == 0, "runtime DMA failure: switches to PIO and counts it as PIO");
+      expect(ata_dma_why == 3, "runtime DMA failure: reason code says controller error");
+      ata_read_sectors(7300, 16, r); expect(!memcmp(b, r, sizeof b), "runtime DMA failure: data still reached the disk");
+      ata_dma_ok = 1; }
+
+    printf("--- slow but healthy DMA completion is not a failure\n");
+    { static uint8_t b[16 * 512], r[16 * 512]; memset(b, 0xA7, sizeof b); ata_stats_t st; ata_stats_take(&st);
+      ata_dma_ok = 1; mock_mode = 0; mock_dma_delay = 20000;            /* ~20000 polls of ~7us: far longer than the old 4M-read loop allowed per ms */
+      ata_dma_timeout_cycles = 30000000000ULL;
+      int rc = ata_write_sectors(7400, 16, b); ata_stats_take(&st);
+      ata_read_sectors(7400, 16, r);
+      expect(rc == 0 && ata_dma_active() && st.dma_cmds == 1 && st.pio_cmds == 0, "slow completion within the time limit: still DMA, DMA stays enabled");
+      expect(!memcmp(b, r, sizeof b), "slow completion: data intact");
+      expect(ata_dma_polls >= 20000, "slow completion: the wait really polled until the controller finished");
+      mock_dma_delay = 1000000; ata_dma_timeout_cycles = 60000000ULL;    /* never finishes in time */
+      memset(b, 0xB8, sizeof b); rc = ata_write_sectors(7500, 16, b); ata_stats_take(&st);
+      ata_read_sectors(7500, 16, r);
+      expect(rc == 0 && !ata_dma_active() && st.pio_cmds == 1 && ata_dma_why == 2, "real timeout: falls back to PIO with reason=timeout");
+      expect(!memcmp(b, r, sizeof b), "real timeout: data still reached the disk by PIO");
+      mock_dma_delay = 3; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_ok = 1; }
+
+    printf("--- bus mastering switched off behind the driver's back; stalled DMA is reset and retried\n");
+    { static uint8_t b[16 * 512], r[16 * 512]; ata_stats_t st; ata_stats_take(&st);
+      ata_pci_ok = 1; ata_dma_ok = 1; mock_mode = 0; mock_dma_delay = 3; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_recoveries = 0;
+      bus_master_enabled = 0; memset(b, 0xC9, sizeof b);
+      int rc = ata_write_sectors(7600, 16, b); ata_stats_take(&st); ata_read_sectors(7600, 16, r);
+      expect(rc == 0 && bus_master_enabled && ata_dma_active() && st.dma_cmds == 1, "bus mastering cleared by something else: switched back on, command still uses DMA");
+      expect(!memcmp(b, r, sizeof b), "...and the data is intact");
+      ata_dma_timeout_cycles = 60000000ULL; mock_stall_next = 1; memset(b, 0xD4, sizeof b);
+      rc = ata_write_sectors(7700, 16, b); ata_stats_take(&st); ata_read_sectors(7700, 16, r);
+      expect(rc == 0 && ata_dma_active() && st.dma_cmds == 1 && st.pio_cmds == 0, "one stalled command: bus master reset, retried, DMA stays enabled");
+      expect(!memcmp(b, r, sizeof b) && ata_dma_recoveries == 1, "...data intact, recovery counted once");
+      mock_stall_next = 100; memset(b, 0xE5, sizeof b);
+      rc = ata_write_sectors(7800, 16, b); ata_stats_take(&st); ata_read_sectors(7800, 16, r);
+      expect(rc == 0 && !ata_dma_active() && st.pio_cmds == 1 && !memcmp(b, r, sizeof b), "controller that keeps stalling: gives up on DMA, write completes by PIO");
+      mock_stall_next = 0; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_recoveries = 0; ata_dma_ok = 1; }
+
+    printf("--- the kernel's address lookup returning 0 at run time must not break DMA\n");
+    { static uint8_t b[16 * 512], r[16 * 512]; ata_stats_t st; ata_stats_take(&st);
+      ata_pci_ok = 1; ata_dma_ok = 1; mock_mode = 0; mock_dma_delay = 3; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_recoveries = 0;
+      ata_phys_buf = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.buf - (uint64_t)(uintptr_t)&ata_dma);
+      ata_phys_prd = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.prd - (uint64_t)(uintptr_t)&ata_dma); ata_phys_warned = 0;
+      mock_vmm_broken = 1; memset(b, 0x6D, sizeof b);
+      int rc = ata_write_sectors(7900, 16, b); ata_stats_take(&st); ata_read_sectors(7900, 16, r);
+      expect(rc == 0 && ata_dma_active() && st.dma_cmds == 1 && st.pio_cmds == 0, "address lookup broken: DMA still works with the verified boot-time addresses");
+      expect(!memcmp(b, r, sizeof b) && ata_phys_warned == 1, "...data intact, and the mismatch was reported once");
+      mock_vmm_broken = 0; }
+
+    printf("--- DMA reads: exact data, small reads stay PIO, any failure falls back to PIO\n");
+    { static uint8_t w[64 * 512], r[64 * 512]; ata_stats_t st; ata_stats_take(&st);
+      for (int i = 0; i < 64 * 512; i++) w[i] = (uint8_t)((i * 13 + 7) | 1);
+      ata_pci_ok = 1; ata_dma_ok = 1; ata_dma_read_ok = 1; mock_mode = 0; mock_dma_delay = 3; mock_vmm_broken = 0; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_recoveries = 0;
+      ata_phys_buf = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.buf - (uint64_t)(uintptr_t)&ata_dma);
+      ata_phys_prd = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.prd - (uint64_t)(uintptr_t)&ata_dma); ata_phys_warned = 0;
+      ata_write_sectors(8000, 64, w); ata_stats_take(&st);
+      memset(r, 0xEE, sizeof r); int rc = ata_read_sectors(8000, 64, r); ata_stats_take(&st);
+      expect(rc == 0 && st.rd_dma_cmds == 1 && st.rd_cmds == 1 && !memcmp(w, r, sizeof r), "64-sector read goes by DMA and the data is exact");
+      memset(r, 0xEE, sizeof r); rc = ata_read_sectors(8003, 3, r); ata_stats_take(&st);
+      expect(rc == 0 && st.rd_dma_cmds == 0 && !memcmp(w + 3 * 512, r, 3 * 512), "3-sector read stays PIO (not worth a DMA setup) and is exact");
+      memset(r, 0xEE, sizeof r); rc = ata_read_sectors(8010, 255 > 54 ? 54 : 54, r); ata_stats_take(&st);
+      expect(rc == 0 && st.rd_dma_cmds == 1 && !memcmp(w + 10 * 512, r, 54 * 512), "read starting mid-run is exact");
+      /* controller reports an error: that read is redone by PIO, DMA reads switch off, DMA writes stay on */
+      mock_mode = 6; memset(r, 0xEE, sizeof r); rc = ata_read_sectors(8000, 64, r); mock_mode = 0; ata_stats_take(&st);
+      expect(rc == 0 && !memcmp(w, r, sizeof r) && !ata_dma_reads_active() && ata_dma_active(), "DMA read error: data still correct by PIO, reads off, writes still DMA");
+      /* a read that never completes: times out, same fallback */
+      ata_dma_read_ok = 1; ata_dma_timeout_cycles = 60000000ULL; mock_mode = 3; memset(r, 0xEE, sizeof r);
+      rc = ata_read_sectors(8000, 64, r); mock_mode = 0; ata_dma_timeout_cycles = 30000000000ULL; ata_stats_take(&st);
+      expect(rc == 0 && !memcmp(w, r, sizeof r) && !ata_dma_reads_active(), "DMA read that never completes: timeout, correct data by PIO, reads off");
+      ata_dma_read_ok = 1; }
+
+    printf("--- deferred flush: data first, one flush before whatever is written next\n");
+    { static uint8_t d[32 * 512], m[8 * 512]; ata_stats_t st; ata_stats_take(&st);
+      memset(d, 0x41, sizeof d); memset(m, 0x42, sizeof m); ata_flush_now(); ata_stats_take(&st);
+      ata_write_sectors_nf(8200, 32, d); ata_write_sectors_nf(8232, 32, d); ata_stats_take(&st);
+      expect(st.wr_cmds == 2 && st.fl_cmds == 0, "two data writes without a flush: no flush commands issued");
+      ata_write_sectors(8300, 8, m); ata_stats_take(&st);
+      expect(st.wr_cmds == 1 && st.fl_cmds == 2, "the next ordinary write flushes the pending data first, then flushes itself");
+      ata_write_sectors_nf(8400, 8, d); ata_flush_now(); ata_stats_take(&st);
+      expect(st.fl_cmds == 1, "explicit ata_flush_now() flushes once");
+      ata_flush_now(); ata_stats_take(&st);
+      expect(st.fl_cmds == 0, "nothing pending: ata_flush_now() does nothing");
+      ata_write_sectors(8500, 8, m); ata_stats_take(&st);
+      expect(st.fl_cmds == 1, "an ordinary write with nothing pending flushes once, as before"); }
+
+    printf("--- interrupt-driven waits (IRQ14): verified before use, armed only around a wait, never able to hang\n");
+    { static uint8_t w[16 * 512], r[16 * 512]; ata_stats_t st; ata_stats_take(&st);
+      for (int i = 0; i < 16 * 512; i++) w[i] = (uint8_t)((i * 7 + 3) | 1);
+      ata_pci_ok = 1; ata_dma_ok = 1; ata_dma_read_ok = 1; mock_mode = 0; mock_dma_delay = 3; mock_vmm_broken = 0;
+      ata_dma_timeout_cycles = 30000000000ULL; ata_dma_recoveries = 0; mock_stall_next = 0;
+      ata_phys_buf = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.buf - (uint64_t)(uintptr_t)&ata_dma);
+      ata_phys_prd = PHYS_BASE + ((uint64_t)(uintptr_t)ata_dma.prd - (uint64_t)(uintptr_t)&ata_dma); ata_phys_warned = 0;
+      /* 1. the interrupt never arrives: the mode must stay off and the PIC line masked again */
+      mock_sleep_hook = 0; mock_sleep_calls = 0;
+      int on = ata_irq_init();
+      expect(on == 0 && !ata_irq_active() && !pic_irq14_unmasked && mock_ctrl == 0x00, "no interrupt seen: IRQ mode stays off, IRQ14 masked again, polling continues");
+      ata_write_sectors(9000, 16, w); memset(r, 0, sizeof r); ata_read_sectors(9000, 16, r);
+      expect(!memcmp(w, r, sizeof r), "...and the disk still works by polling");
+      /* 2. the interrupt arrives: mode on */
+      mock_sleep_hook = ata_irq_handler; mock_sleep_calls = 0;
+      on = ata_irq_init();
+      expect(on == 1 && ata_irq_active() && pic_irq14_unmasked && mock_ctrl == 0x02, "interrupt seen: IRQ mode on, IRQ14 unmasked, drive interrupts off between waits (nIEN=1)");
+      /* 3. a DMA write: interrupt line armed while it runs, the waiter sleeps, line disarmed afterwards */
+      mock_sleep_calls = 0; mock_ctrl_at_dma_start = 0xFF; mock_ctrl_at_flush = 0xFF; memset(w, 0x3C, sizeof w);
+      ata_stats_take(&st);
+      int rc = ata_write_sectors(9100, 16, w); ata_stats_take(&st);
+      expect(rc == 0 && st.dma_cmds == 1, "IRQ mode: DMA write completes");
+      expect(mock_ctrl_at_dma_start == 0x00, "drive interrupt enabled (nIEN=0) while the DMA transfer runs");
+      expect(mock_ctrl_at_flush == 0x00, "drive interrupt enabled while the cache flush runs");
+      expect(mock_ctrl == 0x02, "drive interrupts switched off again afterwards");
+      expect(mock_sleep_calls > 0, "the waiter slept (gave the CPU away) instead of spinning");
+      memset(r, 0, sizeof r); mock_sleep_calls = 0; rc = ata_read_sectors(9100, 16, r); ata_stats_take(&st);
+      expect(rc == 0 && st.rd_dma_cmds == 1 && !memcmp(w, r, sizeof r) && mock_sleep_calls > 0 && mock_ctrl == 0x02, "IRQ mode: DMA read sleeps while waiting and returns exact data");
+      /* 4. polled PIO transfers must never sleep or arm the interrupt */
+      mock_sleep_calls = 0; mock_ctrl_at_dma_start = 0xFF; memset(r, 0, 3 * 512);
+      rc = ata_read_sectors(9100, 3, r);
+      expect(rc == 0 && mock_sleep_calls == 0 && mock_ctrl == 0x02 && !memcmp(w, r, 3 * 512), "3-sector PIO read: no sleeping, interrupt stays off");
+      /* 5. interrupts get lost: the periodic re-check must still finish the transfer */
+      mock_sleep_hook = 0; mock_sleep_calls = 0; memset(w, 0x5E, sizeof w);
+      rc = ata_write_sectors(9200, 16, w); memset(r, 0, sizeof r); ata_read_sectors(9200, 16, r);
+      expect(rc == 0 && ata_irq_active() && !memcmp(w, r, sizeof r), "lost interrupts: transfer still completes (re-check after a bounded sleep)");
+      /* 6. a transfer that never completes still times out in IRQ mode (no endless sleep) */
+      mock_sleep_hook = ata_irq_handler; ata_dma_timeout_cycles = 60000000ULL; mock_stall_next = 100; memset(w, 0x77, sizeof w);
+      rc = ata_write_sectors(9300, 16, w); memset(r, 0, sizeof r); ata_read_sectors(9300, 16, r);
+      expect(rc == 0 && !ata_dma_active() && !memcmp(w, r, sizeof r), "IRQ mode, controller stalls for good: timeout, then PIO completes the write");
+      mock_stall_next = 0; ata_dma_timeout_cycles = 30000000000ULL; ata_dma_ok = 1; ata_dma_recoveries = 0;
+      mock_sleep_hook = 0; }
+
     printf("--- DMA enable + self-test (ata_enable_dma)\n");
     ata_lba48 = 0; ata_sectors = 1u << 20; ata_dma_ok = 0; ata_bm = 0; bus_master_enabled = 0; mock_mode = 0; pci_present = 1;
     {
@@ -311,10 +494,14 @@ int main(void) {
         pread(dfd, d256, sizeof d256, (off_t)(sc0 * 512));
         expect(!memcmp(d256, z256, sizeof d256), "...and the 256 scratch sectors were zeroed again");
         ata_dma_ok = 0; ata_bm = 0; bus_master_enabled = 0;
-        mock_mode = 3; expect(ata_enable_dma() == -1 && !ata_dma_active() && ata_bm == 0, "controller never completes: self-test times out, DMA stays off");
+        ata_dma_timeout_cycles = 200000000ULL; mock_mode = 3; expect(ata_enable_dma() == -1 && !ata_dma_active() && ata_bm == 0, "controller never completes: self-test times out, DMA stays off");
+        ata_dma_timeout_cycles = 30000000000ULL;
         ZERO_ALL(); mock_mode = 4; expect(ata_enable_dma() == -1 && !ata_dma_active(), "controller writes OUTSIDE its buffer: the canaries catch it, DMA stays off");
         ZERO_ALL(); mock_mode = 5; expect(ata_enable_dma() == -1 && !ata_dma_active(), "controller loses the last sector: read-back mismatch, DMA stays off");
         ZERO_ALL(); mock_mode = 6; expect(ata_enable_dma() == -1 && !ata_dma_active(), "controller reports an error: DMA stays off");
+        ZERO_ALL(); mock_mode = 9; expect(ata_enable_dma() == 1 && ata_dma_active() && !ata_dma_reads_active(), "controller whose DMA reads deliver nothing: writes stay on DMA, reads stay PIO");
+        ZERO_ALL(); mock_mode = 0; expect(ata_enable_dma() == 1 && ata_dma_reads_active(), "healthy controller: DMA reads enabled after their own self-test");
+        ata_dma_ok = 0; ata_dma_read_ok = 0; ata_bm = 0; bus_master_enabled = 0; mock_mode = 0;
         pread(dfd, d256, sizeof d256, (off_t)(sc0 * 512));
         expect(!memcmp(d256, z256, sizeof d256), "...and the scratch sectors were put back to zeros after every failure");
         mock_mode = 0; ZERO_ALL(); pci_present = 0; bus_master_enabled = 0;

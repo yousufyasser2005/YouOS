@@ -151,6 +151,18 @@ typedef struct process {
                                      * uses. Defaults to 0 (unwindowed)
                                      * via process_create()'s kzalloc(),
                                      * same as every other field here. */
+    /* ---- sleeping on a condition (wait channels) ----
+     * A process that cannot continue until some event happens (a disk transfer finishing, a lock
+     * being released) blocks on a "channel" -- any unique address -- and is made runnable again
+     * by sched_wake(channel), or by its optional deadline passing. */
+    void*            wait_chan;      /* channel this process sleeps on (PROCESS_BLOCKED), else 0 */
+    uint64_t         wait_deadline;  /* tick at which the sleep ends by itself; 0 = no deadline */
+    int              wait_timedout;  /* set when the deadline, not a wake-up, ended the sleep */
+    uint32_t         nointr;         /* > 0 while the process is inside a critical section it must
+                                      * finish (holds a kernel lock, waits for the disk): it cannot be
+                                      * killed there, because abandoning its stack would leave the lock
+                                      * held forever. See process_kill(). */
+    int              kill_pending;   /* a kill arrived while nointr > 0; carried out when it drops to 0 */
     struct process*  next;
 } process_t;
 
@@ -173,6 +185,16 @@ int        process_kill(uint32_t pid); /* forcibly ends another process;
                                         * scheduler.c for the full
                                         * contract and return codes. */
 void       scheduler_tick(void);
+
+/* ---- blocking primitives (kernel/proc/scheduler.c) ---- */
+uint32_t   sched_current_pid(void);                    /* 0 until multitasking has started */
+int        sched_block(void* chan, uint64_t timeout_ticks); /* sleep on chan; 1 if the timeout ended it */
+void       sched_wake(void* chan);                     /* make every sleeper on chan runnable */
+void       sched_nointr_enter(void);                   /* current process may not be killed from here on */
+void       sched_nointr_leave(void);                   /* ... until here; a deferred kill happens now */
+void       sched_yield_kernel(void);                   /* give the CPU to other ready processes, from inside a system call */
+void       sched_resched(void);                        /* after a wake-up from an interrupt: run the sleeper now */
+int        sched_check_pending_kill(void);             /* carry out a deferred kill if the process may die now */
 uint64_t   scheduler_get_ticks(void);
 uint32_t   scheduler_get_cpu_percent(void); /* live "percent busy" for the
                                              * interval since the previous

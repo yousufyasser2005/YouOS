@@ -1,5 +1,6 @@
 #ifndef KERNEL_VGA_H
 #define KERNEL_VGA_H
+#include <stdint.h>
 
 typedef enum {
     VGA_BLACK=0, VGA_BLUE=1, VGA_GREEN=2, VGA_CYAN=3,
@@ -13,6 +14,7 @@ void vga_init(void);
 void vga_clear(void);
 void vga_putchar(char c);
 void vga_puts(const char* s);
+void vga_serial_write(const char* s, uint64_t len);   /* COM1 only, no framebuffer */
 void vga_puts_color(const char* s, vga_color_t fg, vga_color_t bg);
 void vga_set_color(vga_color_t fg, vga_color_t bg);
 

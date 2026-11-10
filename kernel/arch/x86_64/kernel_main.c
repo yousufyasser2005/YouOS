@@ -16,6 +16,7 @@
 #include <kernel/vfs.h>
 #include <kernel/fat16.h>
 #include <kernel/ata.h>
+#include <kernel/sync.h>
 #include <kernel/fb.h>
 #include <kernel/pci.h>
 #include <kernel/rtl8139.h>
@@ -70,6 +71,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     vga_puts("IDT loaded\n");
 
     irq_init();
+    storage_lock_init();          /* register the filesystem lock (a no-op until multitasking starts) */
 
     /* Program PIT channel 0 to 100Hz (divisor = 1193180/100 = 11931) */
     {
@@ -570,6 +572,7 @@ void kernel_main(uint32_t mb2_magic, uint32_t mb2_info) {
     pic_unmask(2);
     mouse_init();
     pic_unmask(12);
+    ata_irq_init();               /* disk waits by interrupt instead of polling, if IRQ14 is seen to work */
 
     syscall_init();
     vga_puts_color("  [OK] ", VGA_LIGHT_GREEN, VGA_BLACK);

@@ -16,7 +16,7 @@ cd "$ROOT"
 say()  { printf '\n=== %s\n' "$*"; }
 fail() { printf '\n*** FAILED at: %s\n' "$*" >&2; exit 1; }
 
-PROGS="hello cat shell fbtest desktop mpy crashtest exectest spawntest iotest seektest"
+PROGS="hello cat shell fbtest desktop mpy crashtest exectest spawntest iotest seektest schedtest copyd"
 
 say "your source tree"
 [ -f VERSION ] && echo "  version file: $(cat VERSION)" || echo "  (no VERSION file: this tree predates v3)"
@@ -34,16 +34,27 @@ chk "big chunks (1MB copy chunks)"     "define FT_CHUNK       1048576" user/src/
 chk "build stamp"                      "YOUOS_BUILD"                 user/src/desktop.c
 chk "ATA WRITE MULTIPLE (fast writes)" "ata_write_multi"             kernel/drivers/ata.c
 chk "ATA bus-master DMA writes"        "ata_write_dma"               kernel/drivers/ata.c
+chk "serial-only diagnostics (DBGLOG)" "sys_dbglog"                  user/lib/syscall.h
+chk "disk timing counters ([ata] lines)" "ata_stats_take"              kernel/drivers/ata.c
+chk "DMA/PIO path report + [slow] lines" "ata_log_dma_fallback"        kernel/drivers/ata.c
+chk "DMA paced wait + timing log"       "ata_dma_timeout_cycles"      kernel/drivers/ata.c
+chk "DMA stall recovery + state dump"   "ata_dma_attempt"             kernel/drivers/ata.c
+chk "DMA uses boot-verified addresses"  "ata_phys_buf"                kernel/drivers/ata.c
+chk "DMA reads + deferred data flush"   "ata_write_sectors_nf"        kernel/drivers/ata.c
+chk "sleeping locks + blocking I/O"     "sched_block"                 kernel/proc/scheduler.c
+chk "interrupt-driven disk waits"       "ata_irq_init"                kernel/drivers/ata.c
+chk "background copy worker (copyd)"    "xw_poll"                     user/src/xfer_proto.h
+chk "fair storage lock"                 "sched_yield_kernel"          kernel/proc/sync.c
 
 # This script is only meant for a tree that has everything above. If the newest feature is
 # missing, the tree is out of date (usually: an older archive was extracted) -- stop NOW
 # instead of building something that silently lacks it.
-if ! grep -q -- "ata_write_dma" kernel/drivers/ata.c 2>/dev/null; then
+if ! grep -q -- "sched_yield_kernel" kernel/proc/sync.c 2>/dev/null || ! grep -q -- "xw_poll" user/src/xfer_proto.h 2>/dev/null || [ ! -f user/src/copyd.c ] || ! grep -q -- "sched_block" kernel/proc/scheduler.c 2>/dev/null; then
   echo
-  echo "*** Your source tree is OLDER than this script expects (no DMA write support in kernel/drivers/ata.c)."
+  echo "*** Your source tree is OLDER than this script expects (no background copy worker: user/src/copyd.c, user/src/xfer_proto.h, plus the blocking-I/O kernel files)."
   echo "    Extract the NEWEST archive over the repository first, then run this again:"
   echo "        ls -la ~/Downloads/youos_tree_v*.tar     # pick the highest version"
-  echo "        tar -xf ~/Downloads/youos_tree_v4.tar"
+  echo "        tar -xf ~/Downloads/youos_tree_v14.tar"
   echo "    (a browser may have saved the new download as 'name (1).tar' next to an old one with the same name)"
   exit 1
 fi

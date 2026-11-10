@@ -303,6 +303,15 @@ static inline int64_t sys_fsize(int64_t fd) {
 
 /* Write one piece of a /ycfs file: offset 0 creates the file (or empties
  * an existing one), later offsets continue it. Returns bytes written or -1. */
+#define SYS_IOINFO 56
+static inline uint64_t sys_ioinfo(void) { return _sc(SYS_IOINFO, 0, 0, 0, 0, 0); }
+
+#define SYS_DBGLOG 55
+/* Serial-only debug text (not drawn on screen). */
+static inline int64_t sys_dbglog(const char* buf, uint64_t len) {
+    return (int64_t)_sc(SYS_DBGLOG, (uint64_t)buf, len, 0, 0, 0);
+}
+
 #define SYS_SAVECHUNK 54
 static inline int64_t sys_save_chunk(const char* path, const void* buf, uint64_t len, uint64_t offset) {
     return (int64_t)_sc(SYS_SAVECHUNK, (uint64_t)path, (uint64_t)buf, len, offset, 0);

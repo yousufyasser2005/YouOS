@@ -14,6 +14,7 @@
 #include <kernel/mouse.h>
 #include <kernel/pmm.h>
 #include <kernel/rtc.h>
+#include <kernel/ata.h>
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
 static uint8_t syscall_kernel_stack[262144];
@@ -477,12 +478,56 @@ static uint64_t sys_fsize(uint64_t fd, uint64_t a2, uint64_t a3, uint64_t a4, ui
     return (uint64_t)vfs_size((int)fd);
 }
 
+static uint64_t sys_dbglog(uint64_t buf,uint64_t len,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a3;(void)a4;(void)a5;
+    const char* s=(const char*)buf;
+    if(!s||len==0) return 0;
+    if(len>512) len=512;
+    vga_serial_write(s,len);
+    return len;
+}
+static uint64_t sys_ioinfo(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    return (uint64_t)(ata_irq_active() ? 1 : 0) | (uint64_t)(ata_dma_active() ? 2 : 0) | (uint64_t)(ata_dma_reads_active() ? 4 : 0);
+}
 static uint64_t sys_savechunk(uint64_t path_arg, uint64_t buf, uint64_t len, uint64_t offset, uint64_t a5) {
     (void)a5;
     const char* path = (const char*)path_arg;
     if (!path_is_ycfs(path)) return (uint64_t)-1;
     extern int64_t ycfs_write_chunk(const char*, uint64_t, const void*, uint32_t);
+    static int first_call = 1;
+    static ata_stats_t rep_prev;      /* what the last per-second line already reported */
+    if (first_call) { rep_prev = ata_stats; first_call = 0; }   /* drop everything counted since boot */
+    uint32_t lo0, hi0; __asm__ volatile("rdtsc" : "=a"(lo0), "=d"(hi0));
+    uint64_t t0 = ((uint64_t)hi0 << 32) | lo0;
     int64_t n = ycfs_write_chunk(path, offset, (const void*)buf, (uint32_t)len);
+    uint32_t lo1, hi1; __asm__ volatile("rdtsc" : "=a"(lo1), "=d"(hi1));
+    uint64_t t1 = ((uint64_t)hi1 << 32) | lo1;
+    static uint64_t acc_calls, acc_cycles, acc_bytes, win_start;
+    acc_calls++; acc_cycles += t1 - t0; acc_bytes += (n > 0 ? (uint64_t)n : 0);
+    if (!win_start) win_start = t1;
+    if (t1 - win_start >= 2000000000ULL) {          /* ~1 s at 2 GHz */
+        /* Differences against the previous report. The counters themselves are never reset: several
+         * processes can now be inside disk operations at once, so a reset by one would corrupt
+         * another's measurement (it showed up as huge garbage numbers in the [slow] lines). */
+        ata_stats_t cur = ata_stats, st;
+        st.rd_cmds = cur.rd_cmds - rep_prev.rd_cmds; st.rd_sectors = cur.rd_sectors - rep_prev.rd_sectors; st.rd_cycles = cur.rd_cycles - rep_prev.rd_cycles;
+        st.wr_cmds = cur.wr_cmds - rep_prev.wr_cmds; st.wr_sectors = cur.wr_sectors - rep_prev.wr_sectors; st.wr_cycles = cur.wr_cycles - rep_prev.wr_cycles;
+        st.fl_cmds = cur.fl_cmds - rep_prev.fl_cmds; st.fl_cycles = cur.fl_cycles - rep_prev.fl_cycles;
+        st.dma_cmds = cur.dma_cmds - rep_prev.dma_cmds; st.pio_cmds = cur.pio_cmds - rep_prev.pio_cmds; st.rd_dma_cmds = cur.rd_dma_cmds - rep_prev.rd_dma_cmds;
+        rep_prev = cur;
+        char b[200]; int k = 0;
+        #define LP(s_) { const char* q_ = s_; while (*q_) b[k++] = *q_++; }
+        #define LN(v_) { char tmp_[24]; int l_ = 0; uint64_t x_ = (v_); if (!x_) tmp_[l_++] = '0'; while (x_) { tmp_[l_++] = (char)('0' + x_ % 10); x_ /= 10; } while (l_) b[k++] = tmp_[--l_]; }
+        LP("[ata] calls=") LN(acc_calls) LP(" KB=") LN(acc_bytes / 1024) LP(" in-syscall=") LN(acc_cycles / 1000000) LP("Mc")
+        LP(" | rd cmds=") LN(st.rd_cmds) LP(" sec=") LN(st.rd_sectors) LP(" ") LN(st.rd_cycles / 1000000) LP("Mc dma=") LN(st.rd_dma_cmds)
+        LP(" | wr cmds=") LN(st.wr_cmds) LP(" sec=") LN(st.wr_sectors) LP(" ") LN(st.wr_cycles / 1000000) LP("Mc")
+        LP(" | flush n=") LN(st.fl_cmds) LP(" ") LN(st.fl_cycles / 1000000) LP("Mc | wr-by dma=") LN(st.dma_cmds) LP(" pio=") LN(st.pio_cmds) LP(" (1000Mc ~ 0.46s)\n")
+        #undef LP
+        #undef LN
+        vga_serial_write(b, (uint64_t)k);
+        acc_calls = acc_cycles = acc_bytes = 0; win_start = t1;
+    }
     return (n < 0) ? (uint64_t)-1 : (uint64_t)n;
 }
 
@@ -547,6 +592,12 @@ static uint64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
     fb_info_t* info = fb_get_info();
     if (x + w > info->width || y + h > info->height) return (uint64_t)-1;
     uint32_t* src = (uint32_t*)pixels;
+    /* A full-screen blit is ~8 MB of copying. It touches nothing but the caller's buffer and the
+     * framebuffer, so it does not need interrupts off: with them off, every disk completion (and
+     * timer tick) that arrived during the copy waited for it -- measured as a background copy
+     * running at half speed while the desktop redraws. Interrupts are switched back off before
+     * returning, as every system call expects. */
+    __asm__ volatile ("sti" : : : "memory");
     for (uint64_t row = 0; row < h; row++) {
         uint32_t* dst = (uint32_t*)(info->addr
                         + (y + row) * info->pitch
@@ -554,6 +605,7 @@ static uint64_t sys_fbwrite(uint64_t x, uint64_t y, uint64_t w,
         for (uint64_t col = 0; col < w; col++)
             dst[col] = src[row * w + col];
     }
+    __asm__ volatile ("cli" : : : "memory");
     return 0;
 }
 static uint64_t sys_keypoll(uint64_t a1,uint64_t a2,uint64_t a3,
@@ -850,12 +902,36 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_rtc,
     sys_fseek,
     sys_fsize,
-    sys_savechunk
+    sys_savechunk,
+    sys_dbglog,
+    sys_ioinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){
     if(num>=SYSCALL_COUNT||!syscall_table[num]) return (uint64_t)-1;
-    return syscall_table[num](a1,a2,a3,a4,a5);
+    uint32_t slo, shi; __asm__ volatile("rdtsc" : "=a"(slo), "=d"(shi));
+    uint64_t st0 = ((uint64_t)shi << 32) | slo;
+    ata_stats_t before = ata_stats;
+    uint64_t ret = syscall_table[num](a1,a2,a3,a4,a5);
+    sched_check_pending_kill();   /* a kill that arrived while this call was inside a critical section happens now */
+    uint32_t elo, ehi; __asm__ volatile("rdtsc" : "=a"(elo), "=d"(ehi));
+    uint64_t took = (((uint64_t)ehi << 32) | elo) - st0;
+    /* Diagnostics: any syscall other than the copy step that touched the disk and took
+     * more than ~70 ms gets one serial line saying how the time was spent. */
+    if (num != SYS_SAVECHUNK && took > 150000000ULL &&
+        (ata_stats.rd_cmds != before.rd_cmds || ata_stats.wr_cmds != before.wr_cmds)) {
+        char b[200]; int k = 0;
+        #define LP(s_) { const char* q_ = s_; while (*q_) b[k++] = *q_++; }
+        #define LN(v_) { char tmp_[24]; int l_ = 0; uint64_t x_ = (v_); if (!x_) tmp_[l_++] = '0'; while (x_) { tmp_[l_++] = (char)('0' + x_ % 10); x_ /= 10; } while (l_) b[k++] = tmp_[--l_]; }
+        LP("[slow] syscall ") LN(num) LP(" took ") LN(took / 1000000) LP("Mc")
+        LP(" | rd cmds=") LN(ata_stats.rd_cmds - before.rd_cmds) LP(" sec=") LN(ata_stats.rd_sectors - before.rd_sectors) LP(" ") LN((ata_stats.rd_cycles - before.rd_cycles) / 1000000) LP("Mc")
+        LP(" | wr cmds=") LN(ata_stats.wr_cmds - before.wr_cmds) LP(" sec=") LN(ata_stats.wr_sectors - before.wr_sectors) LP(" ") LN((ata_stats.wr_cycles - before.wr_cycles) / 1000000) LP("Mc")
+        LP(" dma=") LN(ata_stats.dma_cmds - before.dma_cmds) LP(" pio=") LN(ata_stats.pio_cmds - before.pio_cmds) LP("\n")
+        #undef LP
+        #undef LN
+        vga_serial_write(b, (uint64_t)k);
+    }
+    return ret;
 }
 static inline void wrmsr(uint32_t msr,uint64_t val){
     __asm__ volatile("wrmsr"::"c"(msr),"a"((uint32_t)val),"d"((uint32_t)(val>>32)));

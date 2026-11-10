@@ -17,6 +17,13 @@ int ata_write_sectors(uint64_t lba, uint8_t count, const void* buf) {
     if (lba + count > max_lba) max_lba = lba + count;
     n_w++; return pwrite(fd, buf, (size_t)count * 512, (off_t)(lba * 512)) == (ssize_t)count * 512 ? 0 : -1;
 }
+static long n_nf = 0, n_flush = 0; static int flush_pending = 0;
+static long n_lock = 0, n_unlock = 0;
+void storage_lock(void) { n_lock++; }
+void storage_unlock(void) { n_unlock++; }
+
+int ata_write_sectors_nf(uint64_t lba, uint8_t count, const void* buf) { n_nf++; flush_pending = 1; return ata_write_sectors(lba, count, buf); }
+int ata_flush_now(void) { if (flush_pending) { n_flush++; flush_pending = 0; } return 0; }
 int session_lookup(uint32_t* u, uint32_t* g) { *u = 0; *g = 0; return 0; }
 int session_is_elevated(void) { return 1; }
 void vga_puts_color(const char* s, int a, int b) { (void)a; (void)b; fputs(s, stderr); }
@@ -59,6 +66,41 @@ int main(int argc, char** argv) {
             off += n;
         }
         printf("wrote %s: %llu bytes\n", argv[3], (unsigned long long)off);
+    } else if (!strcmp(cmd, "readcount")) {     /* readcount NAME: read the whole file in 1MB pieces, report disk read commands used */
+        uint32_t ino; uint64_t size;
+        if (find(argv[3], &ino, &size)) return die("lookup failed");
+        static uint8_t buf[1 << 20]; uint64_t off = 0; long r0 = n_r;
+        while (off < size) {
+            uint32_t want = size - off > sizeof buf ? sizeof buf : (uint32_t)(size - off);
+            int64_t n = ycfs_read(ino, off, want, buf);
+            if (n != want) return die("short read");
+            off += n;
+        }
+        printf("readcount %s: %llu bytes in %ld read commands\n", argv[3], (unsigned long long)size, n_r - r0);
+    } else if (!strcmp(cmd, "frag")) {          /* two files written alternately, block by block, so their blocks interleave on disk */
+        uint32_t ia, ib;
+        if (ycfs_create(root_ino(), "frag_a", YCFS_TYPE_FILE, &ia) != 0 || ycfs_create(root_ino(), "frag_b", YCFS_TYPE_FILE, &ib) != 0) return die("create");
+        static uint8_t blk[4096], big[200 * 4096];
+        for (int i = 0; i < 200; i++) {
+            memset(blk, (uint8_t)(i * 3 + 1), sizeof blk); if (ycfs_write(ia, (uint64_t)i * 4096, 4096, blk) != 4096) return die("write a");
+            memset(blk, (uint8_t)(i * 5 + 2), sizeof blk); if (ycfs_write(ib, (uint64_t)i * 4096, 4096, blk) != 4096) return die("write b");
+        }
+        long r0 = n_r; int ok = 1;
+        for (int f = 0; f < 2; f++) {
+            memset(big, 0, sizeof big);
+            int64_t n = ycfs_read(f ? ib : ia, 0, sizeof big, big);
+            if (n != (int64_t)sizeof big) ok = 0;
+            for (int i = 0; ok && i < 200; i++) {
+                uint8_t want = (uint8_t)(f ? i * 5 + 2 : i * 3 + 1);
+                for (int k = 0; k < 4096; k++) if (big[(size_t)i * 4096 + k] != want) { ok = 0; break; }
+            }
+        }
+        /* and an unaligned read that starts and ends inside blocks, across many gaps */
+        static uint8_t part[3 * 4096 + 777]; int64_t n = ycfs_read(ia, 4096 * 10 + 100, sizeof part, part);
+        if (n != (int64_t)sizeof part) ok = 0;
+        for (size_t k = 0; ok && k < sizeof part; k++) { uint64_t o = 4096ull * 10 + 100 + k; uint8_t want = (uint8_t)((o / 4096) * 3 + 1); if (part[k] != want) ok = 0; }
+        printf("frag: %s, %ld read commands for two interleaved 200-block files\n", ok ? "PASS" : "FAIL", n_r - r0);
+        if (!ok) return 1;
     } else if (!strcmp(cmd, "unlink")) {
         char p[80]; snprintf(p, sizeof p, "/%s", argv[3]);
         if (ycfs_unlink(p) != 0) return die("unlink failed");
@@ -98,6 +140,6 @@ int main(int argc, char** argv) {
     } else if (!strcmp(cmd, "journaltest")) {
         int r = ycfs_journal_self_test(); printf("journal self test: %s\n", r == 0 ? "PASS" : "FAIL"); if (r) return 1;
     } else return die("unknown command");
-    fprintf(stderr, "[io: %ld reads %ld writes, highest LBA %llu]\n", n_r, n_w, (unsigned long long)max_lba);
+    fprintf(stderr, "[io: %ld reads %ld writes, highest LBA %llu, %ld unflushed data writes]\n", n_r, n_w, (unsigned long long)max_lba, n_nf);
     return 0;
 }

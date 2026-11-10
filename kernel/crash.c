@@ -3,6 +3,7 @@
 #include <kernel/vga.h>
 #include <kernel/process.h>
 #include <kernel/syslog.h>
+#include <kernel/sync.h>
 #include <stdint.h>
 
 static crash_log_t crash_log;
@@ -25,7 +26,15 @@ static void strcopy(char* d, const char* s, int max) {
 static void crash_load(void) {
     if(crash_loaded)return;
     uint8_t buf[512];
-    if(ata_read_sectors(CRASH_LOG_LBA,1,buf)==0){
+    /* The disk may be mid-transfer for another process (it can now sleep waiting for it). Never
+     * wait for it from here; if it is busy, run without the saved history this time. */
+    if(!kmutex_trylock(&storage_lock_m)){
+        crash_log.magic=CRASH_MAGIC; crash_log.crash_count=0;
+        return;                              /* crash_loaded stays 0, so crash_save() skips too */
+    }
+    int rd=ata_read_sectors(CRASH_LOG_LBA,1,buf);
+    storage_unlock();
+    if(rd==0){
         crash_log_t*cl=(crash_log_t*)buf;
         if(cl->magic==CRASH_MAGIC){
             for(int i=0;i<(int)sizeof(crash_log_t);i++)
@@ -41,11 +50,14 @@ static void crash_load(void) {
     crash_loaded=1;
 }
 static void crash_save(void) {
+    if(!crash_loaded)return;                 /* history was not loaded: do not overwrite it with a fresh log */
     uint8_t buf[512];
     for(int i=0;i<512;i++)buf[i]=0;
     for(int i=0;i<(int)sizeof(crash_log_t);i++)
         buf[i]=((uint8_t*)&crash_log)[i];
+    if(!kmutex_trylock(&storage_lock_m))return;   /* disk busy for someone else: skip the save */
     ata_write_sectors(CRASH_LOG_LBA,1,buf);
+    storage_unlock();
 }
 static void make_summary(crash_log_t*cl, char*out, int maxl) {
     int oi=0;

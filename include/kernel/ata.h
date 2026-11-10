@@ -27,6 +27,8 @@
 #define ATA_CMD_WRITE_PIO       0x30
 #define ATA_CMD_IDENTIFY        0xEC
 #define ATA_CMD_READ_PIO_EXT    0x24   /* LBA48 */
+#define ATA_CMD_READ_DMA        0xC8
+#define ATA_CMD_READ_DMA_EXT    0x25   /* LBA48 */
 #define ATA_CMD_WRITE_PIO_EXT   0x34   /* LBA48 */
 #define ATA_CMD_SET_MULTIPLE    0xC6   /* SET MULTIPLE MODE: sectors per DRQ block */
 #define ATA_CMD_WRITE_MULTIPLE  0xC5
@@ -65,6 +67,31 @@ int     ata_enable_multiple(uint8_t max_sectors_per_block);
  * is unavailable or failed the test (PIO writes keep working). */
 int     ata_enable_dma(void);
 int     ata_dma_active(void);
+int     ata_dma_reads_active(void);
+/* Interrupt-driven waits. ata_irq_init() must run after multitasking and the PIC are up; it turns the
+ * mode on only if a test transfer really raised IRQ14, and returns 1 if it is on. ata_irq_handler()
+ * is called from the IRQ14 stub. */
+int     ata_irq_init(void);
+void    ata_irq_handler(void);
+int     ata_irq_active(void);   /* DMA reads passed their own boot self-test and are in use */
 uint8_t ata_multiple_sectors(void);   /* 0 = not in use */
+
+
+/* Diagnostics: counts and TSC cycles spent in disk commands since the last take.
+ * wr_* includes the cache flush (fl_* is that flush alone). */
+typedef struct {
+    uint64_t rd_cmds, rd_sectors, rd_cycles;
+    uint64_t wr_cmds, wr_sectors, wr_cycles;
+    uint64_t fl_cmds, fl_cycles;
+    uint64_t dma_cmds, pio_cmds;      /* write commands that went by DMA / by PIO */
+    uint64_t rd_dma_cmds;             /* read commands that went by DMA */
+} ata_stats_t;
+extern ata_stats_t ata_stats;
+void ata_stats_take(ata_stats_t* out);
+
+/* Write without the cache flush; the flush is done later, by ata_flush_now() or automatically
+ * before the next ordinary write (so data reaches the disk before any metadata written after it). */
+int  ata_write_sectors_nf(uint64_t lba, uint8_t count, const void* buf);
+int  ata_flush_now(void);          /* flush if an earlier _nf write left one pending */
 
 #endif
