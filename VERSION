@@ -1,1 +1,1 @@
-YouOS source tree v14: fair storage lock (no starvation), schedtest with separate scheduler/filesystem probes, fbwrite with interrupts on, background copy worker
+YouOS source tree v15: new Notepad (tabs, word wrap, undo/redo, 1 MB documents, folder-aware Open/Save As), system clipboard, key events with modifiers, password-safe fields

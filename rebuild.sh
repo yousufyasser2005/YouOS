@@ -45,16 +45,18 @@ chk "sleeping locks + blocking I/O"     "sched_block"                 kernel/pro
 chk "interrupt-driven disk waits"       "ata_irq_init"                kernel/drivers/ata.c
 chk "background copy worker (copyd)"    "xw_poll"                     user/src/xfer_proto.h
 chk "fair storage lock"                 "sched_yield_kernel"          kernel/proc/sync.c
+chk "text engine + new Notepad"         "npx_new_window"              user/src/notepad.h
+chk "system clipboard + key events"     "clip_set"                    kernel/clipboard.c
 
 # This script is only meant for a tree that has everything above. If the newest feature is
 # missing, the tree is out of date (usually: an older archive was extracted) -- stop NOW
 # instead of building something that silently lacks it.
-if ! grep -q -- "sched_yield_kernel" kernel/proc/sync.c 2>/dev/null || ! grep -q -- "xw_poll" user/src/xfer_proto.h 2>/dev/null || [ ! -f user/src/copyd.c ] || ! grep -q -- "sched_block" kernel/proc/scheduler.c 2>/dev/null; then
+if ! grep -q -- "npx_new_window" user/src/notepad.h 2>/dev/null || ! grep -q -- "clip_set" kernel/clipboard.c 2>/dev/null || ! grep -q -- "sched_yield_kernel" kernel/proc/sync.c 2>/dev/null || ! grep -q -- "xw_poll" user/src/xfer_proto.h 2>/dev/null || [ ! -f user/src/copyd.c ] || ! grep -q -- "sched_block" kernel/proc/scheduler.c 2>/dev/null; then
   echo
-  echo "*** Your source tree is OLDER than this script expects (no background copy worker: user/src/copyd.c, user/src/xfer_proto.h, plus the blocking-I/O kernel files)."
+  echo "*** Your source tree is OLDER than this script expects (no new Notepad / clipboard: user/src/notepad.h, user/src/textedit.h, kernel/clipboard.c, plus the earlier v14 files)."
   echo "    Extract the NEWEST archive over the repository first, then run this again:"
   echo "        ls -la ~/Downloads/youos_tree_v*.tar     # pick the highest version"
-  echo "        tar -xf ~/Downloads/youos_tree_v14.tar"
+  echo "        tar -xf ~/Downloads/youos_tree_v15.tar"
   echo "    (a browser may have saved the new download as 'name (1).tar' next to an old one with the same name)"
   exit 1
 fi

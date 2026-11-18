@@ -303,6 +303,21 @@ static inline int64_t sys_fsize(int64_t fd) {
 
 /* Write one piece of a /ycfs file: offset 0 creates the file (or empties
  * an existing one), later offsets continue it. Returns bytes written or -1. */
+#define SYS_KEYEV 57
+#define SYS_CLIPSET 58
+#define SYS_CLIPGET 59
+#define SYS_CLIPINFO 60
+/* A key press with its modifiers: 0 = none. Layout in include/kernel/keyev.h. */
+#define KEYEV_SHIFT (1ull << 24)
+#define KEYEV_CTRL  (1ull << 25)
+#define KEYEV_ALT   (1ull << 26)
+#define KEYEV_VALID (1ull << 63)
+static inline uint64_t sys_keyev(void) { return _sc(SYS_KEYEV, 0, 0, 0, 0, 0); }
+/* System clipboard (kernel/clipboard.c). type 1 = text. */
+static inline int64_t sys_clip_set(const void* d, uint64_t len, uint64_t type) { return (int64_t)_sc(SYS_CLIPSET, (uint64_t)d, len, type, 0, 0); }
+static inline int64_t sys_clip_get(void* d, uint64_t max) { return (int64_t)_sc(SYS_CLIPGET, (uint64_t)d, max, 0, 0, 0); }
+static inline void    sys_clip_info(uint32_t* len, uint32_t* type, uint32_t* seq) { _sc(SYS_CLIPINFO, (uint64_t)len, (uint64_t)type, (uint64_t)seq, 0, 0); }
+
 #define SYS_IOINFO 56
 static inline uint64_t sys_ioinfo(void) { return _sc(SYS_IOINFO, 0, 0, 0, 0, 0); }
 

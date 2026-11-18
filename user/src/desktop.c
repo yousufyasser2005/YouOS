@@ -1577,75 +1577,22 @@ static void draw_files_content(int wi){
     }
 }
 
-/* ═══ NOTEPAD ═══════════════════════════════════════════════════ */
-#define NP_BUFSIZE 8192
-typedef struct{
-    char text[NP_BUFSIZE];
-    int  text_len,cursor,scroll;
-    char filename[48];
-    char path[200];   /* full /ycfs/... path of the open file; empty = root folder (new / Save-As files) */
-    int  modified,mode,save_flash;
-    char dlg_buf[32];
-    int  dlg_len,dlg_hov,dlg_scroll;
-    int  mode3_err;
-    char err_name[36];
-}Notepad;
-static Notepad np_states[MAX_WINDOWS];
-static int np_current=-1;
-#define np (np_states[np_current])
+/* ================= Notepad =================
+ * The editor itself is in notepad.h (text engine in textedit.h, helpers in npcore.h, the file name box in
+ * lineedit.h). The clipboard goes through the kernel (sys_clip_*). ============================== */
+static void wm_close(int i);
+static long long np_clip_text(char*buf,int max){          /* the system clipboard as text; 0 if empty or not text */
+    unsigned len=0,type=0,seq=0;sys_clip_info(&len,&type,&seq);
+    if(len==0||type!=1u)return 0;
+    long long full=sys_clip_get(buf,(unsigned long)max);
+    if(full<0)return 0;
+    return full<max?full:max;
+}
+#define LE_CLIP_SET(b,n) ((void)sys_clip_set((b),(unsigned long)(n),1))
+#define LE_CLIP_GET(b,m) np_clip_text((char*)(b),(int)(m))
+#include "notepad.h"
+static int npx_any_frames(void){for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD&&npx_needs_frames(k))return 1;return 0;}
 
-static void np_insert(char c){
-    if(np.text_len>=NP_BUFSIZE-1)return;
-    for(int i=np.text_len;i>np.cursor;i--)np.text[i]=np.text[i-1];
-    np.text[np.cursor++]=c;np.text_len++;np.text[np.text_len]=0;np.modified=1;
-}
-static void np_backspace(void){
-    if(np.cursor<=0)return;
-    for(int i=np.cursor-1;i<np.text_len-1;i++)np.text[i]=np.text[i+1];
-    np.text_len--;np.cursor--;np.text[np.text_len]=0;np.modified=1;
-}
-static void np_del_fwd(void){
-    if(np.cursor>=np.text_len)return;
-    for(int i=np.cursor;i<np.text_len-1;i++)np.text[i]=np.text[i+1];
-    np.text_len--;np.text[np.text_len]=0;np.modified=1;
-}
-static void np_cursor_pos(int*ln,int*col){
-    int l=0,c=0;
-    for(int i=0;i<np.cursor;i++){if(np.text[i]=='\n'){l++;c=0;}else c++;}
-    *ln=l;*col=c;
-}
-static int np_total_lines(void){int n=1;for(int i=0;i<np.text_len;i++)if(np.text[i]=='\n')n++;return n;}
-static int np_line_start(int line){int l=0,i=0;while(i<np.text_len&&l<line){if(np.text[i]=='\n')l++;i++;}return i;}
-static int np_line_end(int ls){int i=ls;while(i<np.text_len&&np.text[i]!='\n')i++;return i;}
-static void np_left(void){if(np.cursor>0)np.cursor--;}
-static void np_right(void){if(np.cursor<np.text_len)np.cursor++;}
-static void np_up(void){
-    int ln,col;np_cursor_pos(&ln,&col);if(ln==0){np.cursor=0;return;}
-    int ps=np_line_start(ln-1),pe=np_line_end(ps);
-    np.cursor=ps+(col<pe-ps?col:pe-ps);
-}
-static void np_down(void){
-    int ln,col;np_cursor_pos(&ln,&col);
-    int tot=np_total_lines();if(ln+1>=tot){np.cursor=np.text_len;return;}
-    int ns=np_line_start(ln+1),ne=np_line_end(ns);
-    np.cursor=ns+(col<ne-ns?col:ne-ns);
-}
-static void np_home(void){int ln,col;np_cursor_pos(&ln,&col);(void)col;np.cursor=np_line_start(ln);}
-static void np_end(void){int ln,col;np_cursor_pos(&ln,&col);(void)col;np.cursor=np_line_end(np_line_start(ln));}
-static void np_ensure_vis(int max_rows){
-    int ln,col;np_cursor_pos(&ln,&col);(void)col;
-    if(ln<np.scroll)np.scroll=ln;
-    if(ln>=np.scroll+max_rows)np.scroll=ln-max_rows+1;
-}
-static void np_load(const char*path,const char*shortname){
-    int fd=sys_open(path,0);if(fd<0)return;
-    np.text_len=0;s64 r;
-    while(np.text_len<NP_BUFSIZE-1&&(r=sys_fread(fd,np.text+np.text_len,128))>0)np.text_len+=(int)r;
-    np.text[np.text_len]=0;sys_close(fd);
-    np.cursor=0;np.scroll=0;np.modified=0;
-    int k=0;while(shortname[k]&&k<47){np.filename[k]=shortname[k];k++;}np.filename[k]=0;
-    k=0;while(path[k]&&k<199){np.path[k]=path[k];k++;}np.path[k]=0;
-}
 /* ═══ WAV PLAYBACK (streaming-engine redesign) ═══════════════════
  * Previous architecture: chunked userspace polling, one
  * ac97_play_pcm() call per WAV_CHUNK_SAMPLES, paced from the main
@@ -1867,171 +1814,7 @@ static void wav_poll(void){
         tprint(buf);
     }
 }
-static void np_do_save(void){
-    char path[200];int j=0;
-    if(np.path[0]){int k=0;while(np.path[k]&&k<199){path[k]=np.path[k];k++;}path[k]=0;}
-    else{path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
-        int k=6;while(np.filename[j]&&k<199){path[k++]=np.filename[j++];}path[k]=0;}
-    sys_save_file((unsigned long long)path,(unsigned long long)np.text,(unsigned long long)np.text_len);
-    np.modified=0;np.save_flash=80;
-    for(int fk=0;fk<MAX_WINDOWS;fk++)fml_states[fk].loaded=0;
-    if(np_current>=0){
-        j=0;while(np.filename[j]&&j<39){wins[np_current].title[j]=np.filename[j];j++;}
-        wins[np_current].title[j]=0;
-    }
-}
-static void np_do_saveas(void){
-    if(np.dlg_len<=0)return;
-    /* build filename: spaces allowed, stored as-is (FAT driver handles) */
-    char name[40];int k=0,j=0;
-    while(np.dlg_buf[j]&&k<28){
-        char c=np.dlg_buf[j++];
-        /* only block truly illegal chars */
-        if(c==(char)47||c==(char)92||c==58||c==42||c==63||c==34||c==60||c==62||c==124)c=95;
-        name[k++]=c;
-    }
-    name[k++]=46;name[k++]=116;name[k++]=120;name[k++]=116;name[k]=0;
-    /* check for duplicate — show error dialog if found */
-    Dirent existing[64];
-    int total=(int)sys_readdir(existing,64);
-    int found=0;
-    for(int fi=0;fi<total;fi++){
-        int match=1;
-        for(int mi=0;name[mi]||existing[fi].name[mi];mi++){
-            char ac=name[mi],bc=existing[fi].name[mi];
-            if(ac>=65&&ac<=90)ac+=32;
-            if(bc>=65&&bc<=90)bc+=32;
-            if(ac!=bc){match=0;break;}
-        }
-        if(match){found=1;break;}
-    }
-    if(found){
-        np.mode3_err=1;
-        int ei=0;while(name[ei]&&ei<35){np.err_name[ei]=name[ei];ei++;}np.err_name[ei]=0;
-        return;
-    }
-    int ci=0;while(name[ci]&&ci<47){np.filename[ci]=name[ci];ci++;}np.filename[ci]=0;
-    np.path[0]=0;   /* Save As: new file in the root folder */
-    np_do_save();np.mode=0;np.dlg_len=0;np.dlg_buf[0]=0;np.mode3_err=0;
-}
 
-static Dirent np_dlg_files[MAX_FILES];
-static int    np_dlg_count=0;
-static void np_load_filelist(void){
-    int tot=(int)sys_readdir(np_dlg_files,MAX_FILES);np_dlg_count=0;
-    for(int i=0;i<tot;i++){
-        if(np_dlg_files[i].is_dir)continue;
-        char*n=np_dlg_files[i].name;int nl=slen(n);
-        if(nl>4&&n[nl-4]=='.'&&n[nl-3]=='t'&&n[nl-2]=='x'&&n[nl-1]=='t')
-            np_dlg_files[np_dlg_count++]=np_dlg_files[i];
-    }
-}
-
-static void draw_floppy(int x,int y){
-    rect(x,y,16,15,0x4A7AB5);rect(x+2,y+1,9,5,0xD0E8F8);
-    hline(x+3,y+2,7,0x90B8D0);hline(x+3,y+4,7,0x90B8D0);
-    rect(x+2,y+9,12,5,0x7A8A98);rect(x+5,y+10,4,3,0x1A2535);
-    rect(x+12,y,4,4,0x0D1117);
-}
-
-static void draw_notepad_content(int wi){
-    Win*w=&wins[wi];
-    int x=w->x,y=w->y+TITLEBAR_H,cw=w->w,ch=w->h-TITLEBAR_H;
-    rect(x,y,cw,ch,0x0D1117);
-    /* toolbar */
-    rect(x,y,cw,28,0x161B22);hline(x,y+28,cw,BORDER);
-    int nwh=in_box(mouse_x,mouse_y,x+4,y+4,40,20);
-    rect(x+4,y+4,40,20,nwh?0x21262D:0x13161B);outline(x+4,y+4,40,20,BORDER);
-    text(x+10,y+6,"New",nwh?TEXT:DIM,nwh?0x21262D:0x13161B);
-    int oh=in_box(mouse_x,mouse_y,x+50,y+4,52,20);
-    rect(x+50,y+4,52,20,oh?0x21262D:0x13161B);outline(x+50,y+4,52,20,BORDER);
-    text(x+58,y+6,"Open",oh?TEXT:DIM,oh?0x21262D:0x13161B);
-    int sh=in_box(mouse_x,mouse_y,x+108,y+4,70,20);
-    rect(x+108,y+4,70,20,sh?0x21262D:0x13161B);outline(x+108,y+4,70,20,BORDER);
-    draw_floppy(x+111,y+6);text(x+130,y+6,"Save",sh?TEXT:DIM,sh?0x21262D:0x13161B);
-    if(np.save_flash>0){text(x+186,y+6,"[Saved]",GREEN,0x161B22);np.save_flash--;}
-    char hdr[56];int hi=0;
-    const char*fn=np.filename[0]?np.filename:"New File";
-    while(fn[hi]&&hi<40){hdr[hi]=fn[hi];hi++;}
-    if(np.modified){hdr[hi++]=' ';hdr[hi++]='[';hdr[hi++]='*';hdr[hi++]=']';}hdr[hi]=0;
-    text_center(x+cw/2,y+6,hdr,DIM,0x161B22);
-    /* text area */
-    int ta_x=x+8,ta_y=y+32;
-    int max_cols=(cw-16)/8;if(max_cols<1)max_cols=1;
-    int max_rows=(ch-52)/16;if(max_rows<1)max_rows=1;
-    np_ensure_vis(max_rows);
-    int cur_ln=0,cur_col=0;np_cursor_pos(&cur_ln,&cur_col);
-    int ci=0,rline=0;
-    while(ci<np.text_len&&rline<np.scroll){if(np.text[ci]=='\n')rline++;ci++;}
-    int rcol=0,rl=np.scroll;
-    while(ci<=np.text_len&&rl<np.scroll+max_rows){
-        char c=(ci<np.text_len)?np.text[ci]:0;
-        if(ci==np.text_len||c=='\n'){rl++;rcol=0;ci++;continue;}
-        if(rcol<max_cols)glyph(ta_x+rcol*8,ta_y+(rl-np.scroll)*16,c,TEXT,0x0D1117);
-        rcol++;ci++;
-    }
-    /* cursor */
-    if(wi==focused&&np.mode==0&&cursor_blink<50){
-        if(cur_ln>=np.scroll&&cur_ln<np.scroll+max_rows&&cur_col<=max_cols)
-            rect(ta_x+cur_col*8,ta_y+(cur_ln-np.scroll)*16,2,16,cfg_accent);
-    }
-    /* status bar */
-    int sb=y+ch-18;rect(x,sb,cw,18,0x161B22);hline(x,sb,cw,BORDER);
-    char pos[24];int pi=0;
-    pos[pi++]='L';pos[pi++]='n';pos[pi++]=':';
-    int cl1=cur_ln+1;
-    if(cl1>=100)pos[pi++]='0'+cl1/100;
-    if(cl1>=10) pos[pi++]='0'+(cl1/10)%10;
-    pos[pi++]='0'+cl1%10;pos[pi++]=' ';
-    pos[pi++]='C';pos[pi++]='o';pos[pi++]='l';pos[pi++]=':';
-    int cc1=cur_col+1;
-    if(cc1>=100)pos[pi++]='0'+cc1/100;
-    if(cc1>=10) pos[pi++]='0'+(cc1/10)%10;
-    pos[pi++]='0'+cc1%10;pos[pi]=0;
-    text(x+8,sb+1,pos,DIM,0x161B22);
-    /* open dialog */
-    if(np.mode==1){
-        int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
-        int dw=280,dh=dh2,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
-        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,ACCENT);
-        rect(dx,dy2,dw,24,0x1C2128);hline(dx,dy2+24,dw,BORDER);
-        text_center(dx+dw/2,dy2+4,"Open .txt File",TEXT,0x1C2128);
-        text(dx+dw-18,dy2+4,"x",RED,0x1C2128);
-        int ly=dy2+28,max_vis2=(dh-36)/20;
-        for(int i=np.dlg_scroll;i<np_dlg_count&&i<np.dlg_scroll+max_vis2;i++){
-            int ry=ly+(i-np.dlg_scroll)*20;int hov=(i==np.dlg_hov);
-            rect(dx+2,ry,dw-4,20,hov?0x21262D:0x161B22);
-            text(dx+10,ry+2,np_dlg_files[i].name,hov?TEXT:DIM,hov?0x21262D:0x161B22);
-        }
-        if(np_dlg_count==0)text_center(dx+dw/2,dy2+50,"No .txt files found",DIM,0x161B22);
-    }
-    /* save-as dialog */
-    if(np.mode==2){
-        int dw=300,dh=104,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
-        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,ACCENT);
-        rect(dx,dy2,dw,24,0x1C2128);hline(dx,dy2+24,dw,BORDER);
-        text_center(dx+dw/2,dy2+4,"Save As",TEXT,0x1C2128);
-        text(dx+8,dy2+30,"Name (spaces OK, .txt added):",DIM,0x161B22);
-        rect(dx+8,dy2+50,dw-16,20,0x0D1117);outline(dx+8,dy2+50,dw-16,20,ACCENT);
-        text(dx+12,dy2+52,np.dlg_buf,TEXT,0x0D1117);
-        if(cursor_blink<50)rect(dx+12+np.dlg_len*8,dy2+52,2,16,ACCENT);
-        int ok_h=in_box(mouse_x,mouse_y,dx+dw/2-30,dy2+76,60,20);
-        rect(dx+dw/2-30,dy2+76,60,20,ok_h?ACCENT:0x21262D);
-        text_center(dx+dw/2,dy2+78,"Save",ok_h?0x0D1117:TEXT,ok_h?ACCENT:0x21262D);
-    if(np.mode3_err){
-        int dw=320,dh=90,dx=x+(cw-dw)/2,dy2=y+(ch-dh)/2;
-        rect(dx,dy2,dw,dh,0x161B22);outline(dx,dy2,dw,dh,RED);
-        rect(dx,dy2,dw,24,0x2A1010);hline(dx,dy2+24,dw,0x5A2020);
-        text_center(dx+dw/2,dy2+4,"File Already Exists",RED,0x2A1010);
-        char emsg[60];int ei=0;
-        while(np.err_name[ei]&&ei<35){emsg[ei]=np.err_name[ei];ei++;}emsg[ei]=0;
-        text_center(dx+dw/2,dy2+34,emsg,TEXT,0x161B22);
-        int ok_h2=in_box(mouse_x,mouse_y,dx+dw/2-20,dy2+62,40,20);
-        rect(dx+dw/2-20,dy2+62,40,20,ok_h2?ACCENT:0x21262D);
-        text_center(dx+dw/2,dy2+64,"OK",ok_h2?0x0D1117:TEXT,ok_h2?ACCENT:0x21262D);
-    }
-    }
-}
 
 /* ═══ ABOUT ═════════════════════════════════════════════════════ */
 static void draw_about_content(int i){
@@ -3152,24 +2935,7 @@ static void open_files(void){
     fm_states[i].use_fat16=0;
     fm_loaded=0;fm_path_len=0;fm_path[0]=0;
 }
-static void open_notepad_p(const char*fn,const char*full){
-    int cnt=0;for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD)cnt++;
-    int ox=150+(cnt%6)*24,oy=70+(cnt%6)*24;
-    int i=wm_new(WIN_NOTEPAD,ox,oy,580,460,"YC Notepad",YELLOW);
-    if(i<0)return;
-    np_current=i;
-    zero_bytes(&np_states[i],sizeof(np_states[i]));
-    np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
-    np.modified=0;np.mode=0;np.filename[0]=0;np.path[0]=0;
-    np.dlg_len=0;np.dlg_hov=-1;np.dlg_scroll=0;np.save_flash=0;np.mode3_err=0;np.err_name[0]=0;
-    if(fn&&fn[0]){
-        char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
-        int k=6,j=0;while(fn[j]&&k<55){path[k++]=fn[j++];}path[k]=0;
-        np_load(full&&full[0]?full:path,fn);
-        j=0;while(fn[j]&&j<39){wins[i].title[j]=fn[j];j++;}wins[i].title[j]=0;
-    }
-}
-static void open_notepad(const char*fn){open_notepad_p(fn,0);}
+/* open_notepad / open_notepad_p now live in notepad.h */
 
 /* ═══ FILE TRANSFER ═════════════════════════════════════════════════
  * Copy + Paste hands the work to the incremental job engine in fs_tree.h
@@ -3440,7 +3206,7 @@ static void wm_close(int i){
         }
         pterm_states[i].pid=-1;
     }
-    if(id==WIN_NOTEPAD){np_current=i;np.mode=0;}
+    if(id==WIN_NOTEPAD){if(!npx_can_close(i))return;npx_destroy(i);}
     if(id==WIN_SETTINGS)settings_win_idx=-1;
     if(id==WIN_CALC)calc_current=-1;
     if(id==WIN_MEDIAPLAYER&&i==media_win)media_win=-1;   /* the player reuses its window only while it is open */
@@ -4402,11 +4168,17 @@ static void auth_self_test(void){
 #define ACCT_H 420
 #define ACCT_X (((int)FB_W-ACCT_W)/2)
 #define ACCT_Y (((int)FB_H-ACCT_H)/2)
-static void text_input_key(char*buf,int*len,int maxlen,s64 ch){
-    if(ch<=0||ch>=256)return;
-    char c=(char)ch;
-    if((c=='\b'||c==127)&&*len>0){buf[--(*len)]=0;}
-    else if(c>=32&&c<127&&*len<maxlen-1){buf[(*len)++]=c;buf[*len]=0;}
+/* Append-only masked/plain text box (account name, passwords). Ctrl+V pastes from the system clipboard.
+ * Ctrl+C / Ctrl+X go through the same line-edit code as every other field, which NEVER copies or cuts
+ * from a password field (password != 0): the clipboard is untouched and nothing is deleted. */
+static void text_input_key(char*buf,int*len,int maxlen,s64 ch,int ctrl,int password){
+    LineEdit e; e.buf=buf;e.cap=maxlen;e.password=password;e.len=*len;e.cursor=e.anchor=*len;
+    if(ctrl){
+        if(ch=='v'||ch=='V'||ch=='c'||ch=='C'||ch=='x'||ch=='X')le_key(&e,(int)ch,0,1);
+    }
+    else if(ch==8||ch==127)le_backspace(&e);
+    else if(ch>=32&&ch<127)le_type(&e,(char)ch);
+    *len=e.len;
 }
 static void draw_masked(int x,int y,int len,u32 fg,u32 bg){
     char mask[48];int n=len;if(n>46)n=46;
@@ -4438,7 +4210,10 @@ static int acct_setup_run(int is_first_boot){
         int mx=(int)mstate[0],my=(int)mstate[1],mb=(int)mstate[2];
         static int prev_mb=0;
         int click=(mb&1)&&!(prev_mb&1);
-        s64 ch=sys_keypoll();
+        u64 kev=sys_keyev();
+        s64 ch=0;int key_shift=0,key_ctrl=0;
+        if(kev){ch=(s64)(kev&0xFFFF);key_shift=(kev&KEYEV_SHIFT)!=0;key_ctrl=(kev&KEYEV_CTRL)!=0;}
+        (void)key_shift;
 
         if(acct_screen==0){
             int fldx=ACCT_X+24,fldw=ACCT_W-48,fldh=30;
@@ -4450,9 +4225,9 @@ static int acct_setup_run(int is_first_boot){
             }
             if(ch==9||ch==1002){acct_focus=(acct_focus+1)%3;}
             else if(ch==1001){acct_focus=(acct_focus+2)%3;}
-            else if(acct_focus==0)text_input_key(acct_user_buf,&acct_user_len,32,ch);
-            else if(acct_focus==1)text_input_key(acct_pass_buf,&acct_pass_len,48,ch);
-            else if(acct_focus==2)text_input_key(acct_pass2_buf,&acct_pass2_len,48,ch);
+            else if(acct_focus==0)text_input_key(acct_user_buf,&acct_user_len,32,ch,key_ctrl,0);
+            else if(acct_focus==1)text_input_key(acct_pass_buf,&acct_pass_len,48,ch,key_ctrl,1);
+            else if(acct_focus==2)text_input_key(acct_pass2_buf,&acct_pass2_len,48,ch,key_ctrl,1);
             if(ch=='\n'||ch=='\r'){
                 if(acct_user_len==0){auth_copy_str(acct_err_buf,64,"Username required");acct_focus=0;}
                 else if(acct_pass_len<4){auth_copy_str(acct_err_buf,64,"Password must be at least 4 characters");acct_focus=1;}
@@ -4628,7 +4403,10 @@ static int lock_screen_run(int mode){
         unsigned long long mstate[3];sys_mouseread(mstate);
         int mx=(int)mstate[0],my=(int)mstate[1];mb=(int)mstate[2];
         int click=(mb&1)&&!(prev_mb3&1);
-        s64 ch=sys_keypoll();
+        u64 kev=sys_keyev();
+        s64 ch=0;int key_shift=0,key_ctrl=0;
+        if(kev){ch=(s64)(kev&0xFFFF);key_shift=(kev&KEYEV_SHIFT)!=0;key_ctrl=(kev&KEYEV_CTRL)!=0;}
+        (void)key_shift;
 
         int hov_sd=0,hov_rb=0;
 
@@ -4691,7 +4469,7 @@ static int lock_screen_run(int mode){
                 if(mode!=LOCK_MODE_LOCK && in_box(mx,my,backx,backy,backw,backh)){screen=0;sel_idx=-1;}
                 else if(in_box(mx,my,eyex,eyey,eyew,eyeh))show_pw=!show_pw;
             }
-            text_input_key(pw_buf,&pw_len,48,ch);
+            text_input_key(pw_buf,&pw_len,48,ch,key_ctrl,1);
             int submit=(ch=='\n'||ch=='\r')||(click&&in_box(mx,my,bbx,bby,bbw,bbh));
             if(submit&&sel_idx>=0){
                 u32 uid=0;
@@ -4746,8 +4524,8 @@ static void auth_do_logout(void){
     sys_youdo(0);session_elevated=0;
     for(int i=0;i<win_count;i++){wins[i].visible=0;wins[i].minimized=0;}
     win_count=0;focused=-1;
-    for(int k=0;k<MAX_WINDOWS;k++){np_states[k].text[0]=0;np_states[k].text_len=0;np_states[k].cursor=0;np_states[k].scroll=0;np_states[k].modified=0;np_states[k].filename[0]=0;np_states[k].mode=0;}
-    np_current=-1;settings_win_idx=-1;
+    npx_init_all();
+    settings_win_idx=-1;
     for(int k=0;k<MAX_WINDOWS;k++){calc_states[k].expr_len=0;calc_states[k].expr[0]=0;calc_states[k].has_result=0;calc_states[k].error=0;calc_states[k].hist_count=0;}
     calc_current=-1;
     notif_count=0;notif_center_open=0;notif_popup_active=0;
@@ -5128,71 +4906,9 @@ int main(void){
                 /* notepad toolbar */
                     /* error dialog click — checked first (only meaningful
                      * for the Notepad window actually being clicked) */
-                    if(w->id==WIN_NOTEPAD&&(np_current=hit,np.mode3_err)){
-                        int edw=320,edh=90;
-                        int edx=w->x+(w->w-edw)/2;
-                        int edy=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-edh)/2;
-                        if(in_box(mouse_x,mouse_y,edx+edw/2-20,edy+62,40,20)){np.mode3_err=0;goto click_done;}
-                        goto click_done;
-                    }
                 if(w->id==WIN_NOTEPAD&&!w->minimized){
-                    np_current=hit;
-                    int bary=w->y+TITLEBAR_H;
-                    if(in_box(mouse_x,mouse_y,w->x+4,bary+4,40,20)){
-                        np.text[0]=0;np.text_len=0;np.cursor=0;np.scroll=0;
-                        np.modified=0;np.filename[0]=0;np.path[0]=0;np.mode=0;
-                        if(np_current>=0){int j=0;const char*t="YC Notepad";while(t[j]&&j<39){wins[np_current].title[j]=t[j];j++;}wins[np_current].title[j]=0;}
-                        goto click_done;
-                    }
-                    if(in_box(mouse_x,mouse_y,w->x+50,bary+4,52,20)){
-                        np_load_filelist();np.mode=1;np.dlg_hov=-1;np.dlg_scroll=0;goto click_done;
-                    }
-                    if(in_box(mouse_x,mouse_y,w->x+108,bary+4,70,20)){
-                        if(np.filename[0])np_do_save();
-                        else{np.mode=2;np.dlg_len=0;np.dlg_buf[0]=0;}
-                        goto click_done;
-                    }
-                    /* open dialog interactions */
-                    if(np.mode==1){
-                        int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
-                        int dw=280,dh=dh2,dx=w->x+(w->w-dw)/2,dy2=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-dh)/2;
-                        if(in_box(mouse_x,mouse_y,dx+dw-18,dy2+4,14,18)){np.mode=0;goto click_done;}
-                        int ly=dy2+28,max_vis2=(dh-36)/20;
-                        for(int fi=np.dlg_scroll;fi<np_dlg_count&&fi<np.dlg_scroll+max_vis2;fi++){
-                            int ry=ly+(fi-np.dlg_scroll)*20;
-                            if(in_box(mouse_x,mouse_y,dx+2,ry,dw-4,20)){
-                                char path[56];path[0]='/';path[1]='y';path[2]='c';path[3]='f';path[4]='s';path[5]='/';
-                                int pk=6,pj=0;while(np_dlg_files[fi].name[pj]&&pk<55){path[pk++]=np_dlg_files[fi].name[pj++];}path[pk]=0;
-                                np_load(path,np_dlg_files[fi].name);
-                                if(np_current>=0){pj=0;while(np_dlg_files[fi].name[pj]&&pj<39){wins[np_current].title[pj]=np_dlg_files[fi].name[pj];pj++;}wins[np_current].title[pj]=0;}
-                                np.mode=0;goto click_done;
-                            }
-                        }
-                        if(!in_box(mouse_x,mouse_y,dx,dy2,dw,dh))np.mode=0;
-                        goto click_done;
-                    }
-                    /* save-as dialog */
-                    if(np.mode==2){
-                        int dw=300,dh=104,dx=w->x+(w->w-dw)/2,dy2=w->y+TITLEBAR_H+(w->h-TITLEBAR_H-dh)/2;
-                        if(in_box(mouse_x,mouse_y,dx+dw/2-30,dy2+76,60,20)){np_do_saveas();goto click_done;}
-                        if(!in_box(mouse_x,mouse_y,dx,dy2,dw,dh))np.mode=0;
-                        goto click_done;
-                    }
-                    /* click in text area to position cursor */
-                    if(np.mode==0){
-                        int ta_y0=bary+32,ta_y1=w->y+w->h-18;
-                        if(mouse_y>=ta_y0&&mouse_y<ta_y1&&mouse_x>=w->x+8&&mouse_x<w->x+w->w-8){
-                            int cl=(mouse_x-(w->x+8))/8;
-                            int ln=(mouse_y-ta_y0)/16+np.scroll;
-                            if(cl<0)cl=0;if(ln<0)ln=0;
-                            int tot=np_total_lines();if(ln>=tot)ln=tot-1;
-                            int ls=np_line_start(ln),le=np_line_end(ls);
-                            if(cl>le-ls)cl=le-ls;
-                            np.cursor=ls+cl;
-                            if(np.cursor>np.text_len)np.cursor=np.text_len;
-                            goto click_done;
-                        }
-                    }
+                    npx_mouse_down(hit,mouse_x,mouse_y,1);
+                    goto click_done;
                 }
                 /* file transfer window: Cancel / Close button */
                 if(w->id==WIN_TRANSFER&&!w->minimized){
@@ -5566,9 +5282,17 @@ int main(void){
         click_done:;
 
         /* keyboard */
-        s64 ch=sys_keypoll();
+        u64 kev=sys_keyev();
+        s64 ch=0;int key_shift=0,key_ctrl=0;
+        if(kev){ch=(s64)(kev&0xFFFF);key_shift=(kev&KEYEV_SHIFT)!=0;key_ctrl=(kev&KEYEV_CTRL)!=0;}
         if(ch!=0)xfer_input_ms=ft_now_ms();   /* typing counts as activity for copy pacing */
-        if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch);}
+        if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch,key_ctrl,1);}
+        if(ch!=0&&key_ctrl){
+            /* Ctrl combinations are shortcuts for the focused window, never typed text */
+            if(!youdo_open&&!menu_open&&focused>=0&&wins[focused].id==WIN_NOTEPAD&&wins[focused].visible&&!wins[focused].minimized)
+                npx_key(focused,(int)ch,key_shift,1);
+            ch=0;
+        }
         if(ch!=0&&menu_open){
             if(ch>0&&ch<256){
                 char sc=(char)ch;
@@ -5636,47 +5360,30 @@ int main(void){
                 calc_handle_key(ch);
             }
             if(wins[focused].id==WIN_NOTEPAD&&wins[focused].visible){
-                np_current=focused;
-                if(np.mode==2){
-                    if(ch>0&&ch<256){
-                        char c=(char)ch;
-                        if(c=='\b'||c==127){if(np.dlg_len>0)np.dlg_buf[--np.dlg_len]=0;}
-                        else if(c=='\n'||c=='\r')np_do_saveas();
-                        else if(c>=32&&c<127&&np.dlg_len<30){np.dlg_buf[np.dlg_len++]=c;np.dlg_buf[np.dlg_len]=0;}
-                        else if(c==32&&np.dlg_len<30){np.dlg_buf[np.dlg_len++]='_';np.dlg_buf[np.dlg_len]=0;}
-                    }
-                } else if(np.mode==0){
-                    if(ch>0&&ch<256){
-                        char c=(char)ch;
-                        if(c=='\b'||c==127)np_backspace();
-                        else if(c=='\n'||c=='\r')np_insert('\n');
-                        else if(c>=32&&c<127)np_insert(c);
-                    } else if(ch>=1001){
-                        /* magic constants from sys_keypoll */
-                        if     (ch==1001)np_up();
-                        else if(ch==1002)np_down();
-                        else if(ch==1003)np_left();
-                        else if(ch==1004)np_right();
-                        else if(ch==1005)np_home();
-                        else if(ch==1006)np_end();
-                        else if(ch==1007)np_del_fwd();
-                        else if(ch==1008){np.scroll=np.scroll>5?np.scroll-5:0;}
-                        else if(ch==1009)np.scroll+=5;
-                    }
-                }
+                npx_key(focused,(int)ch,key_shift,0);
             }
         }
 
         /* hover updates */
         if(notif_popup_active&&g_now_ticks>=notif_popup_expire)notif_popup_active=0;
-        if(notif_center_open){
+        {
             long wdelta=sys_mousewheel();
-            int ncxw=NC_X,ncyw=NC_Y;
-            if(in_box(mouse_x,mouse_y,ncxw,ncyw,NC_W,NC_H)){
-                if(wdelta<0&&notif_scroll+NC_MAX_VISIBLE<notif_count)notif_scroll++;
-                else if(wdelta>0&&notif_scroll>0)notif_scroll--;
+            if(wdelta){
+                if(notif_center_open&&in_box(mouse_x,mouse_y,NC_X,NC_Y,NC_W,NC_H)){
+                    if(wdelta<0&&notif_scroll+NC_MAX_VISIBLE<notif_count)notif_scroll++;
+                    else if(wdelta>0&&notif_scroll>0)notif_scroll--;
+                } else if(!notif_center_open){
+                    int top=-1,bz=-1;
+                    for(int k=0;k<win_count;k++)
+                        if(wins[k].visible&&!wins[k].minimized&&in_box(mouse_x,mouse_y,wins[k].x,wins[k].y,wins[k].w,wins[k].h)&&wins[k].z>=bz){bz=wins[k].z;top=k;}
+                    if(top>=0&&wins[top].id==WIN_NOTEPAD)npx_wheel(top,(int)wdelta);
+                }
             }
         }
+        for(int k=0;k<win_count;k++)                       /* Notepad: selection / scrollbar drags follow the mouse until it is released */
+            if(wins[k].id==WIN_NOTEPAD&&npx[k].used&&npx[k].drag){
+                if(mouse_btn&1)npx_mouse_drag(k,mouse_x,mouse_y);else npx_mouse_up(k);
+            }
         sm_hov=-1;
         if(menu_open){
             for(int gi=0;gi<sm_filtered_n;gi++){
@@ -5721,17 +5428,7 @@ int main(void){
             int max_vis3=(wf->h-TITLEBAR_H-72-20)/22;if(max_vis3<1)max_vis3=1;
             for(int i=start;i<fm_count&&i<start+max_vis3;i++){int ry=row_y+(i-start)*22;if(in_box(mouse_x,mouse_y,wf->x,ry,wf->w,22))fm_hovered=i;}
         }
-        np.dlg_hov=-1;
-        if(np_current>=0&&np_current<MAX_WINDOWS&&wins[np_current].visible&&np.mode==1){
-            Win*wn=&wins[np_current];
-            int dh2=np_dlg_count*20+52;if(dh2>260)dh2=260;if(dh2<72)dh2=72;
-            int dw=280,dh=dh2,dx=wn->x+(wn->w-dw)/2,dy2=wn->y+TITLEBAR_H+(wn->h-TITLEBAR_H-dh)/2;
-            int ly=dy2+28,max_vis2=(dh-36)/20;
-            for(int i=np.dlg_scroll;i<np_dlg_count&&i<np.dlg_scroll+max_vis2;i++){
-                int ry=ly+(i-np.dlg_scroll)*20;
-                if(in_box(mouse_x,mouse_y,dx+2,ry,dw-4,20))np.dlg_hov=i;
-            }
-        }
+        /* (Notepad tracks its own hover state) */
 
         if(fm_current>=0)fm_ctx_hov=-1;
         if(fm_current>=0&&fm_ctx_open){
@@ -5773,7 +5470,7 @@ int main(void){
             }
         }
 
-        if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&np.save_flash==0)continue;
+        if(ticks-last_ticks<1&&ch==0&&cursor_blink!=0&&cursor_blink!=50&&!btn_down&&!btn_up&&!npx_any_frames())continue;
         last_ticks=ticks;
 
         rebuild_taskbar_groups();
@@ -5807,7 +5504,7 @@ int main(void){
             if(wins[i].id==WIN_TERMINAL)draw_terminal_content(i);
             else if(wins[i].id==WIN_ABOUT)draw_about_content(i);
             else if(wins[i].id==WIN_FILES){fm_current=i;draw_files_content(i);}
-            else if(wins[i].id==WIN_NOTEPAD){np_current=i;draw_notepad_content(i);}
+            else if(wins[i].id==WIN_NOTEPAD){npx_draw(i);}
             else if(wins[i].id==WIN_CALC){calc_current=i;draw_calc_content(i);}
             else if(wins[i].id==WIN_SETTINGS)draw_settings_content(i);
             else if(wins[i].id==WIN_MEDIAPLAYER)draw_mediaplayer_content(i);

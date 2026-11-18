@@ -28,6 +28,54 @@ gcc -g -O0 -fsanitize=undefined -DSYNC_HOST_TEST -I include -o "$W/sync_test" te
 "$W/sync_test" > "$W/sync.out" 2>&1; rc=$?; grep -c '^  ok' "$W/sync.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "kernel mutex" || { cat "$W/sync.out"; bad "kernel mutex"; }
 
+echo "== clipboard, key events, editor memory and the text engine (kernel/clipboard.c, keyev.h, txarena.h, textedit.h)"
+gcc -g -O0 -fsanitize=address,undefined -I include -o "$W/clip_test" tests/host/clip_test.c kernel/clipboard.c || { echo "clip test build failed"; exit 1; }
+"$W/clip_test" > "$W/clip.out" 2>&1; rc=$?; grep -c '^  ok' "$W/clip.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "system clipboard + key events" || { cat "$W/clip.out"; bad "system clipboard + key events"; }
+gcc -g -O0 -fsanitize=address,undefined -I include -o "$W/txarena_test" tests/host/txarena_test.c || { echo "arena test build failed"; exit 1; }
+"$W/txarena_test" > "$W/txa.out" 2>&1; rc=$?; grep -c '^  ok' "$W/txa.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "editor memory arena" || { cat "$W/txa.out"; bad "editor memory arena"; }
+gcc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I include -o "$W/textedit_test" tests/host/textedit_test.c || { echo "textedit test build failed"; exit 1; }
+"$W/textedit_test" > "$W/te.out" 2>&1; rc=$?; grep -c '^  ok' "$W/te.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "text engine" || { cat "$W/te.out"; bad "text engine"; }
+gcc -g -O0 -fsanitize=address,undefined -I include -o "$W/lineedit_test" tests/host/lineedit_test.c || { echo "lineedit test build failed"; exit 1; }
+"$W/lineedit_test" > "$W/le.out" 2>&1; rc=$?; grep -c '^  ok' "$W/le.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "single-line field + password rule" || { cat "$W/le.out"; bad "single-line field + password rule"; }
+gcc -g -O0 -fsanitize=address,undefined -I include -o "$W/npcore_test" tests/host/npcore_test.c || { echo "npcore test build failed"; exit 1; }
+"$W/npcore_test" > "$W/npc.out" 2>&1; rc=$?; grep -c '^  ok' "$W/npc.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "Notepad helpers (paths, names, sorting, tabs, scrollbar)" || { cat "$W/npc.out"; bad "Notepad helpers"; }
+timeout 200 gcc -g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I include -o "$W/notepad_test" tests/host/notepad_test.c || { echo "notepad test build failed"; exit 1; }
+timeout 120 "$W/notepad_test" > "$W/np.out" 2>&1; rc=$?; grep -c '^  ok' "$W/np.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "Notepad window (tabs, dialogs, save/replace/close flows, wrap, clipboard) on the real code" || { grep -E "FAIL|ERROR|runtime" "$W/np.out" | head; bad "Notepad window"; }
+cat > "$W/memcheck.c" <<'MEMEOF'
+#include "user/src/textedit.h"
+typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Dirent;
+#include "user/src/npcore.h"
+#define LE_CLIP_SET(b, n) ((void)0)
+#define LE_CLIP_GET(b, m) 0
+#include "user/src/lineedit.h"
+int use_other(Dirent* e, int n, char* b, LineEdit* le) {
+    np_sort_entries(e, n); np_join(b, 64, "/ycfs", "x"); np_parent(b, 64, "/ycfs/a"); np_check_name(b); np_default_ext(b, 64);
+    np_tab_label(b, 64, "n", 1, 9); int ty, th; np_thumb(9, 3, 1, 90, 12, &ty, &th); np_untitled(b, 64, 3);
+    le_init(le, b, 64, 1); le_set(le, "x"); le_key(le, 'a', 0, 1); le_key(le, 'v', 0, 1); le_key(le, 'c', 0, 1); le_key(le, 'x', 0, 1); le_key(le, 65, 0, 0);
+    return ty + th + np_find_entry(e, n, "q") + np_scroll_to_show(0, 3, 9, 20) + np_click_count(1, 0, 0, 0, 1, 0, 0, 5);
+}
+int use_all(TxDoc* d, const char* s, int n) {
+    tx_init(d); tx_load(d, s, n); tx_insert(d, s, n, 0); tx_type_char(d, 'a'); tx_backspace(d); tx_delete_fwd(d);
+    tx_undo(d); tx_redo(d); tx_layout(d, 40); tx_select_all(d); tx_select_word_at(d, 1); tx_select_line_at(d, 1);
+    tx_move_left(d,1); tx_move_right(d,1); tx_move_rows(d,1,0); tx_move_home(d,0); tx_move_end(d,0);
+    tx_move_word_left(d,0); tx_move_word_right(d,0); tx_click(d,1,1,0); tx_normalize((char*)s,s,n);
+    int a,b; tx_logical_pos(d,3,&a,&b); char o[8]; tx_get_sel(d,o,8); tx_mark_saved(d); tx_release(d);
+    return tx_modified(d) + tx_rows(d) + tx_row_of(d,0) + tx_col_of(d,0,0) + tx_off_at(d,0,0,0) + a + b;
+}
+MEMEOF
+leaked=""
+for o in -O2 -O3 -Os; do
+    gcc -I . -ffreestanding -fno-stack-protector -mno-red-zone -mno-mmx -mno-sse -mno-sse2 $o -fno-pic -mcmodel=large -c "$W/memcheck.c" -o "$W/memcheck.o" 2>/dev/null
+    leaked="$leaked$(nm -u "$W/memcheck.o" | grep -E 'mem(cpy|set|move|cmp)' | tr '\n' ' ')"
+done
+[ -z "$leaked" ] && ok "text engine compiles with no memcpy/memset/memmove calls (userspace has no libc)" || bad "engine needs libc helpers: $leaked"
+
 echo "== kernel link sanity (every referenced symbol is defined somewhere)"
 bash "$ROOT/tests/host/link_check.sh" > "$W/link.out" 2>&1 && ok "$(tail -1 "$W/link.out")" || { cat "$W/link.out"; bad "kernel link check"; }
 

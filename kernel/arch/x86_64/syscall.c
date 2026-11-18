@@ -15,6 +15,8 @@
 #include <kernel/pmm.h>
 #include <kernel/rtc.h>
 #include <kernel/ata.h>
+#include <kernel/clipboard.h>
+#include <kernel/keyev.h>
 uint64_t kernel_stack_top  = 0;
 uint64_t kernel_return_rsp = 0;
 static uint8_t syscall_kernel_stack[262144];
@@ -486,6 +488,31 @@ static uint64_t sys_dbglog(uint64_t buf,uint64_t len,uint64_t a3,uint64_t a4,uin
     vga_serial_write(s,len);
     return len;
 }
+static uint64_t sys_keyev(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
+    extern int keyboard_get_event(key_event_t*);
+    extern int keyboard_available(void);
+    if (!keyboard_available()) return 0;
+    key_event_t e;
+    if (!keyboard_get_event(&e)) return 0;
+    if (!e.pressed) return 0;
+    return keyev_pack(e.scancode, e.ascii, e.shift, e.ctrl, e.alt, e.capslock);
+}
+static uint64_t sys_clipset(uint64_t buf,uint64_t len,uint64_t type,uint64_t a4,uint64_t a5){
+    (void)a4;(void)a5;
+    if (len > CLIP_MAX) return (uint64_t)-1;
+    return (uint64_t)clip_set((const void*)buf,(uint32_t)len,(uint32_t)type);
+}
+static uint64_t sys_clipget(uint64_t buf,uint64_t max,uint64_t a3,uint64_t a4,uint64_t a5){
+    (void)a3;(void)a4;(void)a5;
+    if (max > CLIP_MAX) max = CLIP_MAX;
+    return (uint64_t)clip_get((void*)buf,(uint32_t)max);
+}
+static uint64_t sys_clipinfo(uint64_t pl,uint64_t pt,uint64_t ps,uint64_t a4,uint64_t a5){
+    (void)a4;(void)a5;
+    clip_info((uint32_t*)pl,(uint32_t*)pt,(uint32_t*)ps);
+    return 0;
+}
 static uint64_t sys_ioinfo(uint64_t a1,uint64_t a2,uint64_t a3,uint64_t a4,uint64_t a5){
     (void)a1;(void)a2;(void)a3;(void)a4;(void)a5;
     return (uint64_t)(ata_irq_active() ? 1 : 0) | (uint64_t)(ata_dma_active() ? 2 : 0) | (uint64_t)(ata_dma_reads_active() ? 4 : 0);
@@ -904,7 +931,11 @@ static syscall_fn_t syscall_table[SYSCALL_COUNT] = {
     sys_fsize,
     sys_savechunk,
     sys_dbglog,
-    sys_ioinfo
+    sys_ioinfo,
+    sys_keyev,
+    sys_clipset,
+    sys_clipget,
+    sys_clipinfo
 };
 uint64_t syscall_handler(uint64_t num,uint64_t a1,uint64_t a2,
                          uint64_t a3,uint64_t a4,uint64_t a5){

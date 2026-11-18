@@ -114,7 +114,15 @@
  * waiting for the disk sleeps and others run), bit1 = DMA writes, bit2 = DMA reads. */
 #define SYS_IOINFO        56
 
-#define SYSCALL_COUNT  57
+/* SYS_KEYEV() -> packed key press with modifiers (see keyev.h).
+ * SYS_CLIPSET(buf,len,type) -> sequence number or -1; SYS_CLIPGET(buf,max) -> full length;
+ * SYS_CLIPINFO(&len,&type,&seq) (see clipboard.h). */
+#define SYS_KEYEV         57
+#define SYS_CLIPSET       58
+#define SYS_CLIPGET       59
+#define SYS_CLIPINFO      60
+
+#define SYSCALL_COUNT  61
 
 void syscall_init(void);
 #endif
