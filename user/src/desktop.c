@@ -1590,6 +1590,7 @@ static long long np_clip_text(char*buf,int max){          /* the system clipboar
 }
 #define LE_CLIP_SET(b,n) ((void)sys_clip_set((b),(unsigned long)(n),1))
 #define LE_CLIP_GET(b,m) np_clip_text((char*)(b),(int)(m))
+#define NPX_TRACE 1
 #include "notepad.h"
 static int npx_any_frames(void){for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD&&npx_needs_frames(k))return 1;return 0;}
 

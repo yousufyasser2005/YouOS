@@ -1,1 +1,1 @@
-YouOS source tree v15: new Notepad (tabs, word wrap, undo/redo, 1 MB documents, folder-aware Open/Save As), system clipboard, key events with modifiers, password-safe fields
+YouOS source tree v17: Open/Save dialog fix (double-click window 40 -> 60 ticks, also text-area word/line select), dialog serial trace, strict + boundary tests (on top of v15)

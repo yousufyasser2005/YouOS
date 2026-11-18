@@ -62,11 +62,23 @@ static NpWin npx[MAX_WINDOWS];
 typedef struct { int x, y, w, h; int tb_y, tab_y, ta_x, ta_y, ta_w, ta_h, sb_y, sbx, cols, rows; } NpGeom;
 
 /* ------------------------------------------------------------------ small helpers */
+#define NPX_DBLCLICK_TICKS 60       /* max gap (100 Hz ticks = 600 ms) between presses of a double/triple click; 40 was too tight: a real 41-tick double-click was missed */
 static int npx_num(char* d, long long v) {                      /* decimal; returns the length */
     char t[24]; int n = 0; if (v < 0) v = 0; if (!v) t[n++] = '0'; while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
     int k = 0; while (n) d[k++] = t[--n]; d[k] = 0; return k;
 }
 static int npx_cat(char* d, int k, const char* s, int cap) { while (*s && k < cap - 1) d[k++] = *s++; d[k] = 0; return k; }
+#ifdef NPX_TRACE        /* serial-only diagnostics for the Open/Save dialog (SYS_DBGLOG; never drawn) */
+static void npx_tr(const char* tag, const char* a, long long x1, long long x2, long long x3, long long x4, long long x5) {
+    char b[200]; int k = 0; k = npx_cat(b, k, "[npx] ", sizeof b); k = npx_cat(b, k, tag, sizeof b); k = npx_cat(b, k, " ", sizeof b);
+    k = npx_cat(b, k, a, sizeof b); long long v[5] = { x1, x2, x3, x4, x5 };
+    for (int i = 0; i < 5; i++) { k = npx_cat(b, k, " ", sizeof b); k += npx_num(b + k, v[i]); b[k] = 0; }
+    b[k++] = '\n'; sys_dbglog(b, (uint64_t)k);
+}
+#define NPX_TR(...) npx_tr(__VA_ARGS__)
+#else
+#define NPX_TR(...) ((void)0)
+#endif
 static void npx_status(int wi, const char* s) { np_cpy(npx[wi].status, s, sizeof npx[wi].status); npx[wi].status_until = (long long)g_now_ticks + NPX_STATUS_TICKS; }
 static void npx_geom(const Win* w, NpGeom* g) {
     g->x = w->x; g->y = w->y + TITLEBAR_H; g->w = w->w; g->h = w->h - TITLEBAR_H;
@@ -174,6 +186,7 @@ static int npx_save_tab_to(int wi, int idx, const char* path) {
 static void npx_dlg_reload(int wi) {
     NpWin* n = &npx[wi];
     long c = sys_readdir2(n->dir, n->ents, NPX_ENTS);
+    NPX_TR("reload", n->dir, c, 0, 0, 0, 0);
     if (c < 0) { c = 0; np_cpy(n->derr, "Cannot read this folder.", sizeof n->derr); } else n->derr[0] = 0;
     if (c > NPX_ENTS) c = NPX_ENTS;
     n->nents = (int)c;
@@ -584,6 +597,7 @@ static int npx_mouse_down(int wi, int mx, int my, int button) {
     if (button != 1) return 1;
     if (n->mode == NPM_FILE) {
         NpDlg dl; npx_dlg_geom(&g, &dl);
+        NPX_TR("dlg-down", n->dir, mx, my, (long long)g_now_ticks, n->dclick_idx, n->nents);
         if (!in_box(mx, my, dl.x, dl.y, dl.w, dl.h)) return 1;
         if (in_box(mx, my, dl.cancel_x, dl.btn_y, 84, 26)) { n->mode = NPM_EDIT; n->close_after_save = 0; return 1; }
         if (in_box(mx, my, dl.ok_x, dl.btn_y, 84, 26)) { npx_dlg_accept(wi); return 1; }
@@ -591,7 +605,8 @@ static int npx_mouse_down(int wi, int mx, int my, int button) {
         if (in_box(mx, my, dl.list_x, dl.list_y, dl.list_w, dl.list_rows * 18)) {
             int i = n->dscroll + (my - dl.list_y) / 18;
             if (i >= 0 && i < n->nents) {
-                int cnt = (n->dclick_idx == i && (long long)g_now_ticks - n->dclick_tick <= 40) ? 2 : 1;
+                int cnt = (n->dclick_idx == i && (long long)g_now_ticks - n->dclick_tick <= NPX_DBLCLICK_TICKS) ? 2 : 1;
+                NPX_TR("row", n->ents[i].name, i, n->ents[i].is_dir, cnt, (long long)g_now_ticks - n->dclick_tick, n->dsel);
                 n->dsel = i; n->dclick_idx = i; n->dclick_tick = (long long)g_now_ticks; n->derr[0] = 0;
                 if (!n->ents[i].is_dir) le_set(&n->fn, n->ents[i].name);
                 if (cnt == 2) { if (n->ents[i].is_dir) { char nm[32]; np_cpy(nm, n->ents[i].name, sizeof nm); npx_dlg_enter(wi, nm); le_set(&n->fn, ""); } else npx_dlg_accept(wi); n->dclick_idx = -1; }
@@ -651,7 +666,7 @@ static int npx_mouse_down(int wi, int mx, int my, int button) {
     if (my >= g.ta_y && my < g.ta_y + g.ta_h && mx >= g.ta_x - 4 && mx < g.sbx) {
         tx_layout(d, g.cols);
         int row, col; npx_text_pos(wi, mx, my, &row, &col);
-        n->click_n = np_click_count(n->click_n, n->click_tick, n->click_x, n->click_y, (long long)g_now_ticks, mx, my, 40);
+        n->click_n = np_click_count(n->click_n, n->click_tick, n->click_x, n->click_y, (long long)g_now_ticks, mx, my, NPX_DBLCLICK_TICKS);
         n->click_tick = (long long)g_now_ticks; n->click_x = mx; n->click_y = my;
         tx_click(d, row, col, 0);
         if (n->click_n == 2) tx_select_word_at(d, d->cursor);
