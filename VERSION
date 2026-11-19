@@ -1,1 +1,1 @@
-YouOS source tree v23: terminal clipboard (selection, Ctrl+Shift+C/V, control codes, paced paste), 100-tick click window, quiet serial (diagnostics behind NPX_TRACE)
+YouOS source tree v24: right-click Copy/Paste menu for the Notepad text and terminals (Undo/Redo/Cut/Copy/Paste/Select All), on top of the v23 terminal clipboard

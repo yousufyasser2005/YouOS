@@ -101,6 +101,21 @@ int main(void) {
       ts_word_bounds("abc", 3, 99, &a, &b); expect(a == 0 && b == 3, "word bounds with a column past the end use the last word");
       ts_word_bounds("ab cd", 5, 2, &a, &b); expect(a == 2 && b == 3, "word bounds on a single blank"); }
 
+    /* ---- select all (right-click menu) ---- */
+    setup(); ts_init(&s);
+    expect(ts_has_text(&V), "a terminal with output has text");
+    ts_select_all(&s, &V); expect(s.active && is_sel(&s, "$ ls -la /ycfs/docs\ntotal 3\n\nalpha beta  gamma.txt (x)\nlast line"), "Select All selects every line, exactly");
+    { int a, b; expect(ts_row_range(&s, &V, 0, &a, &b) && a == 0 && b == 19 && ts_row_range(&s, &V, 4, &a, &b) && a == 0 && b == 9, "...and the highlight covers the first and last line completely"); }
+    s.drag = 1; ts_select_all(&s, &V); expect(!s.drag, "Select All ends any drag in progress");
+    { TermView e = V; e.nlines = 0; ts_clear(&s); s.active = 1; ts_select_all(&s, &e); expect(!s.active && !ts_has_text(&e), "an empty terminal: Select All selects nothing and has no text"); }
+    { char z[3][TS_COLS]; memset(z, 0, sizeof z); TermView e = V; e.lines = &z[0][0]; e.nlines = 3;
+      ts_clear(&s); ts_select_all(&s, &e); expect(!s.active && !ts_has_text(&e), "three empty lines count as no text: nothing to select"); }
+    { char z[2][TS_COLS]; memset(z, 0, sizeof z); strcpy(z[1], "x"); TermView e = V; e.lines = &z[0][0]; e.nlines = 2;
+      ts_clear(&s); ts_select_all(&s, &e); expect(s.active && ts_has_text(&e) && is_sel(&s, "") == 0, "an empty first line followed by text still selects"); 
+      char b[16]; int n = ts_extract(&s, &e, b, sizeof b); expect(n == 2 && !memcmp(b, "\nx", 2), "...and the copy is exactly \"\\nx\""); }
+    setup(); ts_init(&s); ts_select_all(&s, &V); for (int i = 0; i < 7; i++) memcpy(L[i], L[i + 1], TS_COLS); memset(L[7], 0, TS_COLS); V.nlines = 4; ts_scrolled(&s, 1);
+    expect(s.active && s.ar == 0 && s.cr == 3 && is_sel(&s, "total 3\n\nalpha beta  gamma.txt (x)\nlast line"), "a select-all selection follows the text when the terminal scrolls");
+
     /* ---- the terminal scrolls ---- */
     setup(); ts_init(&s); down(&s, 2, 1, 50000); ts_mouse_drag(&s, &V, X(4) + 1, Y(3)); ts_mouse_up(&s);
     { char before[300]; ts_extract(&s, &V, before, sizeof before);

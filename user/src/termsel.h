@@ -146,6 +146,17 @@ static int ts_extract(const TermSel* s, const TermView* v, char* out, int cap) {
     }
     out[o] = 0; return o;
 }
+/* is there any text at all (a menu's "Select All" is only useful then) */
+static int ts_has_text(const TermView* v) {
+    for (int r = 0; r < v->nlines; r++) if (ts_len(v, r) > 0) return 1;
+    return 0;
+}
+/* select everything: from the start of the first line to the end of the last */
+static void ts_select_all(TermSel* s, const TermView* v) {
+    if (v->nlines <= 0 || !ts_has_text(v)) { ts_clear(s); return; }
+    s->ar = 0; s->ac = 0; s->cr = v->nlines - 1; s->cc = ts_len(v, v->nlines - 1);
+    s->active = (s->ar != s->cr || s->ac != s->cc); s->drag = 0;
+}
 /* the terminal dropped its n oldest lines: every row number moves up by n */
 static void ts_scrolled(TermSel* s, int n) {
     if (n <= 0 || (!s->active && !s->drag)) return;

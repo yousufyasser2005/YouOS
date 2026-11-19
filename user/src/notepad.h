@@ -17,6 +17,7 @@
 #include "textedit.h"
 #include "npcore.h"
 #include "lineedit.h"
+#include "ctxmenu.h"
 
 #define NPX_MAX_TABS 10
 #define NPX_ENTS     256
@@ -693,6 +694,32 @@ static void npx_mouse_drag(int wi, int mx, int my) {
     if (n->click_n >= 2) { /* a drag that began with a double click keeps the whole-word selection start; plain extension is fine */ }
 }
 static void npx_mouse_up(int wi) { npx[wi].drag = 0; }
+/* ------------------------------------------------------------------ right-click menu support
+ * The desktop draws the menu (ctxmenu.h); these three tell it about the editor. The commands themselves are the
+ * ordinary keyboard shortcuts (npx_key), so the menu and the keys can never behave differently. */
+static int npx_ctx_hit(int wi, int mx, int my) {                /* is the point on the editable text of an editing window? */
+    NpWin* n = &npx[wi]; if (!n->used || n->mode != NPM_EDIT) return 0;
+    NpGeom g; npx_geom(&wins[wi], &g);
+    return my >= g.ta_y && my < g.ta_y + g.ta_h && mx >= g.ta_x - 4 && mx < g.sbx;
+}
+/* A right-click first places the caret where you clicked -- unless you clicked inside the current selection,
+ * which stays (so you can right-click selected text and choose Copy). */
+static void npx_ctx_prepare(int wi, int mx, int my) {
+    NpGeom g; npx_geom(&wins[wi], &g); TxDoc* d = &npx_tab(wi)->doc;
+    tx_layout(d, g.cols);
+    int a0 = d->anchor, c0 = d->cursor;
+    int row, col; npx_text_pos(wi, mx, my, &row, &col);
+    tx_click(d, row, col, 0);
+    if (a0 != c0) {
+        int lo = a0 < c0 ? a0 : c0, hi = a0 < c0 ? c0 : a0;
+        if (d->cursor >= lo && d->cursor <= hi) { d->anchor = a0; d->cursor = c0; }
+    }
+    cursor_blink = 0;
+}
+static void npx_ctx_state(int wi, int* has_sel, int* can_undo, int* can_redo, int* has_text) {
+    TxDoc* d = &npx_tab(wi)->doc;
+    *has_sel = tx_has_sel(d); *can_undo = tx_can_undo(d); *can_redo = tx_can_redo(d); *has_text = d->len > 0;
+}
 static void npx_wheel(int wi, int notches) {
     NpWin* n = &npx[wi]; if (!n->used) return;
     if (n->mode == NPM_FILE) {
@@ -775,6 +802,19 @@ static int npx_key(int wi, int ch, int shift, int ctrl) {
         npx_after_edit(wi); return 1;
     }
     return 0;
+}
+/* carries out a chosen menu entry (CM_*) exactly like the matching keyboard shortcut; only while editing */
+static void npx_ctx_do(int wi, int cm_id) {
+    if (!npx[wi].used || npx[wi].mode != NPM_EDIT) return;
+    switch (cm_id) {
+    case CM_UNDO:   npx_key(wi, 'z', 0, 1); break;
+    case CM_REDO:   npx_key(wi, 'y', 0, 1); break;
+    case CM_CUT:    npx_key(wi, 'x', 0, 1); break;
+    case CM_COPY:   npx_key(wi, 'c', 0, 1); break;
+    case CM_PASTE:  npx_key(wi, 'v', 0, 1); break;
+    case CM_SELALL: npx_key(wi, 'a', 0, 1); break;
+    default: break;
+    }
 }
 
 #endif /* NOTEPAD_H */

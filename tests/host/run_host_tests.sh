@@ -50,6 +50,9 @@ timeout 120 "$W/notepad_test" > "$W/np.out" 2>&1; rc=$?; grep -c '^  ok' "$W/np.
 gcc -g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I include -o "$W/termsel_test" tests/host/termsel_test.c || { echo "termsel test build failed"; exit 1; }
 "$W/termsel_test" > "$W/ts.out" 2>&1; rc=$?; grep -c '^  ok' "$W/ts.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "terminal clipboard core (selection, copy text, paste sanitising + pacing, Ctrl keys)" || { grep -E "FAIL|ERROR|runtime" "$W/ts.out" | head; bad "terminal clipboard core"; }
+gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -o "$W/ctxmenu_test" tests/host/ctxmenu_test.c || { echo "ctxmenu test build failed"; exit 1; }
+"$W/ctxmenu_test" > "$W/cm.out" 2>&1; rc=$?; grep -c '^  ok' "$W/cm.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "right-click menu logic (entries, enabling, placement, hit testing)" || { grep -E "FAIL|ERROR|runtime" "$W/cm.out" | head; bad "right-click menu logic"; }
 # the desktop cannot run on the host, so check that every terminal hook is still wired into it
 D=user/src/desktop.c
 check "desktop: Ctrl keys in a focused terminal go to term_ctrl_key" "grep -aq 'term_ctrl_key(focused' $D"
@@ -60,6 +63,11 @@ check "desktop: both terminals tell the selection when they scroll" "grep -aq 't
 check "desktop: both terminals draw the selection highlight" "grep -aq 'term_draw_sel(&tv,&tsel' $D && grep -aq 'term_draw_sel(&tv,&p->sel' $D"
 check "desktop: the output queue is drained 32 messages per frame (so pasted echo is never dropped)" "grep -aq 'for(int got=0;got<32;got++)' $D"
 check "shell: Ctrl+C / Ctrl+U handled, other control codes never stored" "grep -q 'Ctrl+C: abandon' user/src/shell.c && grep -q 'Ctrl+U: erase' user/src/shell.c"
+check "desktop: right-click on text opens the text menu before the desktop menu" "grep -aq 'tmenu_open_for(th)' $D"
+check "desktop: a click on the text menu runs the entry (tmenu_do) and swallows the click" "grep -aq 'tmenu_do(cid)' $D && grep -aq 'if(btn_down&&tmenu.open){' $D"
+check "desktop: the text menu is drawn, hovered and validated every frame" "grep -aq 'draw_tmenu();' $D && grep -aq 'tmenu.hov=tmenu.open?cm_item_at' $D && grep -aq '^        tmenu_validate();' $D"
+check "desktop: any key closes the text menu and Esc is used up" "grep -aq 'if(tmenu.open&&ch!=0){cm_close(&tmenu);if(ch==27)ch=0;}' $D"
+check "desktop: the menu's terminal Copy is the same code as Ctrl+Shift+C" "grep -aq 'if(act==TS_KEY_COPY){term_copy(wi);return;}' $D && grep -aq 'if(id==CM_COPY)term_copy(wi);' $D"
 cat > "$W/memcheck.c" <<'MEMEOF'
 #include "user/src/textedit.h"
 typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Dirent;
@@ -68,6 +76,11 @@ typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Diren
 #define LE_CLIP_GET(b, m) 0
 #include "user/src/lineedit.h"
 #include "user/src/termsel.h"
+#include "user/src/ctxmenu.h"
+int use_ctx(CtxMenu* m, int x, int y) {
+    cm_build(m, CMK_EDITOR, 1, 1, 1, 1, 1, 1); cm_place(m, x, y, 1920, 1000); cm_close(m);
+    return cm_item_at(m, x, y) + cm_height(m) + cm_inside(m, x, y) + (int)cm_label(CM_COPY)[0] + (int)cm_hint(CM_COPY, 1)[0];
+}
 int use_term(TermSel* s, const TermView* v, TermPaste* p, char* b, int n) {
     ts_init(s); ts_mouse_down(s, v, 9, 40, 5); ts_mouse_drag(s, v, 60, 70); ts_mouse_up(s); ts_scrolled(s, 1); ts_clear(s);
     tp_load(p, 0, 1, b, n, 1); tp_cancel(p); int c; int k = ts_classify_ctrl(n, 1, &c);

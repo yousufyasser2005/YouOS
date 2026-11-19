@@ -125,7 +125,7 @@ int main(void) {
     click_button(NB_REDO); expect(doc_is("hello\n"), "the Redo button redoes");
     KC('y'); expect(doc_is("hello\nworld"), "Ctrl+Y redoes");
     KCS('z'); KCS('z'); KC('z');
-    expect(doc_is("hello\nworld") || doc_is("hello\n") || doc_is(""), "Ctrl+Shift+Z is redo, Ctrl+Z is undo (state stays valid)");
+    expect(doc_is("hello\n"), "Ctrl+Shift+Z twice with nothing to redo changes nothing, then Ctrl+Z undoes the last run");
     while (tx_can_undo(D())) KC('z'); while (tx_can_redo(D())) KC('y');
     expect(doc_is("hello\nworld"), "undo everything, redo everything: back to the same text");
 
@@ -177,7 +177,7 @@ int main(void) {
     expect(D()->cursor == D()->len, "dragging past the right end of the last line selects to its end");
     KS(1005); K(1003); expect(!tx_has_sel(D()), "an arrow key without Shift collapses the selection");
     K(1005); KS(1004); KS(1004); KS(1004); expect(tx_has_sel(D()) && D()->cursor - D()->anchor == 3, "Shift+Right extends the selection one character at a time");
-    K('X'); expect(doc_is("Xpha beta gamma\nsecond line here") || D()->len > 0, "typing replaces the selection");
+    K('X'); expect(doc_is("Xha beta gamma\nsecond line here") && !tx_has_sel(D()), "typing replaces the selection (\"alp\" became \"X\") and leaves a plain caret");
     redraw();
 
     /* ---- save: untitled -> Save As dialog -> file written ---- */
@@ -304,6 +304,57 @@ int main(void) {
     for (int i = 0; i < MAX_WINDOWS; i++) if (npx[i].used) npx_destroy(i);
     expect(txa_in_use == base, "closing every window returns all document memory to the arena");
 
+
+    /* ---- right-click menu support (npx_ctx_*) ---- */
+    reset_world(); fresh_window(); TYPE("alpha beta\nsecond line"); redraw();
+    { NpGeom q = G();
+      expect(npx_ctx_hit(wi, q.ta_x + 10, q.ta_y + 10), "right-click menu: the text area is a hit");
+      expect(npx_ctx_hit(wi, q.ta_x + 300, q.ta_y + 100), "...also below the last line (empty part of the text area)");
+      expect(!npx_ctx_hit(wi, q.ta_x + 10, q.tb_y + 5), "...the toolbar is not");
+      expect(!npx_ctx_hit(wi, q.ta_x + 10, q.tab_y + 5), "...the tab bar is not");
+      expect(!npx_ctx_hit(wi, q.ta_x + 10, q.ta_y + q.ta_h + 6), "...the status bar is not");
+      expect(!npx_ctx_hit(wi, q.sbx + 3, q.ta_y + 20), "...the scrollbar is not");
+      expect(!npx_ctx_hit(wi, 5, 5), "...and a point outside the window is not");
+      click_button(NB_OPEN); expect(W->mode == NPM_FILE && !npx_ctx_hit(wi, q.ta_x + 10, q.ta_y + 10), "...while the Open dialog is showing nothing is a hit");
+      K(27); expect(W->mode == NPM_EDIT && npx_ctx_hit(wi, q.ta_x + 10, q.ta_y + 10), "...and after closing it the text area is a hit again"); }
+    { NpGeom q = G(); int px = q.ta_x + 3 * NPX_CW + 1, py = q.ta_y + 4;
+      KC('a'); K(1003); /* collapse: caret at the start */
+      npx_ctx_prepare(wi, px, py); expect(!tx_has_sel(D()) && D()->cursor == 3, "right-click with no selection puts the caret under the pointer (row 0, column 3)");
+      npx_ctx_prepare(wi, q.ta_x + 6 * NPX_CW + 1, q.ta_y + NPX_CH + 4); expect(!tx_has_sel(D()) && D()->cursor == 11 + 6, "...on another row too (offset 11 + 6)");
+      npx_ctx_prepare(wi, q.ta_x + 400, q.ta_y + 4); expect(D()->cursor == 10, "...right of the end of a line: the end of that line");
+      /* a selection: "beta" = [6, 10] */
+      D()->anchor = 6; D()->cursor = 10;
+      npx_ctx_prepare(wi, q.ta_x + 8 * NPX_CW + 1, py); expect(D()->anchor == 6 && D()->cursor == 10, "right-click inside the selection keeps it exactly");
+      npx_ctx_prepare(wi, q.ta_x + 6 * NPX_CW + 1, py); expect(D()->anchor == 6 && D()->cursor == 10, "...also on its first edge");
+      npx_ctx_prepare(wi, q.ta_x + 10 * NPX_CW + 1, py); expect(D()->anchor == 6 && D()->cursor == 10, "...and on its last edge");
+      npx_ctx_prepare(wi, q.ta_x + 2 * NPX_CW + 1, py); expect(!tx_has_sel(D()) && D()->cursor == 2, "right-click outside the selection drops it and moves the caret there");
+      D()->anchor = 10; D()->cursor = 6;
+      npx_ctx_prepare(wi, q.ta_x + 8 * NPX_CW + 1, py); expect(D()->anchor == 10 && D()->cursor == 6, "a selection made backwards keeps its direction too");
+      D()->anchor = 6; D()->cursor = 10;
+      npx_ctx_prepare(wi, q.ta_x + 5 * NPX_CW + 1, q.ta_y + NPX_CH + 4); expect(!tx_has_sel(D()) && D()->cursor == 11 + 5, "right-click on another row, outside the selection: caret moves there");
+      expect(doc_is("alpha beta\nsecond line"), "none of this changed the text"); }
+    { int hs, cu, cr, ht;
+      fresh_window(); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(!hs && !cu && !cr && !ht, "state of an empty new document: nothing selected, no undo, no redo, no text");
+      TYPE("ab"); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(!hs && cu && !cr && ht, "after typing: undo and text available, nothing selected");
+      KC('a'); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(hs && cu && !cr && ht, "after Select All: a selection");
+      K(1003); KC('z'); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(!hs && !cu && cr && !ht, "after undoing everything: redo available, no text");
+      KC('y'); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(!hs && cu && !cr && ht, "after redo: back to undo available"); }
+    { /* the commands: every entry does what its keyboard shortcut does */
+      fresh_window(); TYPE("hello world"); clipl = 0; clipt = 0;
+      npx_ctx_do(wi, CM_COPY); expect(clipl == 0 && doc_is("hello world"), "Copy with nothing selected leaves the clipboard alone");
+      npx_ctx_do(wi, CM_SELALL); expect(tx_has_sel(D()) && D()->anchor == 0 && D()->cursor == 11, "Select All selects everything");
+      npx_ctx_do(wi, CM_COPY); expect(clipl == 11 && !memcmp(clipd, "hello world", 11) && clipt == 1 && doc_is("hello world"), "Copy puts the selection on the clipboard and keeps the text");
+      npx_ctx_do(wi, CM_CUT); expect(doc_is("") && clipl == 11 && !memcmp(clipd, "hello world", 11), "Cut removes the selection and keeps it on the clipboard");
+      npx_ctx_do(wi, CM_PASTE); expect(doc_is("hello world"), "Paste inserts the clipboard text");
+      npx_ctx_do(wi, CM_UNDO); expect(doc_is(""), "Undo undoes the paste");
+      npx_ctx_do(wi, CM_REDO); expect(doc_is("hello world"), "Redo puts it back");
+      npx_ctx_do(wi, CM_SEP); npx_ctx_do(wi, CM_NONE); npx_ctx_do(wi, 999); expect(doc_is("hello world"), "separators and unknown entries do nothing");
+      click_button(NB_OPEN); expect(W->mode == NPM_FILE, "(Open dialog showing)");
+      TYPE("abc"); expect(!strcmp(W->fnbuf, "abc"), "(the dialog's name box holds \"abc\")");
+      npx_ctx_do(wi, CM_SELALL); npx_ctx_do(wi, CM_CUT);
+      expect(!strcmp(W->fnbuf, "abc") && clipl == 11 && !memcmp(clipd, "hello world", 11), "menu commands are ignored while a dialog is showing: the name box and the clipboard are untouched");
+      K(27); expect(W->mode == NPM_EDIT && doc_is("hello world") && !tx_has_sel(D()), "...and the document is as it was"); }
+    { int hs, cu, cr, ht; fresh_window(); TYPE("a"); npx_ctx_state(wi, &hs, &cu, &cr, &ht); expect(ht == 1, "a one-character document counts as having text (Select All is possible)"); }
     printf("\n%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

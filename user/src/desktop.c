@@ -1680,17 +1680,20 @@ static void term_paste_pump(void){
         tp_feed(&g_paste,128,term_sink_builtin,0);
     }else tp_cancel(&g_paste);
 }
+/* copy the selected terminal text to the system clipboard (nothing selected: the clipboard is left alone) */
+static void term_copy(int wi){
+    TermSel*sel=term_sel_of(wi);TermView tv;
+    if(!sel||!term_view(wi,&tv))return;
+    char buf[32*TS_COLS+64];
+    int n=ts_extract(sel,&tv,buf,(int)sizeof buf);
+    if(n>0)sys_clip_set(buf,(uint64_t)n,1);
+}
 /* a Ctrl+<key> while terminal window `wi` is focused (ch is the key without Ctrl) */
 static void term_ctrl_key(int wi,int ch,int shift){
     int code=0;int act=ts_classify_ctrl(ch,shift,&code);
     TermSel*sel=term_sel_of(wi);TermView tv;
     if(!sel||!term_view(wi,&tv))return;
-    if(act==TS_KEY_COPY){
-        char buf[32*TS_COLS+64];
-        int n=ts_extract(sel,&tv,buf,(int)sizeof buf);
-        if(n>0)sys_clip_set(buf,(uint64_t)n,1);          /* nothing selected: the clipboard is left alone */
-        return;
-    }
+    if(act==TS_KEY_COPY){term_copy(wi);return;}
     if(act==TS_KEY_PASTE){term_paste_start(wi);return;}
     if(act==TS_KEY_INTERRUPT)tp_cancel(&g_paste);         /* Ctrl+C also stops a paste that is still being typed */
     if(act==TS_KEY_INTERRUPT||act==TS_KEY_CODE){
@@ -1725,6 +1728,76 @@ static void term_mouse_follow(void){
         TermSel*s=term_sel_of(k);if(!s||!s->drag)continue;
         if(mouse_btn&1){TermView tv;if(term_view(k,&tv))ts_mouse_drag(s,&tv,mouse_x,mouse_y);}
         else ts_mouse_up(s);
+    }
+}
+
+/* ================= Right-click menu for text (logic in ctxmenu.h, host-tested) =================
+ * Opens on the Notepad's text area and on terminal windows: Undo / Redo / Cut / Copy / Paste / Select All
+ * (terminals: Copy / Paste / Select All). Entries that cannot be done now are dimmed. The commands are the
+ * same code as the keyboard shortcuts. Click an entry to run it; click anywhere else or press a key to close. */
+static CtxMenu tmenu;                                   /* zero = closed */
+static int clip_has_text(void){unsigned len=0,type=0,seq=0;sys_clip_info(&len,&type,&seq);return len>0&&type==1u;}
+/* open the menu for window `wi` at the pointer; returns 0 if the pointer is not on text of that window */
+static int tmenu_open_for(int wi){
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return 0;
+    Win*w=&wins[wi];
+    int can_paste=clip_has_text();
+    if(w->id==WIN_NOTEPAD){
+        if(!npx_ctx_hit(wi,mouse_x,mouse_y))return 0;
+        npx_ctx_prepare(wi,mouse_x,mouse_y);
+        int hs,cu,cr,ht;npx_ctx_state(wi,&hs,&cu,&cr,&ht);
+        cm_build(&tmenu,CMK_EDITOR,wi,hs,cu,cr,can_paste,ht);
+    }else if(w->id==WIN_TERMINAL||w->id==WIN_PTERM){
+        if(mouse_y<w->y+TITLEBAR_H)return 0;
+        TermSel*s=term_sel_of(wi);TermView tv;
+        if(!s||!term_view(wi,&tv))return 0;
+        int alive=(w->id==WIN_TERMINAL)||(pterm_states[wi].pid>=0&&!pterm_states[wi].exited);
+        cm_build(&tmenu,CMK_TERMINAL,wi,s->active,0,0,can_paste&&alive,ts_has_text(&tv));
+    }else return 0;
+    cm_place(&tmenu,mouse_x,mouse_y,PANEL_X,(int)FB_H-TBAR_H);
+    tmenu.open=1;tmenu.hov=-1;
+    rctx_open=0;fm_ctx_open=0;                          /* only one menu at a time */
+    return 1;
+}
+static void tmenu_do(int id){
+    int wi=tmenu.win;
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return;
+    if(tmenu.kind==CMK_EDITOR){
+        if(wins[wi].id==WIN_NOTEPAD)npx_ctx_do(wi,id);
+    }else if(tmenu.kind==CMK_TERMINAL){
+        if(wins[wi].id!=WIN_TERMINAL&&wins[wi].id!=WIN_PTERM)return;
+        if(id==CM_COPY)term_copy(wi);
+        else if(id==CM_PASTE)term_paste_start(wi);
+        else if(id==CM_SELALL){TermSel*s=term_sel_of(wi);TermView tv;if(s&&term_view(wi,&tv))ts_select_all(s,&tv);}
+    }
+}
+/* once per frame: the menu goes away with its window (closed, minimized, a dialog opened over the text ...) */
+static void tmenu_validate(void){
+    if(!tmenu.open)return;
+    int wi=tmenu.win,ok=wi>=0&&wi<win_count&&wi<MAX_WINDOWS&&wins[wi].visible&&!wins[wi].minimized;
+    if(ok){
+        int id=wins[wi].id;
+        if(tmenu.kind==CMK_EDITOR)ok=(id==WIN_NOTEPAD&&npx[wi].used&&npx[wi].mode==NPM_EDIT);
+        else if(tmenu.kind==CMK_TERMINAL)ok=(id==WIN_TERMINAL||id==WIN_PTERM);
+        else ok=0;
+    }
+    if(!ok)cm_close(&tmenu);
+}
+static void draw_tmenu(void){
+    if(!tmenu.open)return;
+    int mh=cm_height(&tmenu),mx2=tmenu.x,my2=tmenu.y;
+    rect(mx2+3,my2+3,CM_W,mh,0x050810);rect(mx2+2,my2+2,CM_W,mh,0x0A0D14);
+    rect_alpha(mx2,my2,CM_W,mh,0x1C2128,190);outline(mx2,my2,CM_W,mh,BORDER);
+    hline(mx2+1,my2,CM_W-2,cfg_accent);
+    for(int i=0;i<tmenu.n;i++){
+        int iy=cm_row_y(&tmenu,i);
+        if(tmenu.id[i]==CM_SEP){hline(mx2+6,iy+3,CM_W-12,BORDER);continue;}
+        int en=tmenu.en[i],hov=(tmenu.hov==i&&en);
+        u32 bg=hov?cfg_accent:0x1C2128;
+        if(hov)rect(mx2+1,iy,CM_W-2,CM_ITEM_H,cfg_accent);
+        text(mx2+10,iy+(CM_ITEM_H-14)/2,cm_label(tmenu.id[i]),!en?0x484F58:hov?BG:TEXT,bg);
+        const char*h=cm_hint(tmenu.id[i],tmenu.kind);int hl=0;while(h[hl])hl++;
+        if(hl)text(mx2+CM_W-10-hl*8,iy+(CM_ITEM_H-14)/2,h,!en?0x484F58:hov?BG:DIM,bg);
     }
 }
 
@@ -4784,6 +4857,7 @@ int main(void){
             }
         }
         term_paste_pump();      /* feeds a Ctrl+Shift+V paste a few characters per frame */
+        tmenu_validate();       /* the text menu closes with its window */
 
         /* mouse */
         unsigned long long mstate[3];
@@ -4862,6 +4936,12 @@ int main(void){
                 goto click_done;
             }
         }
+        /* right-click on text (Notepad text area, terminals): the Copy / Paste menu */
+        if(rbtn_down&&drag_win<0){
+            cm_close(&tmenu);
+            int th=wm_hit(mouse_x,mouse_y);
+            if(th>=0&&wins[th].visible&&!wins[th].minimized&&tmenu_open_for(th)){wm_focus(th);goto click_done;}
+        }
         /* right-click: open context menu */
         if(rbtn_down&&drag_win<0){
             rctx_x=mouse_x;rctx_y=mouse_y;rctx_hov=-1;
@@ -4870,6 +4950,13 @@ int main(void){
                 rctx_target=rhit;
             else rctx_target=-1;
             rctx_open=1;goto click_done;
+        }
+        /* text menu: click an entry to run it; click elsewhere to close. A dimmed entry or a separator does nothing. */
+        if(btn_down&&tmenu.open){
+            int it=cm_item_at(&tmenu,mouse_x,mouse_y);
+            if(it>=0&&tmenu.en[it]){int cid=tmenu.id[it];cm_close(&tmenu);tmenu_do(cid);}
+            else if(!cm_inside(&tmenu,mouse_x,mouse_y))cm_close(&tmenu);
+            goto click_done;
         }
         /* left-click closes context menu */
         if(btn_down&&fm_ctx_open&&fm_current>=0){
@@ -5431,6 +5518,7 @@ int main(void){
         if(kev){ch=(s64)(kev&0xFFFF);key_shift=(kev&KEYEV_SHIFT)!=0;key_ctrl=(kev&KEYEV_CTRL)!=0;}
         if(ch!=0)xfer_input_ms=ft_now_ms();   /* typing counts as activity for copy pacing */
         if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch,key_ctrl,1);}
+        if(tmenu.open&&ch!=0){cm_close(&tmenu);if(ch==27)ch=0;}   /* any key closes the text menu; Esc is used up by closing it */
         if(ch!=0&&key_ctrl){
             /* Ctrl combinations are shortcuts for the focused window, never typed text */
             if(!youdo_open&&!menu_open&&focused>=0&&wins[focused].id==WIN_NOTEPAD&&wins[focused].visible&&!wins[focused].minimized)
@@ -5594,6 +5682,7 @@ int main(void){
                 }
             }
         }
+        tmenu.hov=tmenu.open?cm_item_at(&tmenu,mouse_x,mouse_y):-1;
         rctx_hov=-1;
         if(rctx_open){
             const char**hi;int hn;get_rctx(&hi,&hn);
@@ -5661,7 +5750,7 @@ int main(void){
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
             }
         }
-        draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();
+        draw_taskbar(secs);draw_menu();draw_rctx();draw_tmenu();draw_notif_popup();draw_notif_center();
         if(hover_preview_group>=0){
             int gcount=taskbar_groups[hover_preview_group].count;
             int sx,sy,sw,sh;taskbar_group_strip_rect(hover_preview_group,&sx,&sy,&sw,&sh);
