@@ -1,4 +1,5 @@
 #include "../../include/kernel/mouse.h"
+#include "../../include/kernel/vga.h"
 #include "../../include/kernel/irq.h"
 #include "../../include/kernel/idt.h"
 #include "../../include/kernel/pic.h"
@@ -21,6 +22,33 @@ static unsigned char mouse_read_byte(void) {
     ps2_wait_read(); return inb(0x60);
 }
 static int mouse_x=512, mouse_y=384, mouse_buttons=0;
+
+/* ---- diagnostic: every button change goes to COM1 with the kernel tick and the number of mouse reports so far
+ * (serial only, never drawn). Used to find out how press timing is distorted between the device and the desktop. */
+extern uint64_t scheduler_get_ticks(void);
+static unsigned long long mt_reports = 0;
+static void mt_num(char* d, int* k, unsigned long long v) {
+    char t[24]; int n = 0;
+    if (!v) t[n++] = '0';
+    while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n) d[(*k)++] = t[--n];
+}
+static void mouse_set_buttons(int b) {
+#ifdef MOUSE_TRACE      /* define to log every button change to COM1 (see the comment above) */
+    if (b != mouse_buttons) {
+        char m[96]; int k = 0; const char* p = "[mouse] btn ";
+        while (*p) m[k++] = *p++;
+        m[k++] = (char)('0' + mouse_buttons); m[k++] = '>'; m[k++] = (char)('0' + b);
+        p = " tick="; while (*p) m[k++] = *p++;
+        mt_num(m, &k, (unsigned long long)scheduler_get_ticks());
+        p = " reports="; while (*p) m[k++] = *p++;
+        mt_num(m, &k, mt_reports);
+        m[k++] = '\n';
+        vga_serial_write(m, (uint64_t)k);
+    }
+#endif
+    mouse_buttons = b;
+}
 /* Real screen bounds, set once in mouse_init() from fb_get_info() --
  * this used to be a hardcoded 1023/767 (1024x768) everywhere below,
  * silently wrong for this project's actual 1280x800 framebuffer (see
@@ -51,7 +79,7 @@ static void mouse_irq_handler(registers_t *regs) {
         mouse_bytes[2]=data; mouse_cycle = mouse_has_wheel ? 3 : 0;
         if(mouse_has_wheel) break;
         if(mouse_bytes[0] & 0xC0) break;
-        mouse_buttons = mouse_bytes[0] & 0x07;
+        mouse_set_buttons(mouse_bytes[0] & 0x07);
         int dx = (int)mouse_bytes[1];
         if(mouse_bytes[0] & 0x10) dx -= 256;
         int dy = (int)mouse_bytes[2];
@@ -67,7 +95,7 @@ static void mouse_irq_handler(registers_t *regs) {
     case 3: {
         mouse_bytes[3]=data; mouse_cycle=0;
         if(mouse_bytes[0] & 0xC0) break;
-        mouse_buttons = mouse_bytes[0] & 0x07;
+        mouse_set_buttons(mouse_bytes[0] & 0x07);
         int dx = (int)mouse_bytes[1];
         if(mouse_bytes[0] & 0x10) dx -= 256;
         int dy = (int)mouse_bytes[2];
@@ -142,5 +170,6 @@ void mouse_update_usb_delta(int dx, int dy, int buttons) {
     if (mouse_x > mouse_max_x)  mouse_x = mouse_max_x;
     if (mouse_y < 0)    mouse_y = 0;
     if (mouse_y > mouse_max_y)  mouse_y = mouse_max_y;
-    mouse_buttons = buttons & 0x07;
+    mt_reports++;
+    mouse_set_buttons(buttons & 0x07);
 }

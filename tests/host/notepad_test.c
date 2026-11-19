@@ -82,7 +82,7 @@ static void KCS(int ch) { g_now_ticks += 3; npx_key(wi, ch, 1, 1); }
 static void TYPE(const char* s) { while (*s) K(*s++ == '\n' ? '\n' : s[-1]); }
 static TxDoc* D(void) { return &npx_tab(wi)->doc; }
 static int doc_is(const char* s) { TxDoc* d = D(); return d->len == (int)strlen(s) && !memcmp(tx_data(d), s, d->len); }
-static void click(int x, int y) { g_now_ticks += 100; mouse_x = x; mouse_y = y; npx_mouse_down(wi, x, y, 1); npx_mouse_up(wi); }
+static void click(int x, int y) { g_now_ticks += 150; mouse_x = x; mouse_y = y; npx_mouse_down(wi, x, y, 1); npx_mouse_up(wi); }
 static void click_fast(int x, int y) { g_now_ticks += 5; mouse_x = x; mouse_y = y; npx_mouse_down(wi, x, y, 1); }
 /* two presses exactly `gap` ticks apart (the real-world trace showed 41) */
 static void pair_gap(int x, int y, int gap) { g_now_ticks += 500; mouse_x = x; mouse_y = y; npx_mouse_down(wi, x, y, 1); npx_mouse_up(wi); g_now_ticks += gap; npx_mouse_down(wi, x, y, 1); npx_mouse_up(wi); }
@@ -167,7 +167,7 @@ int main(void) {
     click_fast(G().ta_x + 8 * 8 + 1, G().ta_y + 4); npx_mouse_up(wi); expect(tx_has_sel(D()) && D()->anchor == 6 && D()->cursor == 10, "a quick second click selects the word (\"beta\")");
     click_fast(G().ta_x + 8 * 8 + 1, G().ta_y + 4); npx_mouse_up(wi); expect(tx_has_sel(D()) && D()->anchor == 0 && D()->cursor == 17, "a third click selects the whole line");
     pair_gap(G().ta_x + 8 * 8 + 1, G().ta_y + 4, 55); expect(tx_has_sel(D()) && D()->anchor == 6 && D()->cursor == 10, "text area: two presses 55 ticks apart select the word");
-    pair_gap(G().ta_x + 8 * 8 + 1, G().ta_y + 4, 70); expect(!tx_has_sel(D()), "text area: two presses 70 ticks apart are two plain clicks (no selection)");
+    pair_gap(G().ta_x + 8 * 8 + 1, G().ta_y + 4, 105); expect(!tx_has_sel(D()), "text area: two presses 105 ticks apart are two plain clicks (no selection)");
     click_text(0, 0); mouse_x = G().ta_x + 5 * 8; mouse_y = G().ta_y + 4; npx_mouse_down(wi, G().ta_x + 1, G().ta_y + 4, 1);
     npx_mouse_drag(wi, G().ta_x + 5 * 8 + 1, G().ta_y + 4); npx_mouse_up(wi);
     expect(D()->anchor == 0 && D()->cursor == 5, "dragging with the button down selects from the press to the pointer");
@@ -204,9 +204,9 @@ int main(void) {
     expect(!strcmp(W->dir, "/ycfs"), "the Up button goes to the parent");
     pair_gap(G().x + 100, dlg_row_y(di), 41); expect(!strcmp(W->dir, "/ycfs/docs"), "REGRESSION: a double-click with 41 ticks between presses (the user's real speed) opens the folder");
     { NpDlg dl; NpGeom gg = G(); npx_dlg_geom(&gg, &dl); click(dl.up_x + 4, dl.up_y + 4); }
-    pair_gap(G().x + 100, dlg_row_y(di), 60); expect(!strcmp(W->dir, "/ycfs/docs"), "a double-click with 60 ticks (the limit) still opens the folder");
+    pair_gap(G().x + 100, dlg_row_y(di), 100); expect(!strcmp(W->dir, "/ycfs/docs"), "a double-click with 100 ticks (the limit) still opens the folder");
     { NpDlg dl; NpGeom gg = G(); npx_dlg_geom(&gg, &dl); click(dl.up_x + 4, dl.up_y + 4); }
-    pair_gap(G().x + 100, dlg_row_y(di), 61); expect(!strcmp(W->dir, "/ycfs") && W->dsel == di, "two clicks 61 ticks apart are two single clicks: the folder is only selected");
+    pair_gap(G().x + 100, dlg_row_y(di), 101); expect(!strcmp(W->dir, "/ycfs") && W->dsel == di, "two clicks 101 ticks apart are two single clicks: the folder is only selected");
     { NpDlg dl; NpGeom gg = G(); npx_dlg_geom(&gg, &dl); int d0 = W->dir[0]; click(dl.up_x + 4, dl.up_y + 4); expect(!strcmp(W->dir, "/ycfs") && d0, "at the root, Up does nothing: you cannot browse above /ycfs"); }
     npx_dlg_enter(wi, "docs"); npx_dlg_enter(wi, "deep"); expect(!strcmp(W->dir, "/ycfs/docs/deep") && W->nents == 1, "navigating two levels down");
     le_set(&W->fn, "moved"); K('\n');

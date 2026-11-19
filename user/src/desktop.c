@@ -15,6 +15,7 @@ typedef signed long    s64;
 
 #include "jpeg_decoder.h"
 #include "mjpeg_container.h"
+#include "termsel.h"            /* terminal selection / paste / Ctrl-key logic (host-tested) */
 static u64 FB_W,FB_H;
 /* UI scale, in percent. The framebuffer is now the display's native
  * resolution (1920x1080), so layouts authored in pixels at 800 lines
@@ -682,6 +683,7 @@ typedef struct{
                     * arrives as an arbitrary character stream, not
                     * discrete pre-formed lines the way tcmd()'s
                     * responses do. */
+    TermSel sel;   /* mouse selection of the output (all zero = none) */
 } PTerm;
 static PTerm pterm_states[MAX_WINDOWS];
 
@@ -811,6 +813,7 @@ static int wm_draw_frame(int i){
 static char tlines[32][128];
 static int  trow=0,tinput_len=0,cursor_blink=0;
 static char tinput[128];
+static TermSel tsel;     /* selection in the desktop's own terminal (zero = none) */
 
 /* TEMPORARY -- Phase 1 regression check for true concurrent
  * multi-program execution (see spawntest.c). -1 means no spawntest is
@@ -825,7 +828,7 @@ static int u32_append_dec(char*buf,int bi,unsigned int v){
     return bi;
 }
 static void tprint(const char*s){
-    if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;}
+    if(trow>=32){for(int i=0;i<31;i++){int j=0;while(tlines[i+1][j]){tlines[i][j]=tlines[i+1][j];j++;}tlines[i][j]=0;}trow=31;ts_scrolled(&tsel,1);}
     int j=0;while(*s&&j<127)tlines[trow][j++]=*s++;tlines[trow][j]=0;trow++;
 }
 
@@ -881,6 +884,7 @@ static void pterm_append(int i, const char* data, int len){
             if(p->trow>=32){
                 for(int r=0;r<31;r++){int j=0;while(p->tlines[r+1][j]){p->tlines[r][j]=p->tlines[r+1][j];j++;}p->tlines[r][j]=0;}
                 p->trow=31;
+                ts_scrolled(&p->sel,1);
             }
             p->tlines[p->trow][0]=0;
         } else if(c=='\r'){
@@ -901,7 +905,7 @@ static void pterm_append(int i, const char* data, int len){
 static void pterm_drain(int i){
     if(pterm_states[i].pid<0)return;
     char qname[24];term_qname(pterm_states[i].pid,1,qname);
-    for(int got=0;got<8;got++){
+    for(int got=0;got<32;got++){
         char buf[130]; unsigned int len=0,from=0;
         int rc=sys_msgrecv(qname,buf,&len,&from);
         if(rc<0)break;
@@ -968,7 +972,7 @@ static void tcmd(const char*cmd){
     for(int k=0;ii[k]||cmd[k];k++)  if(ii[k]!=cmd[k])  {mii=0;break;}
     for(int k=0;pc[k]||cmd[k];k++)  if(pc[k]!=cmd[k])  {mpc=0;break;}
     if(mh)tprint("Commands: help date seektest schedtest clear about ls shutdown reboot shell yourun ipc crashlog syslog mousedbg wavdbg restartlog spawntest iotest newterm killtest meminfo ipcinfo proccount");
-    else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;}
+    else if(mc){trow=0;for(int r=0;r<32;r++)tlines[r][0]=0;ts_clear(&tsel);}
     else if(ma){tprint("YouOS v0.3");tprint("x86_64|FAT16|ELF|WM");}
     else if(ml)tprint("hello cat shell fbtest desktop mpy");
     else if(ms){do_shutdown();}
@@ -1273,6 +1277,38 @@ static void tcmd(const char*cmd){
     }
     else{char m[64];m[0]='?';m[1]=' ';int k=0;while(cmd[k]&&k<58){m[k+2]=cmd[k];k++;}m[k+2]=0;tprint(m);}
 }
+/* ----- terminal geometry / selection highlight (logic in termsel.h) ----- */
+#define TERM_SELBG 0x1F3A5F
+static TermSel* term_sel_of(int wi){
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return 0;
+    if(wins[wi].id==WIN_TERMINAL)return &tsel;
+    if(wins[wi].id==WIN_PTERM)return &pterm_states[wi].sel;
+    return 0;
+}
+/* where the text of terminal window `wi` is on screen -- the draw functions below use exactly the same numbers */
+static int term_view(int wi,TermView*v){
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return 0;
+    Win*w=&wins[wi];int pad=8;
+    v->cx=w->x+pad;v->cy=w->y+TITLEBAR_H+pad;v->cols=(w->w-pad*2)/8;
+    if(w->id==WIN_TERMINAL){v->lines=&tlines[0][0];v->nlines=trow;v->rows=(w->h-TITLEBAR_H-32)/16;}
+    else if(w->id==WIN_PTERM){PTerm*p=&pterm_states[wi];v->lines=&p->tlines[0][0];v->nlines=p->trow+1;v->rows=(w->h-TITLEBAR_H-pad*2)/16;}
+    else return 0;
+    if(v->rows<0)v->rows=0;
+    if(v->cols<0)v->cols=0;
+    v->first=v->nlines>v->rows?v->nlines-v->rows:0;
+    return 1;
+}
+/* repaint the selected part of row `r` (already drawn) on the selection colour */
+static void term_draw_sel(const TermView*tv,const TermSel*s,int r,int x,int y,int max_cols,u32 fg){
+    int a,b;if(!ts_row_range(s,tv,r,&a,&b))return;
+    if(b>max_cols)b=max_cols;
+    if(b>127)b=127;
+    if(a>=b)return;
+    char sub[128];int q=0;const char*l=ts_line(tv,r);
+    for(int k=a;k<b;k++)sub[q++]=l[k];
+    sub[q]=0;
+    text(x+a*8,y,sub,fg,TERM_SELBG);
+}
 static void draw_terminal_content(int i){
     Win*w=&wins[i];int pad=8;
     int cx=w->x+pad,cy=w->y+TITLEBAR_H+pad;
@@ -1280,10 +1316,12 @@ static void draw_terminal_content(int i){
     if(max_rows<1||max_cols<1)return;
     rect(w->x,w->y+TITLEBAR_H,w->w,w->h-TITLEBAR_H,0x0D1117);
     int start=trow>max_rows?trow-max_rows:0;
+    TermView tv;int hv=term_view(i,&tv);
     for(int r=start;r<trow;r++){
         u32 fg=TEXT;if(tlines[r][0]=='$')fg=GREEN;else if(tlines[r][0]=='?')fg=RED;
         char clip[128];int k=0;while(tlines[r][k]&&k<max_cols&&k<127){clip[k]=tlines[r][k];k++;}clip[k]=0;
         text(cx,cy+(r-start)*16,clip,fg,0x0D1117);
+        if(hv&&tsel.active)term_draw_sel(&tv,&tsel,r,cx,cy+(r-start)*16,max_cols,fg);
     }
     int iy=w->y+w->h-24;
     hline(w->x,iy-2,w->w,BORDER);rect(w->x,iy,w->w,22,0x0A0D10);
@@ -1309,10 +1347,12 @@ static void draw_pterm_content(int i){
     rect(w->x,w->y+TITLEBAR_H,w->w,w->h-TITLEBAR_H,0x0D1117);
     int total=p->trow+1;
     int start=total>max_rows?total-max_rows:0;
+    TermView tv;int hv=term_view(i,&tv);
     for(int r=start;r<total;r++){
         char clip[128];int k=0;while(p->tlines[r][k]&&k<max_cols&&k<127){clip[k]=p->tlines[r][k];k++;}clip[k]=0;
         int ry=cy+(r-start)*16;
         text(cx,ry,clip,TEXT,0x0D1117);
+        if(hv&&p->sel.active)term_draw_sel(&tv,&p->sel,r,cx,ry,max_cols,TEXT);
         if(r==p->trow&&cursor_blink<50){
             int cw=0;while(p->tlines[r][cw]&&cw<max_cols)cw++;
             int curx=cx+cw*8;
@@ -1590,9 +1630,103 @@ static long long np_clip_text(char*buf,int max){          /* the system clipboar
 }
 #define LE_CLIP_SET(b,n) ((void)sys_clip_set((b),(unsigned long)(n),1))
 #define LE_CLIP_GET(b,m) np_clip_text((char*)(b),(int)(m))
-#define NPX_TRACE 1
+/* #define NPX_TRACE 1 */   /* uncomment to log Open/Save dialog clicks and terminal click/selection details to the serial port ([npx] lines) */
 #include "notepad.h"
 static int npx_any_frames(void){for(int k=0;k<win_count;k++)if(wins[k].id==WIN_NOTEPAD&&npx_needs_frames(k))return 1;return 0;}
+
+/* ================= Terminal clipboard: copy, paste, control keys, mouse selection =================
+ * Logic (selection model, paste sanitising / pacing, key meaning) is in termsel.h and host-tested; this is
+ * only the wiring. Shortcuts: Ctrl+Shift+C copy, Ctrl+Shift+V paste, Ctrl+C interrupt, other Ctrl+letter =
+ * its control code (sent to process terminals). A paste is typed in a few characters per frame: a process
+ * terminal's input queue holds 32 one-byte messages and every echoed character comes back through a 32-message
+ * output queue that the desktop drains each frame (excess output would be dropped by the kernel). */
+static TermPaste g_paste;                         /* a paste in progress (zero = none) */
+static char g_clip_scratch[2*TS_PASTE_MAX];
+
+/* the desktop's own terminal: one typed (or pasted) character. Returns 1 if it ran a command. */
+static int term_type_char(char c){
+    if(c=='\n'||c=='\r'){int ran=tinput_len>0;tinput[tinput_len]=0;if(ran)tcmd(tinput);tinput_len=0;tinput[0]=0;return ran;}
+    if((c=='\b'||c==127)&&tinput_len>0){tinput[--tinput_len]=0;return 0;}
+    if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
+    return 0;
+}
+static int term_sink_builtin(void*ctx,char c){(void)ctx;return term_type_char(c)?2:1;}
+static int term_sink_pterm(void*ctx,char c){return sys_msgpost((const char*)ctx,&c,1)<0?0:1;}
+
+static void term_paste_start(int wi){
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return;
+    Win*w=&wins[wi];
+    long long got=np_clip_text(g_clip_scratch,(int)sizeof g_clip_scratch);
+    if(got<=0)return;
+    long long pid=-1;
+    if(w->id==WIN_PTERM){PTerm*p=&pterm_states[wi];if(p->pid<0||p->exited)return;pid=(long long)p->pid;}
+    else if(w->id!=WIN_TERMINAL)return;
+    tp_load(&g_paste,wi,pid,g_clip_scratch,(int)got,w->id==WIN_TERMINAL);
+    if(got>=(long long)sizeof g_clip_scratch)g_paste.truncated=1;
+    if(g_paste.truncated)notif_add("Terminal","Pasted text was cut to 64 KB");
+}
+/* called once per frame: sends the next few characters of a paste in progress */
+static void term_paste_pump(void){
+    if(!g_paste.active)return;
+    int wi=g_paste.target;
+    if(wi<0||wi>=win_count||wi>=MAX_WINDOWS){tp_cancel(&g_paste);return;}
+    Win*w=&wins[wi];
+    if(w->id==WIN_PTERM){
+        PTerm*p=&pterm_states[wi];
+        if(p->pid<0||p->exited||(long long)p->pid!=g_paste.pid){tp_cancel(&g_paste);return;}   /* closed, exited, or the slot was reused */
+        char q[24];term_qname(p->pid,0,q);
+        tp_feed(&g_paste,16,term_sink_pterm,q);
+    }else if(w->id==WIN_TERMINAL&&g_paste.pid==-1){
+        tp_feed(&g_paste,128,term_sink_builtin,0);
+    }else tp_cancel(&g_paste);
+}
+/* a Ctrl+<key> while terminal window `wi` is focused (ch is the key without Ctrl) */
+static void term_ctrl_key(int wi,int ch,int shift){
+    int code=0;int act=ts_classify_ctrl(ch,shift,&code);
+    TermSel*sel=term_sel_of(wi);TermView tv;
+    if(!sel||!term_view(wi,&tv))return;
+    if(act==TS_KEY_COPY){
+        char buf[32*TS_COLS+64];
+        int n=ts_extract(sel,&tv,buf,(int)sizeof buf);
+        if(n>0)sys_clip_set(buf,(uint64_t)n,1);          /* nothing selected: the clipboard is left alone */
+        return;
+    }
+    if(act==TS_KEY_PASTE){term_paste_start(wi);return;}
+    if(act==TS_KEY_INTERRUPT)tp_cancel(&g_paste);         /* Ctrl+C also stops a paste that is still being typed */
+    if(act==TS_KEY_INTERRUPT||act==TS_KEY_CODE){
+        if(wins[wi].id==WIN_PTERM){
+            PTerm*p=&pterm_states[wi];
+            if(p->pid>=0&&!p->exited){char c=(char)code;char qin[24];term_qname(p->pid,0,qin);sys_msgpost(qin,&c,1);}
+        }else if(act==TS_KEY_INTERRUPT){tprint("^C");tinput_len=0;tinput[0]=0;}
+    }
+}
+static void term_mouse_down(int wi){
+    TermSel*s=term_sel_of(wi);TermView tv;
+    if(!s||!term_view(wi,&tv))return;
+    Win*w=&wins[wi];
+    if(w->id==WIN_TERMINAL&&mouse_y>=w->y+w->h-26){ts_clear(s);return;}   /* the input line is not selectable */
+    long long pt=s->click_tick;int px=s->click_x,py=s->click_y,pn=s->click_n;
+    ts_mouse_down(s,&tv,mouse_x,mouse_y,(long long)g_now_ticks);
+    /* serial trace: ticks since the previous press, pointer drift in x / y, the click count now, previous count*10 + selection active */
+    NPX_TR("term-down",w->id==WIN_TERMINAL?"builtin":"pterm",(long long)g_now_ticks-pt,mouse_x-px,mouse_y-py,s->click_n,pn*10+(s->active?1:0));
+    if(s->click_n>=2){      /* double / triple click: log the line, the pixel offset from the text origin, the row and column under the pointer, and the selected columns [from, to) */
+        int hr,hc;
+        if(ts_hit(&tv,mouse_x,mouse_y,1,&hr,&hc)){
+            char ln[100];int q=0;const char*l=ts_line(&tv,hr);
+            while(l[q]&&q<96){ln[q]=l[q];q++;}
+            ln[q]=0;
+            NPX_TR("term-sel",ln,mouse_x-tv.cx,hr,hc,s->ac,s->cc);
+        }
+    }
+}
+/* once per frame: a selection being dragged follows the pointer until the button is released */
+static void term_mouse_follow(void){
+    for(int k=0;k<win_count&&k<MAX_WINDOWS;k++){
+        TermSel*s=term_sel_of(k);if(!s||!s->drag)continue;
+        if(mouse_btn&1){TermView tv;if(term_view(k,&tv))ts_mouse_drag(s,&tv,mouse_x,mouse_y);}
+        else ts_mouse_up(s);
+    }
+}
 
 /* ═══ WAV PLAYBACK (streaming-engine redesign) ═══════════════════
  * Previous architecture: chunked userspace polling, one
@@ -4533,7 +4667,7 @@ static void auth_do_logout(void){
     menu_open=0;rctx_open=0;fm_ctx_open=0;fm_dialog=0;fm_selected=-1;fm_has_clip=0;
     drag_win=-1;resize_win=-1;drag_icon=-1;
     for(int i=0;i<32;i++)tlines[i][0]=0;
-    trow=0;tinput[0]=0;tinput_len=0;
+    trow=0;tinput[0]=0;tinput_len=0;ts_clear(&tsel);
 }
 
 static int hover_preview_win=-1;
@@ -4649,6 +4783,7 @@ int main(void){
                 if(wr!=-2)p->exited=1;
             }
         }
+        term_paste_pump();      /* feeds a Ctrl+Shift+V paste a few characters per frame */
 
         /* mouse */
         unsigned long long mstate[3];
@@ -4656,6 +4791,9 @@ int main(void){
         mouse_x=(int)mstate[0];mouse_y=(int)mstate[1];mouse_btn=(int)mstate[2];
         int btn_down=(mouse_btn&1)&&!(prev_btn&1);
         int btn_up  =!(mouse_btn&1)&&(prev_btn&1);
+#ifdef NPX_BTN_TRACE
+        if(btn_down||btn_up)NPX_TR("btn",btn_down?"desktop-sees-down":"desktop-sees-up",(long long)ticks,mouse_x,mouse_y,0,0);   /* compare with the kernel's [mouse] lines */
+#endif
 
         if(btn_up){
             if(drag_icon>=0){
@@ -4909,6 +5047,11 @@ int main(void){
                      * for the Notepad window actually being clicked) */
                 if(w->id==WIN_NOTEPAD&&!w->minimized){
                     npx_mouse_down(hit,mouse_x,mouse_y,1);
+                    goto click_done;
+                }
+                /* terminals: press starts a selection (drag / double / triple click) */
+                if((w->id==WIN_TERMINAL||w->id==WIN_PTERM)&&!w->minimized){
+                    term_mouse_down(hit);
                     goto click_done;
                 }
                 /* file transfer window: Cancel / Close button */
@@ -5292,6 +5435,8 @@ int main(void){
             /* Ctrl combinations are shortcuts for the focused window, never typed text */
             if(!youdo_open&&!menu_open&&focused>=0&&wins[focused].id==WIN_NOTEPAD&&wins[focused].visible&&!wins[focused].minimized)
                 npx_key(focused,(int)ch,key_shift,1);
+            else if(!youdo_open&&!menu_open&&focused>=0&&(wins[focused].id==WIN_TERMINAL||wins[focused].id==WIN_PTERM)&&wins[focused].visible&&!wins[focused].minimized)
+                term_ctrl_key(focused,(int)ch,key_shift);
             ch=0;
         }
         if(ch!=0&&menu_open){
@@ -5303,10 +5448,8 @@ int main(void){
             }
         }else if(ch!=0&&focused>=0){
             if(wins[focused].id==WIN_TERMINAL&&ch>0&&ch<256){
-                char c=(char)ch;
-                if(c=='\n'||c=='\r'){tinput[tinput_len]=0;if(tinput_len>0)tcmd(tinput);tinput_len=0;tinput[0]=0;}
-                else if((c=='\b'||c==127)&&tinput_len>0)tinput[--tinput_len]=0;
-                else if(c>=32&&c<127&&tinput_len<120){tinput[tinput_len++]=c;tinput[tinput_len]=0;}
+                ts_clear(&tsel);                               /* typing drops the selection */
+                term_type_char((char)ch);
             }
             /* Phase 3: forward the RAW character straight to the
              * backing process's input queue, no local echo or
@@ -5316,6 +5459,7 @@ int main(void){
              * real terminal in raw mode talking to a PTY. */
             if(wins[focused].id==WIN_PTERM&&ch>0&&ch<256){
                 PTerm*p=&pterm_states[focused];
+                ts_clear(&p->sel);
                 if(p->pid>=0&&!p->exited){
                     char c=(char)ch;
                     char qin[24];term_qname(p->pid,0,qin);
@@ -5381,6 +5525,7 @@ int main(void){
                 }
             }
         }
+        term_mouse_follow();
         for(int k=0;k<win_count;k++)                       /* Notepad: selection / scrollbar drags follow the mouse until it is released */
             if(wins[k].id==WIN_NOTEPAD&&npx[k].used&&npx[k].drag){
                 if(mouse_btn&1)npx_mouse_drag(k,mouse_x,mouse_y);else npx_mouse_up(k);

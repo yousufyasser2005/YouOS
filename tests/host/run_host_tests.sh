@@ -47,6 +47,19 @@ gcc -g -O0 -fsanitize=address,undefined -I include -o "$W/npcore_test" tests/hos
 timeout 200 gcc -g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I include -o "$W/notepad_test" tests/host/notepad_test.c || { echo "notepad test build failed"; exit 1; }
 timeout 120 "$W/notepad_test" > "$W/np.out" 2>&1; rc=$?; grep -c '^  ok' "$W/np.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "Notepad window (tabs, dialogs, save/replace/close flows, wrap, clipboard) on the real code" || { grep -E "FAIL|ERROR|runtime" "$W/np.out" | head; bad "Notepad window"; }
+gcc -g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I include -o "$W/termsel_test" tests/host/termsel_test.c || { echo "termsel test build failed"; exit 1; }
+"$W/termsel_test" > "$W/ts.out" 2>&1; rc=$?; grep -c '^  ok' "$W/ts.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "terminal clipboard core (selection, copy text, paste sanitising + pacing, Ctrl keys)" || { grep -E "FAIL|ERROR|runtime" "$W/ts.out" | head; bad "terminal clipboard core"; }
+# the desktop cannot run on the host, so check that every terminal hook is still wired into it
+D=user/src/desktop.c
+check "desktop: Ctrl keys in a focused terminal go to term_ctrl_key" "grep -aq 'term_ctrl_key(focused' $D"
+check "desktop: a click inside a terminal starts a selection (term_mouse_down)" "grep -aq 'term_mouse_down(hit)' $D"
+check "desktop: a drag follows the pointer every frame (term_mouse_follow)" "grep -aq '^        term_mouse_follow();' $D"
+check "desktop: a paste is fed every frame (term_paste_pump)" "grep -aq '^        term_paste_pump();' $D"
+check "desktop: both terminals tell the selection when they scroll" "grep -aq 'ts_scrolled(&tsel,1)' $D && grep -aq 'ts_scrolled(&p->sel,1)' $D"
+check "desktop: both terminals draw the selection highlight" "grep -aq 'term_draw_sel(&tv,&tsel' $D && grep -aq 'term_draw_sel(&tv,&p->sel' $D"
+check "desktop: the output queue is drained 32 messages per frame (so pasted echo is never dropped)" "grep -aq 'for(int got=0;got<32;got++)' $D"
+check "shell: Ctrl+C / Ctrl+U handled, other control codes never stored" "grep -q 'Ctrl+C: abandon' user/src/shell.c && grep -q 'Ctrl+U: erase' user/src/shell.c"
 cat > "$W/memcheck.c" <<'MEMEOF'
 #include "user/src/textedit.h"
 typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Dirent;
@@ -54,6 +67,12 @@ typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Diren
 #define LE_CLIP_SET(b, n) ((void)0)
 #define LE_CLIP_GET(b, m) 0
 #include "user/src/lineedit.h"
+#include "user/src/termsel.h"
+int use_term(TermSel* s, const TermView* v, TermPaste* p, char* b, int n) {
+    ts_init(s); ts_mouse_down(s, v, 9, 40, 5); ts_mouse_drag(s, v, 60, 70); ts_mouse_up(s); ts_scrolled(s, 1); ts_clear(s);
+    tp_load(p, 0, 1, b, n, 1); tp_cancel(p); int c; int k = ts_classify_ctrl(n, 1, &c);
+    return ts_extract(s, v, b, n) + ts_len(v, 0) + k + c;
+}
 int use_other(Dirent* e, int n, char* b, LineEdit* le) {
     np_sort_entries(e, n); np_join(b, 64, "/ycfs", "x"); np_parent(b, 64, "/ycfs/a"); np_check_name(b); np_default_ext(b, 64);
     np_tab_label(b, 64, "n", 1, 9); int ty, th; np_thumb(9, 3, 1, 90, 12, &ty, &th); np_untitled(b, 64, 3);

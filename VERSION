@@ -1,1 +1,1 @@
-YouOS source tree v17: Open/Save dialog fix (double-click window 40 -> 60 ticks, also text-area word/line select), dialog serial trace, strict + boundary tests (on top of v15)
+YouOS source tree v23: terminal clipboard (selection, Ctrl+Shift+C/V, control codes, paced paste), 100-tick click window, quiet serial (diagnostics behind NPX_TRACE)

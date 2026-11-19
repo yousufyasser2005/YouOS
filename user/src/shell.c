@@ -35,6 +35,10 @@ static void readline(char* buf, int max) {
             if (i > 0) { i--; sys_write(1, "\b", 1); }
             continue;
         }
+        /* control codes sent by the terminal window (Ctrl+<letter> = 1..26) */
+        if (c == 3) { print("^C\n"); i = 0; break; }                              /* Ctrl+C: abandon this line */
+        if (c == 21) { while (i > 0) { i--; sys_write(1, "\b", 1); } continue; }   /* Ctrl+U: erase the whole line */
+        if ((unsigned char)c < 32 && c != '\t') continue;                           /* every other control code is ignored, never stored */
         sys_write(1, &c, 1);
         buf[i++] = c;
     }

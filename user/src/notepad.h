@@ -62,7 +62,7 @@ static NpWin npx[MAX_WINDOWS];
 typedef struct { int x, y, w, h; int tb_y, tab_y, ta_x, ta_y, ta_w, ta_h, sb_y, sbx, cols, rows; } NpGeom;
 
 /* ------------------------------------------------------------------ small helpers */
-#define NPX_DBLCLICK_TICKS 60       /* max gap (100 Hz ticks = 600 ms) between presses of a double/triple click; 40 was too tight: a real 41-tick double-click was missed */
+#define NPX_DBLCLICK_TICKS 100      /* max gap (100 Hz ticks = 600 ms) between presses of a double/triple click; 40 was too tight: a real 41-tick double-click was missed */
 static int npx_num(char* d, long long v) {                      /* decimal; returns the length */
     char t[24]; int n = 0; if (v < 0) v = 0; if (!v) t[n++] = '0'; while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
     int k = 0; while (n) d[k++] = t[--n]; d[k] = 0; return k;
