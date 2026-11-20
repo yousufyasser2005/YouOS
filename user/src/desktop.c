@@ -17,6 +17,7 @@ typedef signed long    s64;
 #include "mjpeg_container.h"
 #include "termsel.h"            /* terminal selection / paste / Ctrl-key logic (host-tested) */
 #include "notiflist.h"          /* notification centre: which card is under the pointer, Copy / Copy All text (host-tested) */
+#include "cliphist.h"           /* clipboard history: the store, previews and the panel's keys / geometry (host-tested) */
 static u64 FB_W,FB_H;
 /* UI scale, in percent. The framebuffer is now the display's native
  * resolution (1920x1080), so layouts authored in pixels at 800 lines
@@ -1736,6 +1737,8 @@ static void term_mouse_follow(void){
  * Opens on the Notepad's text area and on terminal windows: Undo / Redo / Cut / Copy / Paste / Select All
  * (terminals: Copy / Paste / Select All). Entries that cannot be done now are dimmed. The commands are the
  * same code as the keyboard shortcuts. Click an entry to run it; click anywhere else or press a key to close. */
+static ClipHist g_cbh;                                  /* the clipboard history (all zero = empty) */
+static void cbp_open_panel(int target);                 /* the history panel, defined below */
 static CtxMenu tmenu;                                   /* zero = closed */
 static int clip_has_text(void){unsigned len=0,type=0,seq=0;sys_clip_info(&len,&type,&seq);return len>0&&type==1u;}
 /* open the menu for window `wi` at the pointer; returns 0 if the pointer is not on text of that window */
@@ -1748,12 +1751,14 @@ static int tmenu_open_for(int wi){
         npx_ctx_prepare(wi,mouse_x,mouse_y);
         int hs,cu,cr,ht;npx_ctx_state(wi,&hs,&cu,&cr,&ht);
         cm_build(&tmenu,CMK_EDITOR,wi,hs,cu,cr,can_paste,ht);
+        cm_set_enabled(&tmenu,CM_HISTORY,cbh_count(&g_cbh)>0);
     }else if(w->id==WIN_TERMINAL||w->id==WIN_PTERM){
         if(mouse_y<w->y+TITLEBAR_H)return 0;
         TermSel*s=term_sel_of(wi);TermView tv;
         if(!s||!term_view(wi,&tv))return 0;
         int alive=(w->id==WIN_TERMINAL)||(pterm_states[wi].pid>=0&&!pterm_states[wi].exited);
         cm_build(&tmenu,CMK_TERMINAL,wi,s->active,0,0,can_paste&&alive,ts_has_text(&tv));
+        cm_set_enabled(&tmenu,CM_HISTORY,cbh_count(&g_cbh)>0);
     }else return 0;
     cm_place(&tmenu,mouse_x,mouse_y,PANEL_X,(int)FB_H-TBAR_H);
     tmenu.open=1;tmenu.hov=-1;
@@ -1792,11 +1797,13 @@ static void tmenu_do(int id){
     int wi=tmenu.win;
     if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return;
     if(tmenu.kind==CMK_EDITOR){
+        if(id==CM_HISTORY){cbp_open_panel(wi);return;}
         if(wins[wi].id==WIN_NOTEPAD)npx_ctx_do(wi,id);
     }else if(tmenu.kind==CMK_TERMINAL){
         if(wins[wi].id!=WIN_TERMINAL&&wins[wi].id!=WIN_PTERM)return;
         if(id==CM_COPY)term_copy(wi);
         else if(id==CM_PASTE)term_paste_start(wi);
+        else if(id==CM_HISTORY)cbp_open_panel(wi);
         else if(id==CM_SELALL){TermSel*s=term_sel_of(wi);TermView tv;if(s&&term_view(wi,&tv))ts_select_all(s,&tv);}
     }
 }
@@ -1832,6 +1839,121 @@ static void draw_tmenu(void){
         const char*h=cm_hint(tmenu.id[i],tmenu.kind);int hl=0;while(h[hl])hl++;
         if(hl)text(mx2+CM_W-10-hl*8,iy+(CM_ITEM_H-14)/2,h,!en?0x484F58:hov?BG:DIM,bg);
     }
+}
+
+/* ================= Clipboard history (logic in cliphist.h, host-tested) =================
+ * The desktop looks at the system clipboard's sequence number once per frame and records every new text copy, wherever
+ * it came from. Ctrl+Shift+H (or "Clipboard History" in the right-click menus) opens a panel listing the last 20;
+ * clicking one -- or Enter, or its number key -- makes it the current clipboard and pastes it into the window you were
+ * typing in (Notepad text, a terminal). Memory only: it is wiped, together with the clipboard, at logout. */
+static CbpState g_cbp;
+static int g_cbp_open=0,g_cbp_target=-1,g_cbp_mx=-1,g_cbp_my=-1;
+static long long g_cbp_pid=-1;                           /* the process of a terminal target: a reused slot must not receive the paste */
+
+static void cbh_watch(void){                             /* once per frame */
+    unsigned len=0,type=0,seq=0;sys_clip_info(&len,&type,&seq);
+    if(!cbh_should_read(&g_cbh,seq,len,type))return;
+    long long got=np_clip_text(g_clip_scratch,(int)sizeof g_clip_scratch);
+    if(got>0&&got<=CBH_ENTRY_MAX)cbh_add(&g_cbh,g_clip_scratch,(int)got);
+}
+static void cbp_pos(int*x,int*y){cbp_place((int)FB_W,(int)FB_H-TBAR_H,cbh_count(&g_cbh),x,y);}
+static void cbp_open_panel(int target){
+    cm_close(&tmenu);rctx_open=0;fm_ctx_open=0;
+    g_cbp.sel=0;g_cbp.scroll=0;g_cbp_open=1;g_cbp_mx=mouse_x;g_cbp_my=mouse_y;
+    g_cbp_target=-1;g_cbp_pid=-1;
+    if(target>=0&&target<win_count&&target<MAX_WINDOWS&&wins[target].visible&&!wins[target].minimized){
+        int id=wins[target].id;
+        if(id==WIN_NOTEPAD||id==WIN_TERMINAL)g_cbp_target=target;
+        else if(id==WIN_PTERM&&pterm_states[target].pid>=0&&!pterm_states[target].exited){g_cbp_target=target;g_cbp_pid=(long long)pterm_states[target].pid;}
+    }
+}
+/* make entry `idx` the clipboard and paste it where the panel was opened from; closes the panel */
+static void cbp_pick(int idx){
+    const char*t=cbh_text(&g_cbh,idx);int n=cbh_len(&g_cbh,idx);
+    g_cbp_open=0;
+    if(!t||n<=0)return;
+    sys_clip_set(t,(uint64_t)n,1);                       /* the watcher then moves it to the top of the history */
+    int wi=g_cbp_target,pasted=0;
+    if(wi>=0&&wi<win_count&&wi<MAX_WINDOWS&&wins[wi].visible&&!wins[wi].minimized){
+        if(wins[wi].id==WIN_NOTEPAD){if(npx[wi].used&&npx[wi].mode==NPM_EDIT){npx_ctx_do(wi,CM_PASTE);pasted=1;}}
+        else if(wins[wi].id==WIN_TERMINAL){term_paste_start(wi);pasted=1;}
+        else if(wins[wi].id==WIN_PTERM&&pterm_states[wi].pid>=0&&!pterm_states[wi].exited&&(long long)pterm_states[wi].pid==g_cbp_pid){term_paste_start(wi);pasted=1;}
+    }
+    if(!pasted)notif_add("Clipboard","Copied - paste it with Ctrl+V");     /* nowhere to paste automatically: say what happened */
+}
+/* one key press; returns 1 if the panel used it (while it is open it uses every key) */
+static int cbp_handle_key(int ch,int shift,int ctrl,int blocked){   /* blocked: a modal screen (the start menu, the youdo prompt) owns the keyboard */
+    if(ch==0)return 0;
+    if(ctrl&&shift&&(ch=='h'||ch=='H')){                 /* the shortcut toggles the panel */
+        if(g_cbp_open)g_cbp_open=0;
+        else if(!blocked)cbp_open_panel(focused);
+        return 1;
+    }
+    if(!g_cbp_open)return 0;
+    int act=cbp_key(&g_cbp,cbh_count(&g_cbh),(int)ch);
+    if(act==CBA_CLOSE)g_cbp_open=0;
+    else if(act==CBA_PICK)cbp_pick(g_cbp.sel);
+    else if(act==CBA_DELETE){cbh_remove(&g_cbh,g_cbp.sel);cbp_fix(&g_cbp,cbh_count(&g_cbh));}
+    return 1;
+}
+/* a left click while the panel is open: outside closes it; Clear, a row's X, or a row acts */
+static void cbp_click(void){
+    int x,y;cbp_pos(&x,&y);int n=cbh_count(&g_cbh);
+    if(!cbp_inside(x,y,n,mouse_x,mouse_y)){g_cbp_open=0;return;}
+    if(cbp_clear_at(x,y,mouse_x,mouse_y)){cbh_clear(&g_cbh);cbp_fix(&g_cbp,0);return;}
+    int d=cbp_del_at(x,y,n,g_cbp.scroll,mouse_x,mouse_y);
+    if(d>=0){cbh_remove(&g_cbh,d);cbp_fix(&g_cbp,cbh_count(&g_cbh));return;}
+    int r=cbp_row_at(x,y,n,g_cbp.scroll,mouse_x,mouse_y);
+    if(r>=0)cbp_pick(r);
+}
+/* the row under a moving pointer becomes the selection (keys take over again when the pointer rests) */
+static void cbp_hover(void){
+    if(mouse_x==g_cbp_mx&&mouse_y==g_cbp_my)return;
+    g_cbp_mx=mouse_x;g_cbp_my=mouse_y;
+    int x,y;cbp_pos(&x,&y);int n=cbh_count(&g_cbh);
+    int r=cbp_row_at(x,y,n,g_cbp.scroll,mouse_x,mouse_y);
+    if(r>=0){g_cbp.sel=r;cbp_fix(&g_cbp,n);}
+}
+/* logout: nothing copied by one user may be pasted by the next */
+static void cbh_wipe(void){cbh_clear(&g_cbh);g_cbp_open=0;sys_clip_set(0,0,0);}
+static void draw_cbpanel(void){
+    if(!g_cbp_open)return;
+    int n=cbh_count(&g_cbh),x,y;cbp_pos(&x,&y);
+    int h=cbp_height(n);
+    rect(x+4,y+4,CBP_W,h,0x050810);rect(x+2,y+2,CBP_W,h,0x0A0D14);
+    rect_alpha(x,y,CBP_W,h,0x1C2128,235);outline(x,y,CBP_W,h,BORDER);
+    hline(x+1,y,CBP_W-2,cfg_accent);
+    text(x+16,y+14,"Clipboard History",TEXT,0x1C2128);
+    { char c[24];int k=cbh_utoa(c,0,(unsigned long)n);const char*w=n==1?" item":" items";while(*w)c[k++]=*w++;c[k]=0;
+      text(x+16,y+32,c,DIM,0x1C2128); }
+    { int bx=x+CBP_W-CBP_INSET-CBP_CLR_W,by=y+14,hov=cbp_clear_at(x,y,mouse_x,mouse_y)&&n>0;
+      rect(bx,by,CBP_CLR_W,CBP_CLR_H,hov?0x3D444D:0x2D333B);outline(bx,by,CBP_CLR_W,CBP_CLR_H,BORDER);
+      text_center(bx+CBP_CLR_W/2,by+(CBP_CLR_H-14)/2,"Clear",n>0?TEXT:0x484F58,hov?0x3D444D:0x2D333B); }
+    if(n==0){
+        text_center(x+CBP_W/2,y+CBP_HEAD_H+6,"Nothing copied yet",DIM,0x1C2128);
+        text_center(x+CBP_W/2,y+CBP_HEAD_H+24,"Copy some text and it will appear here",0x6E7681,0x1C2128);
+    }
+    int scroll=cbp_clamp_scroll(n,g_cbp.scroll),vis=n-scroll;if(vis>CBP_VIS)vis=CBP_VIS;
+    for(int r=0;r<vis;r++){
+        int idx=scroll+r,ry=cbp_row_top(y,r),rw=CBP_W-2*CBP_INSET,rh=CBP_ROW_H-4,sel=(idx==g_cbp.sel);
+        u32 bg=sel?0x2D333B:0x22272E;
+        rect(x+CBP_INSET,ry,rw,rh,bg);
+        if(sel)rect(x+CBP_INSET,ry,3,rh,cfg_accent);
+        if(idx<9){char d[2]={(char)('1'+idx),0};text(x+CBP_INSET+12,ry+(rh-14)/2,d,sel?TEXT:DIM,bg);}
+        char pv[64];cbh_preview(cbh_text(&g_cbh,idx),cbh_len(&g_cbh,idx),pv,(int)sizeof pv,46);
+        text(x+CBP_INSET+34,ry+(rh-14)/2,pv,TEXT,bg);
+        char lb[24];int ll=cbh_label(cbh_text(&g_cbh,idx),cbh_len(&g_cbh,idx),lb,(int)sizeof lb);
+        int dx=cbp_del_x(x);
+        text(dx-12-ll*8,ry+(rh-14)/2,lb,DIM,bg);
+        int dhov=(cbp_del_at(x,y,n,g_cbp.scroll,mouse_x,mouse_y)==idx);
+        rect(dx,ry+(rh-CBP_DEL_W)/2,CBP_DEL_W,CBP_DEL_W,dhov?0x8E2B2B:bg);
+        text_center(dx+CBP_DEL_W/2,ry+(rh-14)/2,"x",dhov?TEXT:DIM,dhov?0x8E2B2B:bg);
+    }
+    if(n>CBP_VIS){      /* a thin scroll bar at the right edge of the list */
+        int th=CBP_VIS*CBP_ROW_H*CBP_VIS/n,range=CBP_VIS*CBP_ROW_H-th,ty=cbp_row_top(y,0)+(n>CBP_VIS?range*scroll/(n-CBP_VIS):0);
+        rect(x+CBP_W-7,cbp_row_top(y,0),3,CBP_VIS*CBP_ROW_H-4,0x22272E);rect(x+CBP_W-7,ty,3,th-4>8?th-4:8,DIM);
+    }
+    text(x+16,y+h-CBP_FOOT_H+10,"Enter / click: paste   1-9: pick   Del: remove   Esc: close",0x6E7681,0x1C2128);
 }
 
 /* ═══ WAV PLAYBACK (streaming-engine redesign) ═══════════════════
@@ -4891,6 +5013,8 @@ int main(void){
         }
         term_paste_pump();      /* feeds a Ctrl+Shift+V paste a few characters per frame */
         tmenu_validate();       /* the text menu closes with its window */
+        cbh_watch();            /* record new copies for the clipboard history */
+        if(g_cbp_open)cbp_hover();
 
         /* mouse */
         unsigned long long mstate[3];
@@ -4942,6 +5066,7 @@ int main(void){
         }
 
         int rbtn_down=(mouse_btn&2)&&!(prev_btn&2);
+        if(g_cbp_open&&(btn_down||rbtn_down)){if(btn_down)cbp_click();else g_cbp_open=0;btn_down=0;rbtn_down=0;}   /* the history panel is modal: its click is not passed on */
         /* FM right-click — must target the specific File Manager window
          * actually under the cursor (via wm_hit, respecting z-order and
          * overlap), not just "the first File Manager window that
@@ -5079,7 +5204,7 @@ int main(void){
                 if(in_box(mouse_x,mouse_y,sd_x2,pry2,pbw2,40)){menu_open=0;do_shutdown();goto click_done;}
                 if(in_box(mouse_x,mouse_y,lk_x2,pry2,pbw2,40)){menu_open=0;lock_screen_run(LOCK_MODE_LOCK);goto click_done;}
                 if(in_box(mouse_x,mouse_y,lo_x2,pry2,pbw2,40)){
-                    menu_open=0;auth_do_logout();lock_screen_run(LOCK_MODE_LOGOUT);
+                    menu_open=0;auth_do_logout();cbh_wipe();lock_screen_run(LOCK_MODE_LOGOUT);
                     open_terminal();
                     tprint("YouOS Desktop v0.3");
                     tprint("File manager + Notepad ready");
@@ -5552,6 +5677,7 @@ int main(void){
         if(kev){ch=(s64)(kev&0xFFFF);key_shift=(kev&KEYEV_SHIFT)!=0;key_ctrl=(kev&KEYEV_CTRL)!=0;}
         if(ch!=0)xfer_input_ms=ft_now_ms();   /* typing counts as activity for copy pacing */
         if(youdo_open&&ch!=0){text_input_key(youdo_pw,&youdo_pw_len,48,ch,key_ctrl,1);}
+        if(cbp_handle_key((int)ch,key_shift,key_ctrl,youdo_open||menu_open))ch=0;     /* Ctrl+Shift+H toggles the clipboard history; while it is open it uses every key */
         if(tmenu.open&&ch!=0){cm_close(&tmenu);if(ch==27)ch=0;}   /* any key closes the text menu; Esc is used up by closing it */
         if(ch!=0&&key_ctrl){
             /* Ctrl combinations are shortcuts for the focused window, never typed text */
@@ -5636,7 +5762,8 @@ int main(void){
         {
             long wdelta=sys_mousewheel();
             if(wdelta){
-                if(notif_center_open&&in_box(mouse_x,mouse_y,NC_X,NC_Y,NC_W,NC_H)){
+                if(g_cbp_open){cbp_wheel(&g_cbp,cbh_count(&g_cbh),-(int)wdelta);}
+                else if(notif_center_open&&in_box(mouse_x,mouse_y,NC_X,NC_Y,NC_W,NC_H)){
                     if(wdelta<0&&notif_scroll+NC_MAX_VISIBLE<notif_count)notif_scroll++;
                     else if(wdelta>0&&notif_scroll>0)notif_scroll--;
                 } else if(!notif_center_open){
@@ -5784,7 +5911,7 @@ int main(void){
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
             }
         }
-        draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();draw_tmenu();   /* the right-click text menu is drawn LAST: above the toast and the notification centre */
+        draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();draw_tmenu();draw_cbpanel();   /* the right-click text menu and the clipboard history are drawn LAST: above the toast and the notification centre */
         if(hover_preview_group>=0){
             int gcount=taskbar_groups[hover_preview_group].count;
             int sx,sy,sw,sh;taskbar_group_strip_rect(hover_preview_group,&sx,&sy,&sw,&sh);

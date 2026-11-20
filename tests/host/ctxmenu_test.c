@@ -13,25 +13,31 @@ int main(void) {
 
     /* ---- what each kind of menu contains ---- */
     cm_build(&m, CMK_EDITOR, 3, 1, 1, 1, 1, 1);
-    { int w[] = { CM_UNDO, CM_REDO, CM_SEP, CM_CUT, CM_COPY, CM_PASTE, CM_SEP, CM_SELALL };
-      expect(ids_are(&m, 8, w), "editor menu: Undo, Redo | Cut, Copy, Paste | Select All"); }
+    { int w[] = { CM_UNDO, CM_REDO, CM_SEP, CM_CUT, CM_COPY, CM_PASTE, CM_HISTORY, CM_SEP, CM_SELALL };
+      expect(ids_are(&m, 9, w), "editor menu: Undo, Redo | Cut, Copy, Paste, Clipboard History | Select All"); }
     expect(m.kind == CMK_EDITOR && m.win == 3 && m.hov == -1, "the menu remembers its kind and its window");
     { int ok = 1; for (int i = 0; i < m.n; i++) ok &= (m.id[i] == CM_SEP) ? (m.en[i] == 0) : (m.en[i] == 1); expect(ok, "everything possible: every command enabled, separators never"); }
     cm_build(&m, CMK_EDITOR, 0, 0, 0, 0, 0, 0);
-    { int ok = 1; for (int i = 0; i < m.n; i++) ok &= (m.en[i] == 0); expect(ok, "nothing possible: every entry disabled (an empty document with an empty clipboard)"); }
+    expect(m.en[6] == 1 && m.id[6] == CM_HISTORY, "Clipboard History is enabled by default (the owner dims it while the history is empty)");
+    cm_set_enabled(&m, CM_HISTORY, 0);
+    { int ok = 1; for (int i = 0; i < m.n; i++) ok &= (m.en[i] == 0); expect(ok, "nothing possible: every entry disabled (an empty document, an empty clipboard, an empty history)"); }
+    cm_set_enabled(&m, CM_HISTORY, 1); expect(m.en[6] == 1 && m.en[0] == 0 && m.en[3] == 0 && m.en[5] == 0 && m.en[8] == 0, "cm_set_enabled changes only the entries with that id");
+    cm_set_enabled(&m, CM_SEP, 1); expect(m.en[2] == 1, "(it does not know about separators: the caller never asks)");
+    cm_set_enabled(&m, CM_REDO, 7); expect(m.en[1] == 1, "any non-zero value means enabled");
+    cm_set_enabled(&m, 999, 1); expect(m.n == 9, "an id that is not in the menu changes nothing");
     cm_build(&m, CMK_EDITOR, 0, 1, 0, 0, 0, 1);
-    expect(m.en[0] == 0 && m.en[1] == 0 && m.en[3] == 1 && m.en[4] == 1 && m.en[5] == 0 && m.en[7] == 1, "a selection enables Cut and Copy only (plus Select All when there is text)");
+    expect(m.en[0] == 0 && m.en[1] == 0 && m.en[3] == 1 && m.en[4] == 1 && m.en[5] == 0 && m.en[8] == 1, "a selection enables Cut and Copy only (plus Select All when there is text)");
     cm_build(&m, CMK_EDITOR, 0, 0, 1, 0, 0, 1);
     expect(m.en[0] == 1 && m.en[1] == 0 && m.en[3] == 0 && m.en[4] == 0, "undo history enables Undo only; Redo stays off");
     cm_build(&m, CMK_EDITOR, 0, 0, 0, 1, 1, 1);
     expect(m.en[0] == 0 && m.en[1] == 1 && m.en[5] == 1, "a redo step enables Redo; clipboard text enables Paste");
 
     cm_build(&m, CMK_TERMINAL, 7, 1, 1, 1, 1, 1);
-    { int w[] = { CM_COPY, CM_PASTE, CM_SEP, CM_SELALL }; expect(ids_are(&m, 4, w), "terminal menu: Copy, Paste | Select All (no Undo, Cut or Redo: output cannot be edited)"); }
+    { int w[] = { CM_COPY, CM_PASTE, CM_HISTORY, CM_SEP, CM_SELALL }; expect(ids_are(&m, 5, w), "terminal menu: Copy, Paste, Clipboard History | Select All (no Undo, Cut or Redo: output cannot be edited)"); }
     cm_build(&m, CMK_TERMINAL, 7, 0, 0, 0, 1, 1);
-    expect(m.en[0] == 0 && m.en[1] == 1 && m.en[3] == 1, "terminal with no selection: Copy off, Paste on");
+    expect(m.en[0] == 0 && m.en[1] == 1 && m.en[2] == 1 && m.en[4] == 1, "terminal with no selection: Copy off, Paste on, History on");
     cm_build(&m, CMK_TERMINAL, 7, 1, 0, 0, 0, 0);
-    expect(m.en[0] == 1 && m.en[1] == 0 && m.en[3] == 0, "terminal with a selection but an empty clipboard: Copy on, Paste off");
+    expect(m.en[0] == 1 && m.en[1] == 0 && m.en[2] == 1 && m.en[4] == 0, "terminal with a selection but an empty clipboard: Copy on, Paste off (History is independent of the clipboard)");
     cm_build(&m, CMK_READONLY, 2, 1, 0, 0, 1, 1);
     { int w[] = { CM_COPY, CM_SEP, CM_SELALL }; expect(ids_are(&m, 3, w), "read-only menu: Copy | Select All"); }
     cm_build(&m, 99, 0, 1, 1, 1, 1, 1); expect(m.n == 0, "an unknown kind has no entries");
@@ -55,18 +61,20 @@ int main(void) {
     cm_build(&m, CMK_EDITOR, 5, 1, 1, 1, 1, 1); expect(m.kind == CMK_EDITOR, "building another kind afterwards replaces the notification menu completely");
 
     /* ---- labels and shortcut hints ---- */
-    expect(!strcmp(cm_label(CM_UNDO), "Undo") && !strcmp(cm_label(CM_REDO), "Redo") && !strcmp(cm_label(CM_CUT), "Cut") && !strcmp(cm_label(CM_COPY), "Copy") && !strcmp(cm_label(CM_PASTE), "Paste") && !strcmp(cm_label(CM_SELALL), "Select All"), "every command has its label");
+    expect(!strcmp(cm_label(CM_UNDO), "Undo") && !strcmp(cm_label(CM_REDO), "Redo") && !strcmp(cm_label(CM_CUT), "Cut") && !strcmp(cm_label(CM_COPY), "Copy") && !strcmp(cm_label(CM_PASTE), "Paste") && !strcmp(cm_label(CM_SELALL), "Select All") && !strcmp(cm_label(CM_HISTORY), "Clipboard History"), "every command has its label");
     expect(!strcmp(cm_label(CM_SEP), "") && !strcmp(cm_label(CM_NONE), ""), "separators have no label");
     expect(!strcmp(cm_hint(CM_COPY, CMK_EDITOR), "Ctrl+C") && !strcmp(cm_hint(CM_PASTE, CMK_EDITOR), "Ctrl+V") && !strcmp(cm_hint(CM_UNDO, CMK_EDITOR), "Ctrl+Z") && !strcmp(cm_hint(CM_REDO, CMK_EDITOR), "Ctrl+Y") && !strcmp(cm_hint(CM_CUT, CMK_EDITOR), "Ctrl+X") && !strcmp(cm_hint(CM_SELALL, CMK_EDITOR), "Ctrl+A"), "editor hints are the editor shortcuts");
     expect(!strcmp(cm_hint(CM_COPY, CMK_TERMINAL), "Ctrl+Shift+C") && !strcmp(cm_hint(CM_PASTE, CMK_TERMINAL), "Ctrl+Shift+V"), "terminal hints are Ctrl+Shift+C / Ctrl+Shift+V (Ctrl+C is the interrupt there)");
     expect(!strcmp(cm_hint(CM_SELALL, CMK_TERMINAL), "") && !strcmp(cm_hint(CM_COPY, CMK_READONLY), ""), "entries without a shortcut show no hint");
-    { int widest = 0; const char* h = cm_hint(CM_PASTE, CMK_TERMINAL); int hl = (int)strlen(h), ll = (int)strlen(cm_label(CM_SELALL));
-      widest = (hl > ll ? hl : ll); expect((ll + hl) * 8 + 10 + 10 + 16 <= CM_W && widest > 0, "the widest label plus the widest hint fit in the menu width"); }
+    expect(!strcmp(cm_hint(CM_HISTORY, CMK_EDITOR), "Ctrl+Shift+H") && !strcmp(cm_hint(CM_HISTORY, CMK_TERMINAL), "Ctrl+Shift+H"), "Clipboard History shows its shortcut in both kinds of menu");
+    { int worst = 0; const int kinds[] = { CMK_EDITOR, CMK_TERMINAL }; const int ids[] = { CM_UNDO, CM_REDO, CM_CUT, CM_COPY, CM_PASTE, CM_SELALL, CM_HISTORY };
+      for (int k = 0; k < 2; k++) for (int q = 0; q < 7; q++) { int w = ((int)strlen(cm_label(ids[q])) + (int)strlen(cm_hint(ids[q], kinds[k]))) * 8; if (w > worst) worst = w; }
+      expect(worst + 10 + 10 + 16 <= CM_W && worst + 10 + 10 + 16 > CM_W - 40, "the widest label + hint pair of any entry fits the width with margins and a gap, and the width is not wasteful"); }
 
     /* ---- size and placement ---- */
     cm_build(&m, CMK_EDITOR, 0, 1, 1, 1, 1, 1);
-    expect(cm_height(&m) == 2 + 6 * CM_ITEM_H + 2 * CM_SEP_H, "editor menu height: border + 6 entries + 2 separators");
-    cm_build(&m, CMK_TERMINAL, 0, 1, 1, 1, 1, 1); expect(cm_height(&m) == 2 + 3 * CM_ITEM_H + CM_SEP_H, "terminal menu height");
+    expect(cm_height(&m) == 2 + 7 * CM_ITEM_H + 2 * CM_SEP_H, "editor menu height: border + 7 entries + 2 separators");
+    cm_build(&m, CMK_TERMINAL, 0, 1, 1, 1, 1, 1); expect(cm_height(&m) == 2 + 4 * CM_ITEM_H + CM_SEP_H, "terminal menu height");
     cm_build(&m, CMK_READONLY, 0, 1, 1, 1, 1, 1); expect(cm_height(&m) == 2 + 2 * CM_ITEM_H + CM_SEP_H, "read-only menu height");
     cm_build(&m, CMK_EDITOR, 0, 1, 1, 1, 1, 1);
     cm_place(&m, 100, 200, 1920, 1000); expect(m.x == 100 && m.y == 200, "a menu that fits opens exactly at the pointer");
@@ -81,11 +89,11 @@ int main(void) {
     cm_place(&m, 400, 300, 1920, 1000);
     expect(cm_row_y(&m, 0) == 301 && cm_row_y(&m, 1) == 301 + CM_ITEM_H, "rows start one pixel below the top border");
     expect(cm_row_y(&m, 3) == 301 + 2 * CM_ITEM_H + CM_SEP_H, "a separator takes less room than an entry");
-    expect(cm_row_y(&m, 7) == 301 + 5 * CM_ITEM_H + 2 * CM_SEP_H, "the last entry sits below five entries and two separators");
+    expect(cm_row_y(&m, 8) == 301 + 6 * CM_ITEM_H + 2 * CM_SEP_H, "the last entry sits below six entries and two separators");
     expect(cm_item_at(&m, 410, 301 + 5) == 0 && cm_item_at(&m, 410, 301 + CM_ITEM_H + 5) == 1, "the first two entries are found by their rows");
     expect(cm_item_at(&m, 410, cm_row_y(&m, 2) + 2) == -1, "a separator is not an entry");
-    expect(cm_item_at(&m, 410, cm_row_y(&m, 3) + 2) == 3 && cm_item_at(&m, 410, cm_row_y(&m, 7) + CM_ITEM_H - 1) == 7, "entries after a separator are found, down to their last pixel");
-    expect(cm_item_at(&m, 410, cm_row_y(&m, 7) + CM_ITEM_H) == -1, "the pixel row after the last entry is the border: nothing");
+    expect(cm_item_at(&m, 410, cm_row_y(&m, 3) + 2) == 3 && cm_item_at(&m, 410, cm_row_y(&m, 8) + CM_ITEM_H - 1) == 8, "entries after a separator are found, down to their last pixel");
+    expect(cm_item_at(&m, 410, cm_row_y(&m, 8) + CM_ITEM_H) == -1, "the pixel row after the last entry is the border: nothing");
     expect(cm_item_at(&m, 410, 300) == -1, "the top border is not an entry");
     expect(cm_item_at(&m, 399, 310) == -1 && cm_item_at(&m, 400 + CM_W, 310) == -1, "left and right of the menu: nothing");
     expect(cm_item_at(&m, 400, 310) == 0 && cm_item_at(&m, 400 + CM_W - 1, 310) == 0, "the very first and last columns belong to the menu");

@@ -1,1 +1,1 @@
-YouOS source tree v26: right-click menus (text + notifications) now drawn above the notification centre and toast; on top of v25
+YouOS source tree v27: clipboard history (Ctrl+Shift+H or right-click menu; last 20 text copies, paste into Notepad/terminals, wiped at logout) on top of v26

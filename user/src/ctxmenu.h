@@ -4,8 +4,8 @@
  * point is on. It is compiled into the host test (tests/host/ctxmenu_test.c).
  *
  * Three kinds of menu:
- *   CMK_EDITOR    a text editor (Notepad):  Undo, Redo | Cut, Copy, Paste | Select All
- *   CMK_TERMINAL  a terminal window:        Copy, Paste | Select All     (the output cannot be edited)
+ *   CMK_EDITOR    a text editor (Notepad):  Undo, Redo | Cut, Copy, Paste, Clipboard History | Select All
+ *   CMK_TERMINAL  a terminal window:        Copy, Paste, Clipboard History | Select All     (the output cannot be edited)
  *   CMK_READONLY  read-only text:           Copy | Select All
  *   CMK_NOTIF     a notification:           Copy, Copy All | Dismiss, Clear All   (`win` is the notification's index)
  * A command that cannot be done right now (Copy with nothing selected, Paste with an empty clipboard ...)
@@ -13,12 +13,13 @@
 #ifndef CTXMENU_H
 #define CTXMENU_H
 
-#define CM_W      224            /* wide enough for "Paste" + "Ctrl+Shift+V" */
+#define CM_W      280            /* wide enough for "Clipboard History" + "Ctrl+Shift+H" (17 + 12 characters, 8 px each) */
 #define CM_ITEM_H 22
 #define CM_SEP_H  6
 #define CM_MAX    10
+#define CM_HISTORY_KEYS "Ctrl+Shift+H"      /* the shortcut that opens the clipboard history panel */
 
-enum { CM_NONE = 0, CM_UNDO, CM_REDO, CM_CUT, CM_COPY, CM_PASTE, CM_SELALL, CM_SEP, CM_COPYALL, CM_DISMISS, CM_CLEARALL };
+enum { CM_NONE = 0, CM_UNDO, CM_REDO, CM_CUT, CM_COPY, CM_PASTE, CM_SELALL, CM_SEP, CM_COPYALL, CM_DISMISS, CM_CLEARALL, CM_HISTORY };
 enum { CMK_NONE = 0, CMK_EDITOR, CMK_TERMINAL, CMK_READONLY, CMK_NOTIF };
 
 typedef struct {
@@ -41,12 +42,14 @@ static const char* cm_label(int id) {
     case CM_CUT: return "Cut";     case CM_COPY: return "Copy";
     case CM_PASTE: return "Paste"; case CM_SELALL: return "Select All";
     case CM_COPYALL: return "Copy All"; case CM_DISMISS: return "Dismiss"; case CM_CLEARALL: return "Clear All";
+    case CM_HISTORY: return "Clipboard History";
     default: return "";
     }
 }
 /* the keyboard shortcut shown at the right edge of an entry */
 static const char* cm_hint(int id, int kind) {
     if (kind == CMK_NOTIF) return "";
+    if (id == CM_HISTORY) return CM_HISTORY_KEYS;
     if (kind == CMK_TERMINAL) {
         if (id == CM_COPY) return "Ctrl+Shift+C";
         if (id == CM_PASTE) return "Ctrl+Shift+V";
@@ -70,10 +73,10 @@ static void cm_build(CtxMenu* m, int kind, int win, int has_sel, int can_undo, i
     m->n = 0; m->hov = -1; m->kind = kind; m->win = win;
     if (kind == CMK_EDITOR) {
         cm_add(m, CM_UNDO, can_undo); cm_add(m, CM_REDO, can_redo); cm_add(m, CM_SEP, 0);
-        cm_add(m, CM_CUT, has_sel); cm_add(m, CM_COPY, has_sel); cm_add(m, CM_PASTE, can_paste); cm_add(m, CM_SEP, 0);
+        cm_add(m, CM_CUT, has_sel); cm_add(m, CM_COPY, has_sel); cm_add(m, CM_PASTE, can_paste); cm_add(m, CM_HISTORY, 1); cm_add(m, CM_SEP, 0);
         cm_add(m, CM_SELALL, has_text);
     } else if (kind == CMK_TERMINAL) {
-        cm_add(m, CM_COPY, has_sel); cm_add(m, CM_PASTE, can_paste); cm_add(m, CM_SEP, 0);
+        cm_add(m, CM_COPY, has_sel); cm_add(m, CM_PASTE, can_paste); cm_add(m, CM_HISTORY, 1); cm_add(m, CM_SEP, 0);
         cm_add(m, CM_SELALL, has_text);
     } else if (kind == CMK_READONLY) {
         cm_add(m, CM_COPY, has_sel); cm_add(m, CM_SEP, 0);
@@ -86,6 +89,10 @@ static void cm_build_notif(CtxMenu* m, int idx, int total) {
     m->n = 0; m->hov = -1; m->kind = CMK_NOTIF; m->win = idx; m->aux = total;
     cm_add(m, CM_COPY, 1); cm_add(m, CM_COPYALL, total >= 2); cm_add(m, CM_SEP, 0);
     cm_add(m, CM_DISMISS, 1); cm_add(m, CM_CLEARALL, 1);
+}
+/* enable or dim every entry with this command id (e.g. dim "Clipboard History" while the history is empty) */
+static void cm_set_enabled(CtxMenu* m, int id, int enabled) {
+    for (int i = 0; i < m->n; i++) if (m->id[i] == id) m->en[i] = enabled ? 1 : 0;
 }
 static int cm_height(const CtxMenu* m) {
     int h = 2; for (int i = 0; i < m->n; i++) h += (m->id[i] == CM_SEP) ? CM_SEP_H : CM_ITEM_H; return h;

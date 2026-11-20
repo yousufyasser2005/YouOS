@@ -56,6 +56,9 @@ gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=unde
 gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -o "$W/notiflist_test" tests/host/notiflist_test.c || { echo "notiflist test build failed"; exit 1; }
 "$W/notiflist_test" > "$W/nl.out" 2>&1; rc=$?; grep -c '^  ok' "$W/nl.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "notification list logic (which card is under the pointer, Copy / Copy All text)" || { grep -E "FAIL|ERROR|runtime" "$W/nl.out" | head; bad "notification list logic"; }
+gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -o "$W/cliphist_test" tests/host/cliphist_test.c || { echo "cliphist test build failed"; exit 1; }
+"$W/cliphist_test" > "$W/chh.out" 2>&1; rc=$?; grep -c '^  ok' "$W/chh.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "clipboard history (store, dedupe, previews, panel keys and geometry, random-operation model)" || { grep -E "FAIL|ERROR|runtime" "$W/chh.out" | head; bad "clipboard history"; }
 # the desktop cannot run on the host, so check that every terminal hook is still wired into it
 D=user/src/desktop.c
 check "desktop: Ctrl keys in a focused terminal go to term_ctrl_key" "grep -aq 'term_ctrl_key(focused' $D"
@@ -77,6 +80,14 @@ check "desktop: the centre still draws cards at y+90+row*NC_ROW_H, inset 12, gap
 check "desktop: Clear All in the menu does exactly what the Clear button does" "[ \$(grep -ac 'notif_count=0;notif_scroll=0;' $D) -ge 2 ]"
 check "desktop: Dismiss in the menu does what the card's X button does" "grep -aq 'else if(id==CM_DISMISS){notif_remove(idx);if(notif_scroll>0)notif_scroll--;}' $D && grep -aq 'notif_remove(idx2);if(notif_scroll>0)notif_scroll--;' $D"
 check "desktop: a notification menu closes if the list changed or the centre / toast went away" "grep -aq 'notif_count!=tmenu.aux' $D"
+check "desktop: Ctrl+Shift+H and the open panel get the keys before any window" "grep -aq 'if(cbp_handle_key((int)ch,key_shift,key_ctrl,youdo_open||menu_open))ch=0;' $D"
+check "desktop: the history panel is modal: its click is used up and not passed on" "grep -aq 'if(g_cbp_open&&(btn_down||rbtn_down)){if(btn_down)cbp_click();else g_cbp_open=0;btn_down=0;rbtn_down=0;}' $D"
+check "desktop: every new copy is recorded (cbh_watch every frame)" "grep -aq '^        cbh_watch();' $D"
+check "desktop: the panel follows the pointer and the wheel" "grep -aq 'if(g_cbp_open)cbp_hover();' $D && grep -aq 'if(g_cbp_open){cbp_wheel(' $D"
+check "desktop: the panel is drawn last, above the text menu" "grep -aq 'draw_tmenu();draw_cbpanel();' $D"
+check "desktop: logout wipes the history and the system clipboard" "grep -aq 'auth_do_logout();cbh_wipe();' $D && grep -aq 'static void cbh_wipe(void){cbh_clear(&g_cbh);g_cbp_open=0;sys_clip_set(0,0,0);}' $D"
+check "desktop: the right-click menus open the panel and dim the entry while it is empty" "[ \$(grep -ac 'cm_set_enabled(&tmenu,CM_HISTORY,cbh_count(&g_cbh)>0);' $D) -eq 2 ] && grep -aq 'if(id==CM_HISTORY){cbp_open_panel(wi);return;}' $D && grep -aq 'else if(id==CM_HISTORY)cbp_open_panel(wi);' $D"
+check "desktop: a pick becomes the clipboard first, then is pasted into the window it came from" "grep -aq 'sys_clip_set(t,(uint64_t)n,1);' $D && grep -aq 'npx_ctx_do(wi,CM_PASTE);pasted=1;' $D"
 check "desktop: the menu's terminal Copy is the same code as Ctrl+Shift+C" "grep -aq 'if(act==TS_KEY_COPY){term_copy(wi);return;}' $D && grep -aq 'if(id==CM_COPY)term_copy(wi);' $D"
 cat > "$W/memcheck.c" <<'MEMEOF'
 #include "user/src/textedit.h"
@@ -88,6 +99,14 @@ typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Diren
 #include "user/src/termsel.h"
 #include "user/src/ctxmenu.h"
 #include "user/src/notiflist.h"
+#include "user/src/cliphist.h"
+int use_cbh(ClipHist* h, const char* t, int n, char* o, int cap) {
+    int r = cbh_add(h, t, n); cbh_remove(h, 0); cbh_clear(h); cbh_init(h);
+    r += cbh_should_read(h, 1, 2, 1) + cbh_count(h) + cbh_len(h, 0) + (cbh_text(h, 0) != 0) + cbh_preview(t, n, o, cap, 40) + cbh_label(t, n, o, cap);
+    CbpState st = { 0, 0 }; r += cbp_key(&st, 3, 1002); cbp_fix(&st, 3); cbp_wheel(&st, 12, 2);
+    int x, y; cbp_place(1920, 1000, 5, &x, &y);
+    return r + x + y + cbp_row_at(x, y, 5, 0, 10, 10) + cbp_del_at(x, y, 5, 0, 10, 10) + cbp_clear_at(x, y, 10, 10) + cbp_inside(x, y, 5, 10, 10);
+}
 int use_nl(const char* t, const char* m, char* o, int cap) {
     return nl_format_one(t, m, o, cap) + nl_format_all(t, 32, m, 64, 1, o, cap) + nl_row_at(0, 0, 380, 64, 5, 8, 1, 50, 100) + nl_clamp_scroll(8, 2, 5);
 }
