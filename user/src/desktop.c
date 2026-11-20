@@ -16,6 +16,7 @@ typedef signed long    s64;
 #include "jpeg_decoder.h"
 #include "mjpeg_container.h"
 #include "termsel.h"            /* terminal selection / paste / Ctrl-key logic (host-tested) */
+#include "notiflist.h"          /* notification centre: which card is under the pointer, Copy / Copy All text (host-tested) */
 static u64 FB_W,FB_H;
 /* UI scale, in percent. The framebuffer is now the display's native
  * resolution (1920x1080), so layouts authored in pixels at 800 lines
@@ -1759,7 +1760,35 @@ static int tmenu_open_for(int wi){
     rctx_open=0;fm_ctx_open=0;                          /* only one menu at a time */
     return 1;
 }
+/* Right-click on a notification card (in the centre) or on the pop-up toast: Copy / Copy All / Dismiss / Clear All.
+ * Returns 1 if a menu was opened, 2 if the pointer is on the centre but not on a card (nothing opens, but the
+ * click must not fall through to the desktop menu), 0 otherwise. */
+static int tmenu_open_notif(void){
+    int ni=-1,on_panel=0;
+    if(notif_center_open){
+        on_panel=in_box(mouse_x,mouse_y,NC_X,NC_Y,NC_W,NC_H);
+        ni=nl_row_at(NC_X,NC_Y,NC_W,NC_ROW_H,NC_MAX_VISIBLE,notif_count,notif_scroll,mouse_x,mouse_y);
+    }else if(notif_popup_active&&notif_count>0&&in_box(mouse_x,mouse_y,NOTIF_POPUP_X,NOTIF_POPUP_Y,NOTIF_POPUP_W,NOTIF_POPUP_H))ni=notif_count-1;
+    if(ni<0)return on_panel?2:0;
+    cm_build_notif(&tmenu,ni,notif_count);
+    cm_place(&tmenu,mouse_x,mouse_y,(int)FB_W,(int)FB_H-TBAR_H);
+    tmenu.open=1;tmenu.hov=-1;
+    rctx_open=0;fm_ctx_open=0;
+    return 1;
+}
+/* the same actions as the card's X button and the Clear button, plus copying */
+static void tmenu_do_notif(int id){
+    int idx=tmenu.win;
+    if(id==CM_COPY){
+        if(idx>=0&&idx<notif_count){char b[128];int n=nl_format_one(notif_title[idx],notif_msg[idx],b,(int)sizeof b);if(n>0)sys_clip_set(b,(uint64_t)n,1);}
+    }else if(id==CM_COPYALL){
+        char b[2048];int n=nl_format_all(&notif_title[0][0],(int)sizeof notif_title[0],&notif_msg[0][0],(int)sizeof notif_msg[0],notif_count,b,(int)sizeof b);
+        if(n>0)sys_clip_set(b,(uint64_t)n,1);
+    }else if(id==CM_DISMISS){notif_remove(idx);if(notif_scroll>0)notif_scroll--;}
+    else if(id==CM_CLEARALL){notif_count=0;notif_scroll=0;}
+}
 static void tmenu_do(int id){
+    if(tmenu.kind==CMK_NOTIF){tmenu_do_notif(id);return;}
     int wi=tmenu.win;
     if(wi<0||wi>=win_count||wi>=MAX_WINDOWS)return;
     if(tmenu.kind==CMK_EDITOR){
@@ -1774,6 +1803,10 @@ static void tmenu_do(int id){
 /* once per frame: the menu goes away with its window (closed, minimized, a dialog opened over the text ...) */
 static void tmenu_validate(void){
     if(!tmenu.open)return;
+    if(tmenu.kind==CMK_NOTIF){      /* the menu names a card by number: close it if anything changed */
+        if(!(notif_center_open||notif_popup_active)||tmenu.win<0||tmenu.win>=notif_count||notif_count!=tmenu.aux)cm_close(&tmenu);
+        return;
+    }
     int wi=tmenu.win,ok=wi>=0&&wi<win_count&&wi<MAX_WINDOWS&&wins[wi].visible&&!wins[wi].minimized;
     if(ok){
         int id=wins[wi].id;
@@ -4939,6 +4972,7 @@ int main(void){
         /* right-click on text (Notepad text area, terminals): the Copy / Paste menu */
         if(rbtn_down&&drag_win<0){
             cm_close(&tmenu);
+            if(tmenu_open_notif())goto click_done;       /* a notification: its own menu (or nothing, but never the desktop menu) */
             int th=wm_hit(mouse_x,mouse_y);
             if(th>=0&&wins[th].visible&&!wins[th].minimized&&tmenu_open_for(th)){wm_focus(th);goto click_done;}
         }
@@ -5750,7 +5784,7 @@ int main(void){
                     if(taskbar_groups[hover_preview_group].idx[gk]==i)capture_window_preview_slot(i,gk);
             }
         }
-        draw_taskbar(secs);draw_menu();draw_rctx();draw_tmenu();draw_notif_popup();draw_notif_center();
+        draw_taskbar(secs);draw_menu();draw_rctx();draw_notif_popup();draw_notif_center();draw_tmenu();   /* the right-click text menu is drawn LAST: above the toast and the notification centre */
         if(hover_preview_group>=0){
             int gcount=taskbar_groups[hover_preview_group].count;
             int sx,sy,sw,sh;taskbar_group_strip_rect(hover_preview_group,&sx,&sy,&sw,&sh);

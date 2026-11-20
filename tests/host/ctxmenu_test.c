@@ -39,6 +39,21 @@ int main(void) {
     { CtxMenu f; memset(&f, 0, sizeof f); for (int i = 0; i < 30; i++) cm_add(&f, CM_COPY, 1); expect(f.n == CM_MAX, "adding more than the maximum is refused, never overflows"); }
     { CtxMenu f; memset(&f, 0, sizeof f); cm_add(&f, CM_SEP, 1); cm_add(&f, CM_COPY, 1); cm_add(&f, CM_COPY, 0); expect(f.n == 3 && f.en[0] == 0 && f.en[1] == 1 && f.en[2] == 0, "a separator can never be enabled, even if asked; other entries keep what they are given"); }
 
+    /* ---- the notification menu ---- */
+    cm_build_notif(&m, 4, 7);
+    { int w[] = { CM_COPY, CM_COPYALL, CM_SEP, CM_DISMISS, CM_CLEARALL }; expect(ids_are(&m, 5, w), "notification menu: Copy, Copy All | Dismiss, Clear All"); }
+    expect(m.kind == CMK_NOTIF && m.win == 4 && m.aux == 7 && m.hov == -1, "it remembers which notification (win) and how many there were (aux)");
+    expect(m.en[0] == 1 && m.en[1] == 1 && m.en[2] == 0 && m.en[3] == 1 && m.en[4] == 1, "with several notifications every command is enabled");
+    cm_build_notif(&m, 0, 2); expect(m.en[1] == 1, "with exactly two notifications Copy All is enabled (the boundary)");
+    cm_build_notif(&m, 0, 1);
+    expect(m.en[0] == 1 && m.en[1] == 0 && m.en[3] == 1 && m.en[4] == 1, "with a single notification Copy All is dimmed (it would equal Copy)");
+    expect(!strcmp(cm_label(CM_COPYALL), "Copy All") && !strcmp(cm_label(CM_DISMISS), "Dismiss") && !strcmp(cm_label(CM_CLEARALL), "Clear All"), "the new commands have their labels");
+    expect(!strcmp(cm_hint(CM_COPY, CMK_NOTIF), "") && !strcmp(cm_hint(CM_DISMISS, CMK_NOTIF), "") && !strcmp(cm_hint(CM_COPYALL, CMK_NOTIF), ""), "notification entries show no shortcut hints");
+    expect(cm_height(&m) == 2 + 4 * CM_ITEM_H + CM_SEP_H, "notification menu height: border + 4 entries + 1 separator");
+    cm_place(&m, 100, 100, 1920, 1000);
+    expect(cm_item_at(&m, 110, cm_row_y(&m, 3) + 3) == 3 && cm_item_at(&m, 110, cm_row_y(&m, 2) + 1) == -1, "Dismiss is found below the separator; the separator is not an entry");
+    cm_build(&m, CMK_EDITOR, 5, 1, 1, 1, 1, 1); expect(m.kind == CMK_EDITOR, "building another kind afterwards replaces the notification menu completely");
+
     /* ---- labels and shortcut hints ---- */
     expect(!strcmp(cm_label(CM_UNDO), "Undo") && !strcmp(cm_label(CM_REDO), "Redo") && !strcmp(cm_label(CM_CUT), "Cut") && !strcmp(cm_label(CM_COPY), "Copy") && !strcmp(cm_label(CM_PASTE), "Paste") && !strcmp(cm_label(CM_SELALL), "Select All"), "every command has its label");
     expect(!strcmp(cm_label(CM_SEP), "") && !strcmp(cm_label(CM_NONE), ""), "separators have no label");

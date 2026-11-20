@@ -6,7 +6,8 @@
  * Three kinds of menu:
  *   CMK_EDITOR    a text editor (Notepad):  Undo, Redo | Cut, Copy, Paste | Select All
  *   CMK_TERMINAL  a terminal window:        Copy, Paste | Select All     (the output cannot be edited)
- *   CMK_READONLY  read-only text (logs):    Copy | Select All
+ *   CMK_READONLY  read-only text:           Copy | Select All
+ *   CMK_NOTIF     a notification:           Copy, Copy All | Dismiss, Clear All   (`win` is the notification's index)
  * A command that cannot be done right now (Copy with nothing selected, Paste with an empty clipboard ...)
  * is shown dimmed and does nothing when clicked. */
 #ifndef CTXMENU_H
@@ -17,15 +18,16 @@
 #define CM_SEP_H  6
 #define CM_MAX    10
 
-enum { CM_NONE = 0, CM_UNDO, CM_REDO, CM_CUT, CM_COPY, CM_PASTE, CM_SELALL, CM_SEP };
-enum { CMK_NONE = 0, CMK_EDITOR, CMK_TERMINAL, CMK_READONLY };
+enum { CM_NONE = 0, CM_UNDO, CM_REDO, CM_CUT, CM_COPY, CM_PASTE, CM_SELALL, CM_SEP, CM_COPYALL, CM_DISMISS, CM_CLEARALL };
+enum { CMK_NONE = 0, CMK_EDITOR, CMK_TERMINAL, CMK_READONLY, CMK_NOTIF };
 
 typedef struct {
     int open;
     int x, y;                    /* top-left corner on screen (already moved so the menu fits) */
     int hov;                     /* item under the pointer, -1 none */
     int kind;                    /* CMK_* */
-    int win;                     /* the window the menu belongs to */
+    int win;                     /* the window the menu belongs to (CMK_NOTIF: the notification's index) */
+    int aux;                     /* free for the owner (CMK_NOTIF: how many notifications existed when it opened) */
     int n;                       /* number of entries, separators included */
     int id[CM_MAX];              /* CM_* of each entry */
     int en[CM_MAX];              /* 1 if the entry can be chosen now */
@@ -38,11 +40,13 @@ static const char* cm_label(int id) {
     case CM_UNDO: return "Undo";   case CM_REDO: return "Redo";
     case CM_CUT: return "Cut";     case CM_COPY: return "Copy";
     case CM_PASTE: return "Paste"; case CM_SELALL: return "Select All";
+    case CM_COPYALL: return "Copy All"; case CM_DISMISS: return "Dismiss"; case CM_CLEARALL: return "Clear All";
     default: return "";
     }
 }
 /* the keyboard shortcut shown at the right edge of an entry */
 static const char* cm_hint(int id, int kind) {
+    if (kind == CMK_NOTIF) return "";
     if (kind == CMK_TERMINAL) {
         if (id == CM_COPY) return "Ctrl+Shift+C";
         if (id == CM_PASTE) return "Ctrl+Shift+V";
@@ -75,6 +79,13 @@ static void cm_build(CtxMenu* m, int kind, int win, int has_sel, int can_undo, i
         cm_add(m, CM_COPY, has_sel); cm_add(m, CM_SEP, 0);
         cm_add(m, CM_SELALL, has_text);
     }
+}
+/* A notification menu. `idx` is the notification, `total` how many there are: "Copy All" only means something
+ * when there is more than one. */
+static void cm_build_notif(CtxMenu* m, int idx, int total) {
+    m->n = 0; m->hov = -1; m->kind = CMK_NOTIF; m->win = idx; m->aux = total;
+    cm_add(m, CM_COPY, 1); cm_add(m, CM_COPYALL, total >= 2); cm_add(m, CM_SEP, 0);
+    cm_add(m, CM_DISMISS, 1); cm_add(m, CM_CLEARALL, 1);
 }
 static int cm_height(const CtxMenu* m) {
     int h = 2; for (int i = 0; i < m->n; i++) h += (m->id[i] == CM_SEP) ? CM_SEP_H : CM_ITEM_H; return h;

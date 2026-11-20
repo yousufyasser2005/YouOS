@@ -53,6 +53,9 @@ gcc -g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined -I inclu
 gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -o "$W/ctxmenu_test" tests/host/ctxmenu_test.c || { echo "ctxmenu test build failed"; exit 1; }
 "$W/ctxmenu_test" > "$W/cm.out" 2>&1; rc=$?; grep -c '^  ok' "$W/cm.out" | sed 's/^/  checks passed: /'
 [ $rc -eq 0 ] && ok "right-click menu logic (entries, enabling, placement, hit testing)" || { grep -E "FAIL|ERROR|runtime" "$W/cm.out" | head; bad "right-click menu logic"; }
+gcc -g -O0 -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined -o "$W/notiflist_test" tests/host/notiflist_test.c || { echo "notiflist test build failed"; exit 1; }
+"$W/notiflist_test" > "$W/nl.out" 2>&1; rc=$?; grep -c '^  ok' "$W/nl.out" | sed 's/^/  checks passed: /'
+[ $rc -eq 0 ] && ok "notification list logic (which card is under the pointer, Copy / Copy All text)" || { grep -E "FAIL|ERROR|runtime" "$W/nl.out" | head; bad "notification list logic"; }
 # the desktop cannot run on the host, so check that every terminal hook is still wired into it
 D=user/src/desktop.c
 check "desktop: Ctrl keys in a focused terminal go to term_ctrl_key" "grep -aq 'term_ctrl_key(focused' $D"
@@ -65,8 +68,15 @@ check "desktop: the output queue is drained 32 messages per frame (so pasted ech
 check "shell: Ctrl+C / Ctrl+U handled, other control codes never stored" "grep -q 'Ctrl+C: abandon' user/src/shell.c && grep -q 'Ctrl+U: erase' user/src/shell.c"
 check "desktop: right-click on text opens the text menu before the desktop menu" "grep -aq 'tmenu_open_for(th)' $D"
 check "desktop: a click on the text menu runs the entry (tmenu_do) and swallows the click" "grep -aq 'tmenu_do(cid)' $D && grep -aq 'if(btn_down&&tmenu.open){' $D"
+check "desktop: the text menu is drawn after the toast and the notification centre, so it is never hidden by them" "grep -aq 'draw_notif_popup();draw_notif_center();draw_tmenu();' $D"
 check "desktop: the text menu is drawn, hovered and validated every frame" "grep -aq 'draw_tmenu();' $D && grep -aq 'tmenu.hov=tmenu.open?cm_item_at' $D && grep -aq '^        tmenu_validate();' $D"
 check "desktop: any key closes the text menu and Esc is used up" "grep -aq 'if(tmenu.open&&ch!=0){cm_close(&tmenu);if(ch==27)ch=0;}' $D"
+check "desktop: right-click on a notification opens the notification menu, never the desktop menu" "grep -aq 'if(tmenu_open_notif())goto click_done;' $D"
+check "desktop: the notification menu finds cards with the centre's own numbers" "grep -aq 'nl_row_at(NC_X,NC_Y,NC_W,NC_ROW_H,NC_MAX_VISIBLE,notif_count,notif_scroll,mouse_x,mouse_y)' $D"
+check "desktop: the centre still draws cards at y+90+row*NC_ROW_H, inset 12, gap 8 (the numbers notiflist.h assumes)" "grep -aq 'int ry=y+90+row\*NC_ROW_H;' $D && grep -aq 'in_box(mouse_x,mouse_y,x+12,ry,NC_W-24,NC_ROW_H-8)' $D"
+check "desktop: Clear All in the menu does exactly what the Clear button does" "[ \$(grep -ac 'notif_count=0;notif_scroll=0;' $D) -ge 2 ]"
+check "desktop: Dismiss in the menu does what the card's X button does" "grep -aq 'else if(id==CM_DISMISS){notif_remove(idx);if(notif_scroll>0)notif_scroll--;}' $D && grep -aq 'notif_remove(idx2);if(notif_scroll>0)notif_scroll--;' $D"
+check "desktop: a notification menu closes if the list changed or the centre / toast went away" "grep -aq 'notif_count!=tmenu.aux' $D"
 check "desktop: the menu's terminal Copy is the same code as Ctrl+Shift+C" "grep -aq 'if(act==TS_KEY_COPY){term_copy(wi);return;}' $D && grep -aq 'if(id==CM_COPY)term_copy(wi);' $D"
 cat > "$W/memcheck.c" <<'MEMEOF'
 #include "user/src/textedit.h"
@@ -77,8 +87,12 @@ typedef struct { char name[32]; unsigned int size; unsigned char is_dir; } Diren
 #include "user/src/lineedit.h"
 #include "user/src/termsel.h"
 #include "user/src/ctxmenu.h"
+#include "user/src/notiflist.h"
+int use_nl(const char* t, const char* m, char* o, int cap) {
+    return nl_format_one(t, m, o, cap) + nl_format_all(t, 32, m, 64, 1, o, cap) + nl_row_at(0, 0, 380, 64, 5, 8, 1, 50, 100) + nl_clamp_scroll(8, 2, 5);
+}
 int use_ctx(CtxMenu* m, int x, int y) {
-    cm_build(m, CMK_EDITOR, 1, 1, 1, 1, 1, 1); cm_place(m, x, y, 1920, 1000); cm_close(m);
+    cm_build(m, CMK_EDITOR, 1, 1, 1, 1, 1, 1); cm_build_notif(m, 0, 3); cm_place(m, x, y, 1920, 1000); cm_close(m);
     return cm_item_at(m, x, y) + cm_height(m) + cm_inside(m, x, y) + (int)cm_label(CM_COPY)[0] + (int)cm_hint(CM_COPY, 1)[0];
 }
 int use_term(TermSel* s, const TermView* v, TermPaste* p, char* b, int n) {

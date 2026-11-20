@@ -53,16 +53,18 @@ chk "terminal clipboard (select/copy/paste/Ctrl keys)" "ts_classify_ctrl" user/s
 chk "terminals wired into the desktop"     "term_paste_pump"     user/src/desktop.c
 chk "right-click text menu (Copy/Paste/...)" "cm_build"           user/src/ctxmenu.h
 chk "right-click menu wired into desktop"  "tmenu_open_for"      user/src/desktop.c
+chk "notification menu (Copy/Dismiss/Clear)" "nl_row_at"          user/src/notiflist.h
+chk "notification menu wired into desktop" "tmenu_open_notif"    user/src/desktop.c
 
 # This script is only meant for a tree that has everything above. If the newest feature is
 # missing, the tree is out of date (usually: an older archive was extracted) -- stop NOW
 # instead of building something that silently lacks it.
-if ! grep -q -- "npx_new_window" user/src/notepad.h 2>/dev/null || ! grep -q -- "clip_set" kernel/clipboard.c 2>/dev/null || ! grep -q -- "sched_yield_kernel" kernel/proc/sync.c 2>/dev/null || ! grep -q -- "xw_poll" user/src/xfer_proto.h 2>/dev/null || [ ! -f user/src/copyd.c ] || ! grep -q -- "sched_block" kernel/proc/scheduler.c 2>/dev/null || ! grep -q -- "npx_tr" user/src/notepad.h 2>/dev/null || ! grep -q -- "NPX_DBLCLICK_TICKS" user/src/notepad.h 2>/dev/null || ! grep -q -- "ts_classify_ctrl" user/src/termsel.h 2>/dev/null || ! grep -q -- "tmenu_open_for" user/src/desktop.c 2>/dev/null; then
+if ! grep -q -- "npx_new_window" user/src/notepad.h 2>/dev/null || ! grep -q -- "clip_set" kernel/clipboard.c 2>/dev/null || ! grep -q -- "sched_yield_kernel" kernel/proc/sync.c 2>/dev/null || ! grep -q -- "xw_poll" user/src/xfer_proto.h 2>/dev/null || [ ! -f user/src/copyd.c ] || ! grep -q -- "sched_block" kernel/proc/scheduler.c 2>/dev/null || ! grep -q -- "npx_tr" user/src/notepad.h 2>/dev/null || ! grep -q -- "NPX_DBLCLICK_TICKS" user/src/notepad.h 2>/dev/null || ! grep -q -- "ts_classify_ctrl" user/src/termsel.h 2>/dev/null || ! grep -q -- "tmenu_open_for" user/src/desktop.c 2>/dev/null || ! grep -q -- "tmenu_open_notif" user/src/desktop.c 2>/dev/null; then
   echo
   echo "*** Your source tree is OLDER than this script expects (no new Notepad / clipboard: user/src/notepad.h, user/src/textedit.h, kernel/clipboard.c, plus the earlier v14 files)."
   echo "    Extract the NEWEST archive over the repository first, then run this again:"
   echo "        ls -la ~/Downloads/youos_tree_v*.tar     # pick the highest version"
-  echo "        tar -xf ~/Downloads/youos_fix_v24.tar"
+  echo "        tar -xf ~/Downloads/youos_fix_v26.tar"
   echo "    (a browser may have saved the new download as 'name (1).tar' next to an old one with the same name)"
   exit 1
 fi
